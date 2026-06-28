@@ -1,0 +1,100 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+@import 'tailwindcss';
+
+/* ── Design token system (ported 1:1 from the confirmed design) ───────────────
+   Light is the default; dark is opt-in via [data-theme="dark"] on <html>. */
+:root {
+  --page: #c9d2df;
+  --bg: #f4f6f9;
+  --card: #ffffff;
+  --card2: #fbfcfe;
+  --header: #1a2b4a;
+  --header2: #22386a;
+  --hfg: #ffffff;
+  --hfg2: #9db0d6;
+  --fg: #1a1a2e;
+  --fg2: #6b7280;
+  --fg3: #9aa3b2;
+  --accent: #2d7dd2;
+  --accent-bg: #e7f1fb;
+  --success: #1fa363;
+  --success-bg: #e5f6ec;
+  --warning: #d9820b;
+  --warning-bg: #fcf0dd;
+  --danger: #e04434;
+  --danger-bg: #fbe8e5;
+  --border: rgba(20, 35, 70, 0.09);
+  --line: rgba(20, 35, 70, 0.06);
+  --chip: #edf1f6;
+  --skel: #e6ebf2;
+  --skel2: #eff3f8;
+  --shadow: 0 1px 2px rgba(16, 30, 60, 0.05), 0 8px 22px -10px rgba(16, 30, 60, 0.14);
+  --shadowSm: 0 1px 2px rgba(16, 30, 60, 0.06);
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --page: #04060b;
+  --bg: #0c1322;
+  --card: #161f33;
+  --card2: #1a2440;
+  --header: #0e1727;
+  --header2: #1c2a47;
+  --hfg: #eaf0fa;
+  --hfg2: #7e8db0;
+  --fg: #e8edf5;
+  --fg2: #93a1b9;
+  --fg3: #5e6b85;
+  --accent: #4f97e6;
+  --accent-bg: rgba(79, 151, 230, 0.16);
+  --success: #34c97b;
+  --success-bg: rgba(52, 201, 123, 0.15);
+  --warning: #e8a23e;
+  --warning-bg: rgba(232, 162, 62, 0.15);
+  --danger: #ef5e4e;
+  --danger-bg: rgba(239, 94, 78, 0.15);
+  --border: rgba(255, 255, 255, 0.08);
+  --line: rgba(255, 255, 255, 0.05);
+  --chip: #222e48;
+  --skel: #1e2940;
+  --skel2: #243150;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 24px -10px rgba(0, 0, 0, 0.5);
+  --shadowSm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+/* ── Bridge: existing Tailwind utilities (bg-card, text-fg, border-line, …)
+   now follow the design tokens and react to the theme. `inline` so the utility
+   resolves to var(--token) directly instead of a frozen snapshot. */
+@theme inline {
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --color-page: var(--page);
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-card2: var(--card2);
+  --color-header: var(--header);
+  --color-fg: var(--fg);
+  --color-fg2: var(--fg2);
+  --color-fg3: var(--fg3);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-line: var(--line);
+  --color-edge: var(--border);
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
