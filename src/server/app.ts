@@ -11,6 +11,9 @@ import { logger } from '../http/logger.js';
 
 export function createApp(deps: RouterDeps) {
   const app = express();
+  // Behind a reverse proxy (Caddy): trust the first hop so req.ip / X-Forwarded-For
+  // resolve to the real client and the rate limiters key on the client IP, not the proxy.
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '4mb' })); // design uploads base64 attachments
 
   app.get('/healthz', (_req: Request, res: Response) => res.json({ ok: true, uptime: process.uptime() }));
