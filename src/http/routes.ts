@@ -108,7 +108,8 @@ export function buildRouter(deps: RouterDeps): Router {
   r.post('/auth/dev', async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!devAuth) {
-        res.status(403).json({ error: 'Disabled' });
+        // Stealth 404 (not 403) so the dev-only endpoint is invisible in prod.
+        res.status(404).json({ error: 'Not found' });
         return;
       }
       const telegramId = String((req.body ?? {}).telegramId ?? '').trim();

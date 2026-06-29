@@ -16,7 +16,7 @@ const schema = z.object({
   SESSION_SECRET: strongSecret('SESSION_SECRET'),
   PIN_PEPPER: strongSecret('PIN_PEPPER'),
   PORT: z.coerce.number().default(3000),
-  NODE_ENV: z.string().default('development'),
+  NODE_ENV: z.string().default('production'),
   ENABLE_DEV_AUTH: z.string().optional(),
   SERVE_DESIGN: z.string().optional(),
 });
@@ -37,4 +37,15 @@ export function loadEnv(): Env {
     }
   }
   return env;
+}
+
+/**
+ * Dev login is allowed ONLY in an explicit development environment.
+ * Fail-closed: NODE_ENV defaults to 'production' (above), so an unset or
+ * misconfigured server keeps dev auth OFF. Enabling it requires deliberately
+ * running NODE_ENV=development together with ENABLE_DEV_AUTH=1 — and loadEnv()
+ * refuses to boot if ENABLE_DEV_AUTH=1 leaks into any non-development env.
+ */
+export function devAuthEnabled(env: Env): boolean {
+  return env.NODE_ENV === 'development' && env.ENABLE_DEV_AUTH === '1';
 }
