@@ -92,7 +92,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'requester',
     name: 'Заявитель',
-    permissions: ['requests.view', 'requests.create'],
+    permissions: ['requests.view', 'requests.create', 'requests.comment', 'requests.upload_attachment'],
   },
   {
     code: 'warehouse_worker',
@@ -152,5 +152,30 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'workflows.manage',
       'settings.manage',
     ],
+  },
+  {
+    code: 'procurement_manager',
+    name: 'Менеджер по снабжению',
+    permissions: ['requests.view', 'approvals.view', 'procurement.view', 'procurement.quote', 'procurement.select_supplier'],
+  },
+  {
+    code: 'finance_manager',
+    name: 'Финансовый менеджер',
+    permissions: ['requests.view', 'approvals.view', 'finance.view', 'finance.mark_paid'],
+  },
+  {
+    code: 'accountant',
+    name: 'Бухгалтер',
+    permissions: ['requests.view', 'finance.view'],
+  },
+  {
+    code: 'auditor',
+    name: 'Аудитор',
+    permissions: ['requests.view', 'reports.view', 'audit.view', 'audit.export'],
+  },
+  {
+    code: 'observer',
+    name: 'Наблюдатель',
+    permissions: ['requests.view', 'reports.view'],
   },
 ];

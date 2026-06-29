@@ -312,10 +312,19 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
+      // Visibility: a pure requester/observer (no oversight permission) sees only
+      // their OWN requests; oversight roles see the whole holding.
+      const codes = await getUserPermissionCodes(db, u.id);
+      const seeAll = ['requests.edit', 'approvals.view', 'warehouse.view', 'procurement.view', 'finance.view', 'audit.view'].some(
+        (p) => codes.includes(p),
+      );
+      const visScope = seeAll
+        ? eq(schema.requests.holdingId, u.holdingId)
+        : and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.requesterId, u.id));
       const rows = await db
         .select()
         .from(schema.requests)
-        .where(eq(schema.requests.holdingId, u.holdingId))
+        .where(visScope)
         .orderBy(desc(schema.requests.createdAt))
         .limit(limit + 1) // fetch one extra to detect "has more"
         .offset(offset);
