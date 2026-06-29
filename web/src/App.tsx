@@ -1443,14 +1443,20 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
 
   const run = async (
     action: string,
-    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; leadTime?: string; quotationId?: string } = {},
+    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string } = {},
   ) => {
     setBusy(true);
     setError(null);
     try {
-      await api.requestAction(id, { action, ...vals });
+      const res = await api.requestAction(id, { action, ...vals });
       setPending(null);
       load();
+      if (res?.warnings?.length) {
+        const msg = (res.warnings as string[]).join('\n');
+        const tg = (window as { Telegram?: { WebApp?: { showAlert?: (m: string) => void } } }).Telegram?.WebApp;
+        if (tg?.showAlert) tg.showAlert(msg);
+        else window.alert(msg);
+      }
     } catch (e) {
       setError((e as Error).message);
       throw e;
@@ -1637,23 +1643,28 @@ function ActionModal({
   error: string | null;
   quotations: QuotationRow[];
   onCancel: () => void;
-  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; leadTime?: string; quotationId?: string }) => void;
+  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string }) => void;
 }) {
   const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
   const [amount, setAmount] = useState('');
   const [supplier, setSupplier] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [suppliers, setSuppliers] = useState<{ id: string; name: string }[]>([]);
   const [leadTime, setLeadTime] = useState('');
   const [quotationId, setQuotationId] = useState(quotations.find((q) => q.selected)?.id ?? '');
   const isAdd = action.quote === 'add';
   const isSelect = action.quote === 'select';
+  useEffect(() => {
+    if (isAdd) api.suppliers.list().then(setSuppliers).catch(() => {});
+  }, [isAdd]);
   const inputStyle: CSSProperties = { width: '100%', padding: '13px 15px', fontSize: 15, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
   const lbl: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 8 };
   const ok =
     (!action.pin || pin.length >= 4) &&
     (!action.comment || comment.trim().length > 0) &&
     (!action.amount || (amount !== '' && Number(amount) >= 0)) &&
-    (!isAdd || (supplier.trim().length > 0 && amount !== '' && Number(amount) > 0)) &&
+    (!isAdd || ((supplierId !== '' || supplier.trim().length > 0) && amount !== '' && Number(amount) > 0)) &&
     (!isSelect || quotationId !== '');
 
   return (
@@ -1665,7 +1676,30 @@ function ActionModal({
           <>
             <div style={{ marginBottom: 12 }}>
               <div style={lbl}>Поставщик</div>
-              <input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="напр. ООО «Метизы»" style={inputStyle} />
+              {suppliers.length > 0 && (
+                <select
+                  value={supplierId}
+                  onChange={(e) => {
+                    setSupplierId(e.target.value);
+                    const s = suppliers.find((x) => x.id === e.target.value);
+                    if (s) setSupplier(s.name);
+                  }}
+                  style={inputStyle}
+                >
+                  <option value="">— выберите из справочника —</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              )}
+              {!supplierId && (
+                <input
+                  value={supplier}
+                  onChange={(e) => setSupplier(e.target.value)}
+                  placeholder={suppliers.length > 0 ? 'или впишите вручную' : 'напр. ООО «Метизы»'}
+                  style={{ ...inputStyle, marginTop: suppliers.length > 0 ? 8 : 0 }}
+                />
+              )}
             </div>
             <div style={{ marginBottom: 12 }}>
               <div style={lbl}>Сумма КП (UZS)</div>
@@ -1727,7 +1761,8 @@ function ActionModal({
                 pin: action.pin ? pin : undefined,
                 comment: action.comment ? comment : undefined,
                 amount: action.amount || isAdd ? Number(amount) : undefined,
-                supplierName: isAdd ? supplier.trim() : undefined,
+                supplierId: isAdd && supplierId ? supplierId : undefined,
+                supplierName: isAdd ? supplier.trim() || undefined : undefined,
                 leadTime: isAdd && leadTime.trim() ? leadTime.trim() : undefined,
                 quotationId: isSelect ? quotationId : undefined,
               })
