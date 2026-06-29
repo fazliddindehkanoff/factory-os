@@ -4,6 +4,7 @@ import { getTelegram } from './telegram';
 import { AdminPanel } from './admin/AdminPanel';
 import { WarehouseScreen } from './screens/Warehouse';
 import { InboxScreen } from './screens/Inbox';
+import { ProcurementScreen } from './screens/Procurement';
 import { Icon, TINT_BG, TINT_FG } from './icons';
 import { applyTheme, getTheme, type Theme } from './theme';
 import { DASHBOARD_ACTIONS, DASHBOARD_STATS } from './dashboard.config';
@@ -85,6 +86,7 @@ type Screen =
   | { name: 'detail'; id: string }
   | { name: 'approvals' }
   | { name: 'warehouse' }
+  | { name: 'procurement' }
   | { name: 'menu' }
   | { name: 'admin' };
 
@@ -176,6 +178,7 @@ export default function App() {
     detail: 'Заявка',
     approvals: 'Согласования',
     warehouse: 'Склад',
+    procurement: 'Закупки',
     menu: 'Меню',
     admin: 'Администрирование',
   };
@@ -246,6 +249,9 @@ export default function App() {
         )}
         {screen.name === 'approvals' && <InboxScreen onOpen={(id) => setScreen({ name: 'detail', id })} permissions={me.permissions} />}
         {screen.name === 'warehouse' && <WarehouseScreen />}
+        {screen.name === 'procurement' && (
+          <ProcurementScreen canManage={me.permissions.includes('suppliers.manage')} onOpen={(id) => setScreen({ name: 'detail', id })} />
+        )}
         {screen.name === 'menu' && <Menu me={me} theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onLogout={() => { clearToken(); setMe(null); }} onProfileUpdated={loadMe} />}
         {screen.name === 'admin' && (
           <AdminPanel permissions={me.permissions} onExit={() => setScreen({ name: 'home' })} />
@@ -268,6 +274,7 @@ function BottomNav({ me, active, onNav }: { me: Me; active: Screen['name']; onNa
   if (canAct) tabs.push({ key: 'approvals', label: 'Согласования', ic: 'checkCircle' });
   if (isAdmin) tabs.push({ key: 'admin', label: 'Админ', ic: 'shield' });
   else if (can('warehouse.view')) tabs.push({ key: 'warehouse', label: 'Склад', ic: 'box' });
+  else if (can('procurement.view')) tabs.push({ key: 'procurement', label: 'Закупки', ic: 'box' });
   tabs.push({ key: 'menu', label: 'Меню', ic: 'grid' });
 
   return (
