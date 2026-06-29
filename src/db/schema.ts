@@ -601,6 +601,7 @@ export const quotations = pgTable(
       .notNull()
       .references(() => requests.id, { onDelete: 'cascade' }),
     supplierName: text('supplier_name').notNull(),
+    supplierId: uuid('supplier_id').references(() => suppliers.id),
     amount: bigint('amount', { mode: 'number' }).notNull().default(0),
     leadTime: text('lead_time'),
     note: text('note'),
@@ -609,6 +610,29 @@ export const quotations = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ reqIdx: index('quotations_request_idx').on(t.requestId) }),
+);
+
+// ── Suppliers (procurement) — normalized supplier directory, holding-scoped ──
+export const suppliers = pgTable(
+  'suppliers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    holdingId: uuid('holding_id')
+      .notNull()
+      .references(() => holdings.id),
+    name: text('name').notNull(),
+    inn: text('inn'),
+    phone: text('phone'),
+    email: text('email'),
+    contactPerson: text('contact_person'),
+    category: text('category'),
+    rating: numeric('rating'),
+    note: text('note'),
+    status: entityStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ holdingIdx: index('suppliers_holding_idx').on(t.holdingId) }),
 );
 
 // ── Attachments (base64 stored in text; capped at the API boundary) ──────────

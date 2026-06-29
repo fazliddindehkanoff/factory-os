@@ -57,6 +57,13 @@
       "when": 1782541888058,
       "tag": "0007_late_harrier",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1782723204150,
+      "tag": "0008_late_sentinels",
+      "breakpoints": true
     }
   ]
 }

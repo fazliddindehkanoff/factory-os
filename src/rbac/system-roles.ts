@@ -23,6 +23,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'audit.view',
       'requests.view',
       'reports.view',
+      'suppliers.view',
+      'suppliers.manage',
     ],
   },
   {
@@ -60,6 +62,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'procurement.view',
       'procurement.quote',
       'procurement.select_supplier',
+      'suppliers.view',
+      'suppliers.manage',
     ],
   },
   {
@@ -108,6 +112,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'procurement.view',
       'procurement.quote',
       'procurement.select_supplier',
+      'suppliers.view',
+      'suppliers.manage',
       'approvals.view',
       'approvals.approve',
       'approvals.reject',
@@ -156,7 +162,15 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'procurement_manager',
     name: 'Менеджер по снабжению',
-    permissions: ['requests.view', 'approvals.view', 'procurement.view', 'procurement.quote', 'procurement.select_supplier'],
+    permissions: [
+      'requests.view',
+      'approvals.view',
+      'procurement.view',
+      'procurement.quote',
+      'procurement.select_supplier',
+      'suppliers.view',
+      'suppliers.manage',
+    ],
   },
   {
     code: 'finance_manager',
@@ -171,7 +185,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'auditor',
     name: 'Аудитор',
-    permissions: ['requests.view', 'reports.view', 'audit.view', 'audit.export'],
+    permissions: ['requests.view', 'reports.view', 'audit.view', 'audit.export', 'suppliers.view'],
   },
   {
     code: 'observer',

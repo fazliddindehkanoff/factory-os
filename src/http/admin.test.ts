@@ -38,7 +38,7 @@ describe('constructor / admin API', () => {
     const token = await login(app, '999');
 
     const perms = await request(app).get('/api/admin/permissions').set('Authorization', `Bearer ${token}`).expect(200);
-    expect(perms.body.length).toBe(31);
+    expect(perms.body.length).toBe(33);
 
     const roles = await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(200);
     expect(roles.body.some((r: any) => r.code === 'owner')).toBe(true);

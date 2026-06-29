@@ -34,6 +34,9 @@ export const PERMISSIONS: PermissionDef[] = [
   { code: 'procurement.quote', name: 'Ввод КП', module: 'procurement' },
   { code: 'procurement.select_supplier', name: 'Выбор поставщика', module: 'procurement' },
   { code: 'procurement.manage', name: 'Управление закупками', module: 'procurement' },
+  // suppliers
+  { code: 'suppliers.view', name: 'Просмотр поставщиков', module: 'suppliers' },
+  { code: 'suppliers.manage', name: 'Управление поставщиками', module: 'suppliers' },
   // finance
   { code: 'finance.view', name: 'Просмотр финансов', module: 'finance' },
   { code: 'finance.mark_paid', name: 'Отметка об оплате', module: 'finance' },
