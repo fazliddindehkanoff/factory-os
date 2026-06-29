@@ -57,6 +57,8 @@ npm run dev          # + cd web && npm run dev
 
 Демо-вход (**только dev/staging**: `NODE_ENV=development` + `ENABLE_DEV_AUTH=1`) по Telegram id: `pilot_requester`, `pilot_director`, `pilot_warehouse`, `pilot_admin`. PIN для директора и склада — `1234`.
 
+> ⚠️ **`seed:pilot` запускать только против local/dev/staging БД — НИКОГДА против production.** Под `NODE_ENV=production` команда откажется работать (обход только `FORCE_DEMO_SEED=1`).
+
 Пошаговая проверка: [docs/PILOT_SMOKE_CHECKLIST.md](docs/PILOT_SMOKE_CHECKLIST.md).
 
 ## Деплой
