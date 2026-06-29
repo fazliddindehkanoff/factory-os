@@ -28,6 +28,8 @@ export interface RouterDeps {
   notify?: Notifier;
   /** Serve the bundled design (public/) via the compat API instead of the React app. */
   serveDesign?: boolean;
+  /** Rate limiting on /api (default on). Tests pass false to skip the auth/api limiters. */
+  rateLimit?: boolean;
 }
 
 async function notifyRequester(db: Db, notify: Notifier | undefined, requestId: string, text: (reqNumber: string) => string): Promise<void> {

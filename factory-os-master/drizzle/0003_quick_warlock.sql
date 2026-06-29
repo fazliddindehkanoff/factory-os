@@ -1,1 +1,0 @@
-ALTER TABLE "workflow_steps" ADD COLUMN "enabled" boolean DEFAULT true NOT NULL;
