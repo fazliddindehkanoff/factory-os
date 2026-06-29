@@ -45,6 +45,20 @@ cd web && npm run build
 - Секреты (`SESSION_SECRET`, `PIN_PEPPER`) ≥16 символов, не плейсхолдеры; в гит не коммитятся.
 - `BOT_TOKEN` — только на сервере, никогда во frontend.
 
+## Пилот-демо
+
+Детерминированный демо-набор для золотого сценария (заявка → согласование директора с PIN → проверка склада → выдача → закрытие):
+
+```bash
+npm run seed:pilot   # Holding "Zelal Group", 4 демо-юзера, 2 материала, Pilot Workflow
+npm test             # включая e2e golden-path тест
+npm run dev          # + cd web && npm run dev
+```
+
+Демо-вход (**только dev/staging**: `NODE_ENV=development` + `ENABLE_DEV_AUTH=1`) по Telegram id: `pilot_requester`, `pilot_director`, `pilot_warehouse`, `pilot_admin`. PIN для директора и склада — `1234`.
+
+Пошаговая проверка: [docs/PILOT_SMOKE_CHECKLIST.md](docs/PILOT_SMOKE_CHECKLIST.md).
+
 ## Деплой
 
 VPS + systemd (`factory-os`), HTTPS (Caddy / nginx — см. `deploy/nginx.conf`), Postgres (Neon).
