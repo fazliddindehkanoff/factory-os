@@ -547,6 +547,7 @@ export function buildRouter(deps: RouterDeps): Router {
         comment: body.comment,
         amount: body.amount,
         supplierName: body.supplierName,
+        supplierId: body.supplierId,
         leadTime: body.leadTime,
         quotationId: body.quotationId,
       });
@@ -832,6 +833,158 @@ export function buildRouter(deps: RouterDeps): Router {
         size: schema.attachments.size,
         createdAt: schema.attachments.createdAt,
       }).from(schema.attachments).where(eq(schema.attachments.requestId, reqRow.id));
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Suppliers (procurement directory, holding-scoped) ─────────────────────
+  r.get('/suppliers', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'suppliers.view', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const rows = await db
+        .select()
+        .from(schema.suppliers)
+        .where(and(eq(schema.suppliers.holdingId, u.holdingId), eq(schema.suppliers.status, 'active')))
+        .orderBy(desc(schema.suppliers.createdAt));
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/suppliers', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'suppliers.manage', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const body = req.body ?? {};
+      const name = String(body.name ?? '').trim();
+      if (!name) {
+        res.status(400).json({ error: 'Название поставщика обязательно' });
+        return;
+      }
+      const clean = (v: unknown) => (v == null || String(v).trim() === '' ? null : String(v).trim());
+      const [row] = await db
+        .insert(schema.suppliers)
+        .values({
+          holdingId: u.holdingId,
+          name,
+          inn: clean(body.inn),
+          phone: clean(body.phone),
+          email: clean(body.email),
+          contactPerson: clean(body.contactPerson),
+          category: clean(body.category),
+          note: clean(body.note),
+        })
+        .returning();
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        userId: u.id,
+        action: 'supplier.created',
+        module: 'procurement',
+        entityType: 'supplier',
+        entityId: row.id,
+        newValue: { name },
+        source: 'api',
+      });
+      res.status(201).json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.patch('/suppliers/:id', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'suppliers.manage', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const id = req.params.id as string;
+      const [existing] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+      if (!existing || existing.holdingId !== u.holdingId) {
+        res.status(404).json({ error: 'Поставщик не найден' });
+        return;
+      }
+      const body = req.body ?? {};
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      for (const f of ['name', 'inn', 'phone', 'email', 'contactPerson', 'category', 'note'] as const) {
+        if (body[f] !== undefined) patch[f] = body[f] == null ? null : String(body[f]).trim();
+      }
+      if (patch.name === '') {
+        res.status(400).json({ error: 'Название поставщика не может быть пустым' });
+        return;
+      }
+      const [row] = await db.update(schema.suppliers).set(patch).where(eq(schema.suppliers.id, id)).returning();
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        userId: u.id,
+        action: 'supplier.updated',
+        module: 'procurement',
+        entityType: 'supplier',
+        entityId: id,
+        newValue: patch,
+        source: 'api',
+      });
+      res.json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.delete('/suppliers/:id', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'suppliers.manage', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const id = req.params.id as string;
+      const [existing] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+      if (!existing || existing.holdingId !== u.holdingId) {
+        res.status(404).json({ error: 'Поставщик не найден' });
+        return;
+      }
+      // Archive, never hard-delete — quotations may reference this supplier.
+      await db.update(schema.suppliers).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.suppliers.id, id));
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        userId: u.id,
+        action: 'supplier.archived',
+        module: 'procurement',
+        entityType: 'supplier',
+        entityId: id,
+        oldValue: { status: existing.status },
+        newValue: { status: 'archived' },
+        source: 'api',
+      });
+      res.json({ ok: true, archived: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Procurement queue: requests currently sitting on a procurement step ───
+  r.get('/procurement/queue', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'procurement.view', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const rows = await db
+        .select()
+        .from(schema.requests)
+        .where(and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.status, 'procurement')))
+        .orderBy(desc(schema.requests.createdAt));
       res.json(rows);
     } catch (e) {
       next(e);
