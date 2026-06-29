@@ -255,33 +255,74 @@ describe('admin: people (Block B)', () => {
       .expect(409);
   });
 
-  it('deleting an unreferenced user hard-deletes them and revokes roles; cannot delete self', async () => {
+  it('archiving a user: never hard-deletes, revokes roles, hides from list, blocks login; cannot delete self', async () => {
     const { app, db, holding } = await make();
     const token = await login(app, '999');
     const [target] = await db
       .insert(schema.users)
-      .values({ holdingId: holding.id, fullName: 'T', telegramId: 'tt1' })
+      .values({ holdingId: holding.id, fullName: 'T', telegramId: 'tt1', status: 'active' })
       .returning();
     await db
       .insert(schema.userRoles)
       .values({ userId: target.id, roleId: await roleId(db, 'requester'), holdingId: holding.id });
 
-    // A user with no requests/approvals/audit references is hard-deleted (returns { deleted: true }).
+    // While active, the user can use the API.
+    const targetTk = await login(app, 'tt1');
+    await request(app).get('/api/me').set('Authorization', `Bearer ${targetTk}`).expect(200);
+
+    // "Delete" archives — never hard-deletes.
     const del = await request(app)
       .delete(`/api/admin/users/${target.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(del.body.deleted).toBe(true);
-    const rows = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
-    expect(rows.length).toBe(0);
+    expect(del.body.archived).toBe(true);
+
+    // Row preserved, status archived, active role assignments revoked.
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
+    expect(row.status).toBe('archived');
     const stillActive = await db
       .select()
       .from(schema.userRoles)
       .where(and(eq(schema.userRoles.userId, target.id), eq(schema.userRoles.status, 'active')));
     expect(stillActive.length).toBe(0);
 
+    // Audit event user.archived recorded.
+    const audits = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(and(eq(schema.auditLogs.action, 'user.archived'), eq(schema.auditLogs.entityId, target.id)));
+    expect(audits.length).toBe(1);
+
+    // Excluded from the active users list.
+    const list = await request(app).get('/api/admin/users').set('Authorization', `Bearer ${token}`).expect(200);
+    expect(list.body.some((x: { id: string }) => x.id === target.id)).toBe(false);
+
+    // Archived user can no longer authenticate.
+    await request(app).get('/api/me').set('Authorization', `Bearer ${targetTk}`).expect(401);
+
+    // Cannot delete self.
     const me = await request(app).get('/api/me').set('Authorization', `Bearer ${token}`).expect(200);
     await request(app).delete(`/api/admin/users/${me.body.user.id}`).set('Authorization', `Bearer ${token}`).expect(400);
+  });
+
+  it('archives even a referenced user, keeping the reference intact (no hard-delete)', async () => {
+    const { app, db, holding } = await make();
+    const token = await login(app, '999');
+    const [target] = await db
+      .insert(schema.users)
+      .values({ holdingId: holding.id, fullName: 'Ref', telegramId: 'tt2', status: 'active' })
+      .returning();
+    // A history row that references the user — a hard delete would violate this FK.
+    await db
+      .insert(schema.auditLogs)
+      .values({ holdingId: holding.id, userId: target.id, action: 'request.created', module: 'requests' });
+
+    await request(app).delete(`/api/admin/users/${target.id}`).set('Authorization', `Bearer ${token}`).expect(200);
+
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
+    expect(row.status).toBe('archived');
+    const refs = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.userId, target.id));
+    expect(refs.length).toBeGreaterThan(0); // history preserved
   });
 
   it('lists and revokes a user role assignment', async () => {
