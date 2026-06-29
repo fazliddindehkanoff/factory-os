@@ -16,7 +16,7 @@ async function make() {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
   const { holding } = await setupTenant(db, { holdingName: 'Zelal', ownerTelegramId: '999', ownerName: 'Owner' });
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
   return { app, db, holding };
 }
 
@@ -255,7 +255,7 @@ describe('admin: people (Block B)', () => {
       .expect(409);
   });
 
-  it('deactivating a user disables them and revokes roles; cannot deactivate self', async () => {
+  it('deleting an unreferenced user hard-deletes them and revokes roles; cannot delete self', async () => {
     const { app, db, holding } = await make();
     const token = await login(app, '999');
     const [target] = await db
@@ -266,9 +266,14 @@ describe('admin: people (Block B)', () => {
       .insert(schema.userRoles)
       .values({ userId: target.id, roleId: await roleId(db, 'requester'), holdingId: holding.id });
 
-    await request(app).delete(`/api/admin/users/${target.id}`).set('Authorization', `Bearer ${token}`).expect(200);
-    const [u2] = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
-    expect(u2.status).toBe('disabled');
+    // A user with no requests/approvals/audit references is hard-deleted (returns { deleted: true }).
+    const del = await request(app)
+      .delete(`/api/admin/users/${target.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(del.body.deleted).toBe(true);
+    const rows = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
+    expect(rows.length).toBe(0);
     const stillActive = await db
       .select()
       .from(schema.userRoles)

@@ -30,7 +30,7 @@ async function makeApp(devAuth = false) {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
   await seedSystemRolesAndPermissions(db);
-  return { app: createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth }), db };
+  return { app: createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth, rateLimit: false }), db };
 }
 
 async function systemRoleId(db: any, code: string): Promise<string> {

@@ -27,9 +27,11 @@ export function createApp(deps: RouterDeps) {
     next();
   });
 
-  // Rate limiting
-  app.use('/api/auth', authLimiter);
-  app.use('/api', apiLimiter);
+  // Rate limiting (skippable in tests via deps.rateLimit === false)
+  if (deps.rateLimit !== false) {
+    app.use('/api/auth', authLimiter);
+    app.use('/api', apiLimiter);
+  }
 
   if (deps.serveDesign) {
     // Serve the bundled design (public/) and answer its API contract via the compat layer.
