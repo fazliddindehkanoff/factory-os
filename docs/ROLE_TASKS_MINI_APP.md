@@ -23,6 +23,14 @@
 | **observer** | Главная · (Заявки read по scope) · Меню | — | только просмотр | мутации, approve, upload, Админ | read-only |
 | **owner** | как director + executive overview по holding | назначенные approvals | как назначено + просмотр всего | — | как назначено |
 
+## Аудит видимости Mini App
+
+**Mini App visibility audited: frontend hiding is secondary, backend guards are authoritative.**
+- Кнопки действий на детали заявки приходят из backend `availableActions()` — фронт рендерит только то, что вернул сервер (уже отфильтровано по роли / праву / scope / PIN / separation-of-duties).
+- Табы и пункты меню скрываются по permission (`BottomNav`, `AdminPanel`), но каждый mutating endpoint всё равно проверяет permission/scope на сервере (`requirePerm` / `hasPermission`).
+- Вывод: даже если фронт где-то покажет лишнюю кнопку, backend заблокирует действие (403) — это UX-долг, а не security-баг.
+- Открытый UX-фоллоу-ап (не блокирует pilot): **P2.3a — Mini App role-based navigation polish** (выверить меню/кнопки строго под каждую из 16 ролей).
+
 ## Placeholder'ы (модули ещё не готовы)
 
 - **Procurement** экраны (queue, suppliers, quotations) — показывать как placeholder при наличии `procurement.*` прав; полноценные действия — после Procurement Lite.
