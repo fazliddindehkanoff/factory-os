@@ -42,8 +42,8 @@ describe('RBAC seeding + enforcement', () => {
     await seedSystemRolesAndPermissions(db); // run a second time
     const perms = await db.select().from(schema.permissions);
     const roles = await db.select().from(schema.roles);
-    expect(perms.length).toBe(25); // catalog size
-    expect(roles.length).toBe(13); // system roles, no duplicates
+    expect(perms.length).toBe(31); // catalog size
+    expect(roles.length).toBe(18); // system roles, no duplicates
   });
 
   it('grants a permission within scope and denies it outside scope', async () => {
@@ -87,7 +87,7 @@ describe('RBAC seeding + enforcement', () => {
     expect(await hasPermission(db, u.id, 'finance.mark_paid', { holdingId: h.id })).toBe(true);
     expect(await hasPermission(db, u.id, 'settings.manage', { holdingId: h.id })).toBe(true);
     const codes = await getUserPermissionCodes(db, u.id);
-    expect(codes.length).toBe(25);
+    expect(codes.length).toBe(31);
   });
 
   it('denies everything for a user with no role assignment (default-deny)', async () => {
