@@ -54,6 +54,18 @@ DELETE никогда не удаляет физически — котиров�
 
 `suppliers.view`, `suppliers.manage` (procurement_head/manager и legacy procurement, admin — view+manage; auditor — view). `procurement.view/quote/select_supplier/manage` — как раньше.
 
+## Mini App (P2.3a)
+
+Вкладка **«Закупки»** (BottomNav) — для ролей с `procurement.view`. Два таба:
+- **Очередь** — `GET /procurement/queue`, заявки на procurement-шаге; тап открывает деталь.
+- **Поставщики** — список (`suppliers.view`); создание/редактирование/архив только при `suppliers.manage`.
+
+На детали procurement-заявки:
+- **Добавить КП** — поставщик выбирается из справочника (dropdown → `supplierId`; free-text fallback, если справочник пуст) + сумма + срок.
+- **Выбрать поставщика** — выбор из списка КП; при единственном КП показывается предупреждение (из `result.warnings`, через Telegram alert), выбор не блокируется.
+
+Видимость кнопок — UX; backend-гарды (`procurement.*`, `suppliers.*`) авторитетны.
+
 ## Известные ограничения (future)
 
 - UI: procurement-очередь и список поставщиков в Mini App — placeholder (P2.3a / P2.4).
