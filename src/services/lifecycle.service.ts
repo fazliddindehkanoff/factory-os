@@ -361,29 +361,29 @@ export async function performAction(db: Db, input: PerformInput) {
       }
     }
 
-    // Warehouse integration: auto-update stock balances on receiving/issue steps.
-    // Uses request_items to determine what materials and quantities to process.
+    // Warehouse integration: stock moves through the warehouse service (the single
+    // authoritative path) on receiving/issue steps, using request_items for the
+    // materials and quantities. Fail-loud: if a stock op fails (e.g. insufficient
+    // stock) it throws, this whole transaction rolls back, and the step does NOT
+    // advance — never a silent completion with drifted balances. Idempotency in the
+    // service keeps a given (request, material, type) from being applied twice.
     if (!def.reject && def.advance && (step.stepKind === 'receiving' || step.stepKind === 'issue')) {
       const items = await tx.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
       for (const item of items) {
         if (!item.materialId) continue;
         const qty = Number(item.quantity);
         if (!qty || qty <= 0) continue;
-        try {
-          const op = {
-            holdingId: req.holdingId,
-            materialId: item.materialId,
-            quantity: qty,
-            performedBy: input.actor.id,
-            requestId: req.id,
-            reason: `Lifecycle: ${step.stepKind} — ${req.id.slice(0, 8)}`,
-          };
-          if (step.stepKind === 'receiving') await receiveStock(tx, op);
-          else await issueStock(tx, op);
-        } catch {
-          // Best-effort: if stock op fails (e.g. insufficient stock), the lifecycle
-          // step still completes — the warehouse discrepancy can be resolved manually.
-        }
+        const op = {
+          holdingId: req.holdingId,
+          materialId: item.materialId,
+          quantity: qty,
+          performedBy: input.actor.id,
+          requestId: req.id,
+          reason: `Lifecycle: ${step.stepKind} — ${req.id.slice(0, 8)}`,
+          source: 'lifecycle',
+        };
+        if (step.stepKind === 'receiving') await receiveStock(tx, op);
+        else await issueStock(tx, op);
       }
     }
 
