@@ -552,10 +552,12 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
     try {
       const u = actor(req);
       const hid = u.holdingId as string;
-      const users = await db
+      const allUsers = await db
         .select()
         .from(schema.users)
         .where(eq(schema.users.holdingId, hid));
+      // Archived users (soft-deleted) are excluded from the active management list.
+      const users = allUsers.filter((usr: { status: string }) => usr.status !== 'archived');
       const assigns = await db
         .select()
         .from(schema.userRoles)
@@ -641,10 +643,11 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
     }
   });
 
-  /** Deactivate (soft) a user: disable + revoke their role assignments. */
-  // Delete a user: hard-delete if they have no history (no requests/approvals/audit
-  // referencing them), otherwise archive (data-integrity — referenced rows must keep
-  // pointing at a real user). Returns { deleted } so the UI can tell the difference.
+  /** "Delete" a user = ARCHIVE, never hard-delete (Factory OS is an accountability
+   *  system, so people are never physically removed): keep the row for audit/history,
+   *  set status='archived', revoke active role assignments, and write a user.archived
+   *  audit event. Archived users are excluded from the active list and — since auth is
+   *  fail-closed on status==='active' — cannot authenticate. */
   r.delete('/users/:id', requirePerm('users.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
@@ -652,34 +655,25 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       if (id === u.id) throw new ValidationError('Нельзя удалить самого себя');
       const target = await loadHoldingRow(db, schema.users, id, u.holdingId as string);
 
-      let deleted = false;
-      try {
-        await db.transaction(async (tx: Db) => {
-          await tx.delete(schema.userRoles).where(eq(schema.userRoles.userId, id));
-          await tx.delete(schema.users).where(eq(schema.users.id, id));
-        });
-        deleted = true;
-      } catch {
-        // Foreign-key references (requests/approvals/audit) → can't physically delete.
-        await db.transaction(async (tx: Db) => {
-          await tx.update(schema.users).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.users.id, id));
-          await tx
-            .update(schema.userRoles)
-            .set({ status: 'revoked' })
-            .where(and(eq(schema.userRoles.userId, id), eq(schema.userRoles.status, 'active')));
-        });
-      }
+      await db.transaction(async (tx: Db) => {
+        await tx.update(schema.users).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.users.id, id));
+        await tx
+          .update(schema.userRoles)
+          .set({ status: 'revoked' })
+          .where(and(eq(schema.userRoles.userId, id), eq(schema.userRoles.status, 'active')));
+      });
+
       await writeAudit(db, {
         holdingId: u.holdingId as string,
         userId: u.id,
-        action: deleted ? 'user.deleted' : 'user.archived',
+        action: 'user.archived',
         module: 'admin',
         entityType: 'user',
         entityId: id,
         oldValue: { fullName: target.fullName, status: target.status },
-        newValue: { status: deleted ? 'deleted' : 'archived' },
+        newValue: { status: 'archived' },
       });
-      res.json({ ok: true, deleted });
+      res.json({ ok: true, archived: true });
     } catch (e) {
       next(e);
     }
