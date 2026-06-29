@@ -225,6 +225,7 @@ export interface PerformInput {
   comment?: string;
   amount?: number;
   supplierName?: string;
+  supplierId?: string;
   leadTime?: string;
   quotationId?: string;
 }
@@ -281,25 +282,64 @@ export async function performAction(db: Db, input: PerformInput) {
     if (def.setInStock !== undefined) patch.inStock = def.setInStock;
 
     // Procurement: 'add' records a real КП; 'select' picks one and locks the amount.
+    const warnings: string[] = [];
     if (def.quote === 'add') {
       const amt = Math.max(0, Math.round(Number(input.amount) || 0));
-      const supplier = String(input.supplierName ?? '').trim();
-      if (!supplier) throw new ValidationError('Укажите поставщика');
       if (!amt) throw new ValidationError('Укажите сумму КП');
-      await tx.insert(schema.quotations).values({
+      let supplierName = String(input.supplierName ?? '').trim();
+      let supplierId: string | null = null;
+      // Preferred: a normalized supplier (validated within the holding). Legacy
+      // free-text supplierName is kept as a snapshot / fallback.
+      if (input.supplierId) {
+        const [sup] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, input.supplierId));
+        if (!sup || sup.holdingId !== req.holdingId) throw new ValidationError('Поставщик не найден');
+        supplierId = sup.id;
+        if (!supplierName) supplierName = sup.name;
+      }
+      if (!supplierName) throw new ValidationError('Укажите поставщика');
+      const [quote] = await tx
+        .insert(schema.quotations)
+        .values({
+          holdingId: req.holdingId,
+          requestId: req.id,
+          supplierId,
+          supplierName,
+          amount: amt,
+          leadTime: String(input.leadTime ?? '').trim() || null,
+          createdBy: input.actor.id,
+        })
+        .returning();
+      await tx.insert(schema.auditLogs).values({
         holdingId: req.holdingId,
-        requestId: req.id,
-        supplierName: supplier,
-        amount: amt,
-        leadTime: String(input.leadTime ?? '').trim() || null,
-        createdBy: input.actor.id,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'quotation.created',
+        module: 'procurement',
+        entityType: 'quotation',
+        entityId: quote.id,
+        newValue: { supplierId, supplierName, amount: amt },
+        source: 'lifecycle',
       });
       patch.estimatedAmount = amt;
     } else if (def.quote === 'select') {
       const [q] = await tx.select().from(schema.quotations).where(eq(schema.quotations.id, String(input.quotationId ?? '')));
       if (!q || q.requestId !== req.id) throw new ValidationError('Выберите КП поставщика');
+      const all = await tx.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
+      // Single-quotation warning: don't block (a sole supplier is sometimes valid).
+      if (all.length === 1) warnings.push('Только одно КП по заявке — сравнение цен невозможно');
       await tx.update(schema.quotations).set({ selected: false }).where(eq(schema.quotations.requestId, req.id));
       await tx.update(schema.quotations).set({ selected: true }).where(eq(schema.quotations.id, q.id));
+      await tx.insert(schema.auditLogs).values({
+        holdingId: req.holdingId,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'supplier.selected',
+        module: 'procurement',
+        entityType: 'quotation',
+        entityId: q.id,
+        newValue: { supplierId: q.supplierId ?? null, supplierName: q.supplierName, amount: q.amount, singleQuotation: all.length === 1 },
+        source: 'lifecycle',
+      });
       patch.estimatedAmount = q.amount;
     } else if (def.amount) {
       const n = Number(input.amount);
@@ -413,6 +453,6 @@ export async function performAction(db: Db, input: PerformInput) {
     });
 
     const [updated] = await tx.select().from(schema.requests).where(eq(schema.requests.id, req.id));
-    return updated;
+    return { ...updated, warnings };
   });
 }
