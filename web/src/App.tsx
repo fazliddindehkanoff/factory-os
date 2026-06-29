@@ -1545,8 +1545,13 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
                   <div style={{ paddingBottom: 14, paddingTop: 1 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
                     <div style={{ fontSize: 11, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg2)', marginTop: 2 }}>
-                      {step.state === 'completed' ? 'Согласовано' : step.state === 'current' ? 'Текущий этап' : 'Ожидает'}
+                      {step.state === 'completed' ? 'Готово' : step.state === 'current' ? 'Текущий этап' : 'Ожидает'}
                     </div>
+                    {step.state === 'current' && (
+                      <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 3, fontWeight: 600 }}>
+                        → {nextActionHint(step.stepKind)}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -1775,6 +1780,20 @@ function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () 
 function Centered({ children }: { children: ReactNode }) {
   return <div className="flex min-h-screen items-center justify-center p-6 text-fg2">{children}</div>;
 }
+function nextActionHint(stepKind: string): string {
+  switch (stepKind) {
+    case 'approval': return 'Ожидает согласования';
+    case 'warehouse_check': return 'Склад должен проверить наличие';
+    case 'procurement': return 'Снабжение подбирает поставщика';
+    case 'finance_payment': return 'Ожидает оплаты';
+    case 'delivery': return 'Ожидает доставки';
+    case 'receiving': return 'Склад принимает товар';
+    case 'issue': return 'Склад должен выдать материал';
+    case 'close': return 'Ожидает подтверждения получения';
+    default: return 'Ожидает действия';
+  }
+}
+
 function statusMeta(status: string): { label: string; color: string; bg: string } {
   switch (status) {
     case 'warehouse_check':
