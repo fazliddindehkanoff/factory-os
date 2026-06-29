@@ -27,12 +27,13 @@
 
 Дополнительно в сиде есть легаси-роли `finance`, `procurement` (generic, оставлены для совместимости — предпочитать head/manager). Supplier user — future, не активная workflow-роль.
 
-## Каталог permissions (31 код)
+## Каталог permissions (33 кода)
 
 - **requests**: view, create, edit, comment, upload_attachment
 - **approvals**: view, approve, reject, override
 - **warehouse**: view, check_stock, reserve, receive, issue, adjust
 - **procurement**: view, quote, select_supplier, manage
+- **suppliers**: view, manage
 - **finance**: view, mark_paid, approve_payment
 - **admin**: users.view, users.manage, roles.manage, workflows.manage, settings.view, settings.manage
 - **audit**: view, export · **reports**: view
@@ -101,12 +102,12 @@
 ### procurement_head (`procurement_head`) — scope: holding (oversight)
 - **Можно:** procurement view; quote; select_supplier; approve назначенные approvals.
 - **Нельзя:** mark paid; issue склада; approve не назначенное.
-- **PIN:** approve. **Коды:** requests.view, reports.view, procurement.view/quote/select_supplier, approvals.view/approve/reject.
+- **PIN:** approve. **Коды:** requests.view, reports.view, procurement.view/quote/select_supplier, suppliers.view/manage, approvals.view/approve/reject.
 
 ### procurement_manager (`procurement_manager`) — scope: holding (oversight)
 - **Можно:** видеть закупки; quote; select_supplier.
 - **Нельзя:** approve high-level (если не назначен); mark paid; issue склада; manage users.
-- **PIN:** —. **Коды:** requests.view, approvals.view, procurement.view/quote/select_supplier.
+- **PIN:** —. **Коды:** requests.view, approvals.view, procurement.view/quote/select_supplier, suppliers.view/manage.
 
 ### finance_head (`finance_head`) — scope: holding (oversight)
 - **Можно:** finance view; mark_paid (PIN); approve назначенные approvals.
@@ -126,12 +127,12 @@
 ### auditor (`auditor`) — scope: holding (read-only)
 - **Можно:** смотреть audit/DNA timeline; export audit; read-only операционка.
 - **Нельзя:** создавать заявки; approve; issue; mark paid; редактировать юзеров; мутировать бизнес-данные.
-- **PIN:** —. **Коды:** requests.view, reports.view, audit.view, audit.export.
+- **PIN:** —. **Коды:** requests.view, reports.view, audit.view, audit.export, suppliers.view.
 
 ### admin (`admin`) — scope: holding
 - **Можно:** manage users; assign roles; manage workflows/structure; archive users; settings; audit.
 - **Нельзя автоматически:** approve бизнес-заявки; issue склада; mark paid; обходить audit. **Admin = системный админ, не бизнес-согласующий.**
-- **PIN:** —. **Коды:** users.view/manage, roles.manage, workflows.manage, settings.manage, audit.view, requests.view, reports.view.
+- **PIN:** —. **Коды:** users.view/manage, roles.manage, workflows.manage, settings.manage, audit.view, requests.view, reports.view, suppliers.view/manage.
 
 ### observer (`observer`) — scope: own / read-only
 - **Можно:** read-only страницы по scope (свои заявки, отчёты если дано).
