@@ -230,7 +230,7 @@ export default function App() {
       <main className={fullBleed ? 'flex-1 overflow-y-auto' : 'flex-1 overflow-y-auto p-4'}>
         {!me.user.holdingId && (
           <div className={fullBleed ? 'p-4' : ''}>
-            <Note>Вы не привязаны к организации. Попросите администратора назначить вам роль.</Note>
+            <Note>Вы не привязаны к организации. Попросите администратора назначить вам права.</Note>
           </div>
         )}
         {screen.name === 'home' && (
