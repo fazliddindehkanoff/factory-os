@@ -184,7 +184,7 @@ export default function App() {
   };
   const title = TITLES[screen.name];
   const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse'].includes(screen.name);
-  const showNav = ['home', 'list', 'approvals', 'warehouse', 'menu', 'admin'].includes(screen.name);
+  const showNav = ['home', 'list', 'approvals', 'warehouse', 'procurement', 'menu', 'admin'].includes(screen.name);
   const iconBtn: CSSProperties = {
     width: 38,
     height: 38,
