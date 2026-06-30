@@ -603,7 +603,9 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         const updated = await db.transaction(async (tx: Db) => {
           const [row] = await tx
             .update(schema.users)
-            .set({ holdingId: u.holdingId, status: 'active', updatedAt: new Date() })
+            // The admin-entered name wins: a person who self-registered keeps a Telegram
+            // display name until an admin sets it here — so reactivation must update it too.
+            .set({ holdingId: u.holdingId, status: 'active', fullName: name, updatedAt: new Date() })
             .where(eq(schema.users.id, existing.id))
             .returning();
           await writeAudit(tx, {
