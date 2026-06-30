@@ -33,9 +33,12 @@ const STEP_SPECS: StepSpec[] = [
   { code: 'finance', order: 4, name: 'Финансы', kind: 'approval', threshold: 5_000_000 },
   { code: 'director', order: 5, name: 'Директор', kind: 'approval', threshold: 30_000_000 },
   { code: 'owner', order: 6, name: 'Учредитель', kind: 'approval', threshold: 100_000_000 },
-  { code: 'finance', order: 7, name: 'Оплата', kind: 'finance_payment' },
-  { code: 'procurement', order: 8, name: 'Доставка', kind: 'delivery' },
-  { code: 'warehouse', order: 9, name: 'Приёмка на склад', kind: 'receiving' },
+  // H1 fix: these apply only when the item is NOT in stock. An in-stock request goes
+  // approval → warehouse_check → issue → close, and `issue` draws from existing stock —
+  // no phantom payment/delivery/receiving (which previously netted the balance to zero).
+  { code: 'finance', order: 7, name: 'Оплата', kind: 'finance_payment', condition: { inStock: false } },
+  { code: 'procurement', order: 8, name: 'Доставка', kind: 'delivery', condition: { inStock: false } },
+  { code: 'warehouse', order: 9, name: 'Приёмка на склад', kind: 'receiving', condition: { inStock: false } },
   { code: 'warehouse', order: 10, name: 'Выдача в отдел', kind: 'issue' },
   { code: 'requester', order: 11, name: 'Подтверждение получения', kind: 'close' },
 ];
@@ -60,6 +63,8 @@ export interface TenantSetupInput {
   factoryName?: string;
   ownerTelegramId?: string;
   ownerName?: string;
+  /** Seed 8 demo users (demo_owner etc.). OFF by default — must never run in production. (M3) */
+  seedDemoUsers?: boolean;
 }
 
 export async function setupTenant(db: Db, input: TenantSetupInput) {
@@ -197,8 +202,12 @@ export async function setupTenant(db: Db, input: TenantSetupInput) {
     }
   }
 
-  // Demo users (one per system role) for the design's dev login / role switcher.
-  const DEMO_ROLES = ['requester', 'dept_head', 'warehouse', 'procurement', 'finance', 'director', 'owner', 'admin'];
+  // Demo users (one per system role) for dev login / role switcher. M3 fix: seeded ONLY
+  // when explicitly requested — the CLI passes seedDemoUsers=false in production, so the
+  // loop runs over an empty list and no demo_* accounts land in a prod tenant.
+  const DEMO_ROLES = input.seedDemoUsers
+    ? ['requester', 'dept_head', 'warehouse', 'procurement', 'finance', 'director', 'owner', 'admin']
+    : [];
   for (const code of DEMO_ROLES) {
     const tgId = 'demo_' + code;
     let [du] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgId));

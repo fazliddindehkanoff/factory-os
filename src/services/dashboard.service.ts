@@ -7,6 +7,7 @@
  */
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
+import { getUserPermissionCodes } from '../rbac/rbac.js';
 
 type Db = any;
 
@@ -30,6 +31,14 @@ const INACTIVE = ['approved', 'rejected', 'draft'];
 
 export async function getDashboard(db: Db, userId: string, holdingId: string | null): Promise<Dashboard> {
   if (!holdingId) return { myActive: 0, pendingForMe: 0, totalActive: 0, activity: [] };
+
+  // Recent-activity visibility mirrors the requests list: oversight roles see the whole
+  // holding; a pure requester/observer sees only their own requests. (H3 fix)
+  const codes = await getUserPermissionCodes(db, userId);
+  const seeAll = ['requests.edit', 'approvals.view', 'warehouse.view', 'procurement.view', 'finance.view', 'audit.view'].some((p) => codes.includes(p));
+  const activityWhere = seeAll
+    ? eq(schema.requests.holdingId, holdingId)
+    : and(eq(schema.requests.holdingId, holdingId), eq(schema.requests.requesterId, userId));
 
   // Run count queries and activity in parallel — each touches only the rows it needs.
   const [myActiveRows, totalActiveRows, activity] = await Promise.all([
@@ -61,7 +70,7 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
         updatedAt: schema.requests.updatedAt,
       })
       .from(schema.requests)
-      .where(eq(schema.requests.holdingId, holdingId))
+      .where(activityWhere)
       .orderBy(desc(schema.requests.updatedAt))
       .limit(5),
   ]);

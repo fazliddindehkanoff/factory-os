@@ -78,6 +78,12 @@ async function loadApprovalContext(tx: Db, approvalId: string, actorUserId: stri
     departmentId: req.departmentId,
   };
 
+  // Fail-closed: the approval must be the request's CURRENT step (guards against
+  // acting on a stale/forged approval id whose step has already passed).
+  if (req.currentStepId && approval.workflowStepId && req.currentStepId !== approval.workflowStepId) {
+    throw new ConflictError('Этот этап уже не активен');
+  }
+
   let step: { id: string; stepOrder: number; approverRoleId: string | null } | null = null;
   if (approval.workflowStepId) {
     [step] = await tx
@@ -85,10 +91,13 @@ async function loadApprovalContext(tx: Db, approvalId: string, actorUserId: stri
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.id, approval.workflowStepId));
   }
-  if (step?.approverRoleId) {
-    const ok = await actorHoldsRoleInScope(tx, actorUserId, step.approverRoleId, scope);
-    if (!ok) throw new ForbiddenError('Недостаточно прав для обработки этого этапа');
+  // Authority is MANDATORY. A step with no approver role is a misconfiguration, not an
+  // open door — fail closed (409) instead of letting any user approve (C1 fix).
+  if (!step || !step.approverRoleId) {
+    throw new ConflictError('Шаг согласования настроен неверно: не задана роль согласующего');
   }
+  const ok = await actorHoldsRoleInScope(tx, actorUserId, step.approverRoleId, scope);
+  if (!ok) throw new ForbiddenError('Недостаточно прав для обработки этого этапа');
 
   return { approval, req, step };
 }

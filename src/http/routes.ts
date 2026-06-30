@@ -10,13 +10,23 @@ import { createRequest, sanitizeCustomFields } from '../services/request.service
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
 import { performAction, availableActions, statusLabelFor } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
-import { hashPin } from '../auth/pin.js';
+import { hashPin, verifyPin } from '../auth/pin.js';
+import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
 import { getDashboard } from '../services/dashboard.service.js';
 import type { Notifier } from '../bot/bot.js';
 import { approvedStageMessage, approvedFinalMessage, rejectedMessage, newRequestForApproverMessage } from '../bot/messages.js';
 import { buildAdminRouter } from './admin.routes.js';
 
 type Db = any;
+
+/** Oversight permissions that let a user see requests beyond their own. */
+const OVERSIGHT_PERMS = ['requests.edit', 'approvals.view', 'warehouse.view', 'procurement.view', 'finance.view', 'audit.view'];
+/** A user may see a request if they own it or hold any oversight permission (H3/H4). */
+async function userCanSeeRequest(db: Db, userId: string, reqRow: { requesterId: string }): Promise<boolean> {
+  if (reqRow.requesterId === userId) return true;
+  const codes = await getUserPermissionCodes(db, userId);
+  return OVERSIGHT_PERMS.some((p) => codes.includes(p));
+}
 
 export interface RouterDeps {
   db: Db;
@@ -450,6 +460,11 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
+      // Visibility: own-or-oversight; 404 (not 403) so a foreign id doesn't reveal existence. (H3)
+      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
       const items = await db
         .select()
         .from(schema.requestItems)
@@ -608,6 +623,27 @@ export function buildRouter(deps: RouterDeps): Router {
     try {
       const u = (req as AuthedRequest).user!;
       const body = req.body ?? {};
+      // Approval is a sensitive sign-off: require the permission AND a valid PIN before
+      // anything is written (the signature is only inserted after this passes). (C1 fix)
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'approvals.approve', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Недостаточно прав для согласования' });
+        return;
+      }
+      if (pinLockoutRemaining(u.id) > 0) {
+        res.status(429).json({ error: 'Слишком много попыток PIN — попробуйте позже' });
+        return;
+      }
+      const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+      if (!full?.pinHash) {
+        res.status(403).json({ error: 'PIN не задан — установите его в профиле' });
+        return;
+      }
+      if (!verifyPin(String(body.pin ?? ''), full.pinHash)) {
+        recordPinFailure(u.id);
+        res.status(403).json({ error: 'Неверный PIN' });
+        return;
+      }
+      clearPinFailures(u.id);
       const result = await approveApproval(db, {
         approvalId: (req.params.id as string),
         actorUserId: u.id,
@@ -627,6 +663,10 @@ export function buildRouter(deps: RouterDeps): Router {
     try {
       const u = (req as AuthedRequest).user!;
       const body = req.body ?? {};
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'approvals.reject', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Недостаточно прав для отклонения' });
+        return;
+      }
       const result = await rejectApproval(db, {
         approvalId: (req.params.id as string),
         actorUserId: u.id,
@@ -826,6 +866,10 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(404).json({ error: 'Not found' });
         return;
       }
+      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
       const rows = await db.select({
         id: schema.attachments.id,
         filename: schema.attachments.filename,
@@ -1003,6 +1047,15 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(404).json({ error: 'Not found' });
         return;
       }
+      // Visibility + upload authority: must see the request, and own it OR hold the upload perm. (H4)
+      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      if (reqRow.requesterId !== u.id && !(await hasPermission(db, u.id, 'requests.upload_attachment', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Недостаточно прав для загрузки вложения' });
+        return;
+      }
       const body = req.body ?? {};
       if (!body.filename || !body.dataBase64) {
         res.status(400).json({ error: 'filename и dataBase64 обязательны' });
@@ -1029,6 +1082,17 @@ export function buildRouter(deps: RouterDeps): Router {
           dataBase64: String(body.dataBase64),
         })
         .returning();
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        factoryId: reqRow.factoryId,
+        userId: u.id,
+        action: 'attachment.uploaded',
+        module: 'requests',
+        entityType: 'attachment',
+        entityId: att.id,
+        newValue: { filename: att.filename, size: att.size },
+        source: 'api',
+      });
       res.status(201).json({ id: att.id, filename: att.filename, size: att.size });
     } catch (e) {
       next(e);
@@ -1040,6 +1104,11 @@ export function buildRouter(deps: RouterDeps): Router {
       const u = (req as AuthedRequest).user!;
       const [att] = await db.select().from(schema.attachments).where(eq(schema.attachments.id, (req.params.id as string)));
       if (!att || att.holdingId !== u.holdingId) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      const [attReq] = await db.select().from(schema.requests).where(eq(schema.requests.id, att.requestId));
+      if (!attReq || !(await userCanSeeRequest(db, u.id, attReq))) {
         res.status(404).json({ error: 'Not found' });
         return;
       }
@@ -1069,6 +1138,17 @@ export function buildRouter(deps: RouterDeps): Router {
         return;
       }
       await db.delete(schema.attachments).where(eq(schema.attachments.id, att.id));
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        factoryId: null,
+        userId: u.id,
+        action: 'attachment.deleted',
+        module: 'requests',
+        entityType: 'attachment',
+        entityId: att.id,
+        oldValue: { filename: att.filename },
+        source: 'api',
+      });
       res.json({ ok: true });
     } catch (e) {
       next(e);
