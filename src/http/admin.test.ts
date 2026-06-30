@@ -236,12 +236,14 @@ describe('admin: people (Block B)', () => {
       .expect(201);
     expect(inv.body.holdingId).toBe(holding.id);
     expect(inv.body.status).toBe('active');
-    // existing demo user already in this holding → 200
-    await request(app)
+    expect(inv.body.fullName).toBe('New Guy');
+    // existing demo user already in this holding → 200, and the admin-entered name wins
+    const re = await request(app)
       .post('/api/admin/users/invite')
       .set('Authorization', `Bearer ${token}`)
       .send({ telegram_id: 'demo_requester', name: 'X' })
       .expect(200);
+    expect(re.body.fullName).toBe('X');
   });
 
   it('invite of a user owned by another holding → 409', async () => {
