@@ -1377,7 +1377,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
   // Block E2 — Materials catalog (6.1.11)
   // ─────────────────────────────────────────────────────────────────────────
 
-  r.get('/materials', requirePerm('warehouse.view'), async (req, res, next) => {
+  r.get('/materials', requireAnyPerm(['warehouse.view', 'settings.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
       const rows = await db
@@ -1585,6 +1585,10 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         patch.label = l;
       }
       if (body.required !== undefined) patch.required = !!body.required;
+      // A required system field cannot be disabled — it would break request creation.
+      if (body.enabled === false && field.system && field.required) {
+        throw new ValidationError('Обязательное системное поле нельзя отключить');
+      }
       if (body.enabled !== undefined) patch.enabled = !!body.enabled;
       if (body.placeholder !== undefined) patch.placeholder = str(body.placeholder).slice(0, 500) || null;
       if (body.step !== undefined && Number(body.step) >= 1) patch.stepGroup = Math.floor(Number(body.step));
@@ -1620,6 +1624,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       const id = req.params.id as string;
       const [field] = await db.select().from(schema.formFields).where(eq(schema.formFields.id, id));
       if (!field || field.holdingId !== u.holdingId) throw new NotFoundError('Поле не найдено');
+      // System fields are column-mapped and load-bearing — they can only be disabled, never deleted.
+      if (field.system) throw new ValidationError('Системное поле нельзя удалить — его можно только отключить');
       await db.transaction(async (tx: Db) => {
         await tx.delete(schema.formFields).where(eq(schema.formFields.id, id));
         await writeAudit(tx, {

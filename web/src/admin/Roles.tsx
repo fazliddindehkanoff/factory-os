@@ -22,6 +22,7 @@ const MODULE_LABEL: Record<string, string> = {
   approvals: 'Согласования',
   warehouse: 'Склад',
   procurement: 'Закупки',
+  suppliers: 'Поставщики',
   finance: 'Финансы',
   admin: 'Администрирование',
   audit: 'Аудит',
