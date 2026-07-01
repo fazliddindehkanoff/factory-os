@@ -14,7 +14,6 @@ const ADMIN_PERMS = ['roles.manage', 'users.manage', 'workflows.manage', 'settin
 const INBOX_ACTOR_PERMS = [
   'approvals.approve',
   'warehouse.check_stock',
-  'warehouse.reserve',
   'warehouse.receive',
   'warehouse.issue',
   'procurement.quote',
