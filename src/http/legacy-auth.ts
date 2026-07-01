@@ -6,7 +6,7 @@
  * Resolves the DB user onto req.dbUser. Fails closed.
  */
 import type { Request, Response, NextFunction } from 'express';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { verifySession } from '../auth/session.js';
 import { verifyInitData } from '../auth/telegram.js';
@@ -97,7 +97,8 @@ export async function primaryRole(db: Db, userId: string): Promise<string> {
     .select({ code: schema.roles.code })
     .from(schema.userRoles)
     .innerJoin(schema.roles, eq(schema.roles.id, schema.userRoles.roleId))
-    .where(eq(schema.userRoles.userId, userId));
+    // Only ACTIVE assignments authorize — a revoked/expired role must not grant access. (H2)
+    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
   const codes = rows.map((r: { code: string }) => r.code);
   for (const c of ROLE_PRIORITY) if (codes.includes(c)) return c;
   return codes[0] ?? 'requester';

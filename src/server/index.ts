@@ -12,8 +12,9 @@ const env = loadEnv();
 const { db } = createDb(env.DATABASE_URL);
 // Dev login is OFF unless explicitly enabled in a development environment (fail-closed).
 const devAuth = devAuthEnabled(env);
-// serveDesign=true → old compat layer (public/); false → new React Mini App (web/dist)
-const serveDesign = process.env.SERVE_DESIGN !== '0';
+// serveDesign=true → old compat layer (public/); false → canonical React Mini App (web/dist).
+// Default to the canonical path; the legacy compat layer is opt-in via SERVE_DESIGN=1. (H2)
+const serveDesign = process.env.SERVE_DESIGN === '1';
 
 // Bot is optional: only runs if a token is configured.
 let notify: Notifier | undefined;
