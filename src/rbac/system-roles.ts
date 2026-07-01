@@ -76,10 +76,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'approvals.reject',
       'warehouse.view',
       'warehouse.check_stock',
-      'warehouse.reserve',
       'warehouse.receive',
       'warehouse.issue',
-      'warehouse.adjust',
     ],
   },
   {
@@ -96,7 +94,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'requester',
     name: 'Заявитель',
-    permissions: ['requests.view', 'requests.create', 'requests.comment', 'requests.upload_attachment'],
+    permissions: ['requests.view', 'requests.create', 'requests.upload_attachment'],
   },
   {
     code: 'warehouse_worker',
