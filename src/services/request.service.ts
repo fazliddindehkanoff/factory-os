@@ -7,8 +7,8 @@
 import { and, eq, like } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { firstStepForRequest } from './lifecycle.service.js';
-import { TERMINAL_APPROVED, statusForStep } from '../workflow/step-kinds.js';
-import { ValidationError } from './errors.js';
+import { statusForStep } from '../workflow/step-kinds.js';
+import { ValidationError, ConflictError } from './errors.js';
 
 type Db = any;
 
@@ -132,21 +132,25 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
   }
   const estimatedAmount = Math.round(items.reduce((s, it) => s + it.quantity * it.unitPrice, 0));
 
-  return db.transaction(async (tx: Db) => {
+  // Duplicate request-number races (MAX+1 has no lock) surface as a 23505 on the unique
+  // index — regenerate the number and retry instead of returning a raw 500. (M13)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await db.transaction(async (tx: Db) => {
     const year = new Date().getFullYear();
     const requestNumber = await generateRequestNumber(tx, input.holdingId, year);
     const workflow = await selectWorkflow(tx, input.holdingId, input.requestType);
 
     // Place the request on the FIRST applicable step of its workflow (data-driven).
-    // With no workflow / no applicable step there is nothing to process, so it is
-    // born already approved.
+    // With no workflow / no applicable step there is nothing to process — hold it as a
+    // DRAFT (fail-safe) rather than silently auto-approving with zero controls. (M12)
     const first = workflow
       ? await firstStepForRequest(tx, workflow.id, {
           amount: estimatedAmount,
           requestType: input.requestType ?? 'material_request',
         })
       : null;
-    const status = first ? statusForStep(first) : TERMINAL_APPROVED;
+    const status = first ? statusForStep(first) : 'draft';
 
     const [req] = await tx
       .insert(schema.requests)
@@ -210,5 +214,11 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
     });
 
     return req;
-  });
+      });
+    } catch (e: unknown) {
+      if (attempt < 4 && (e as { code?: string })?.code === '23505') continue;
+      throw e;
+    }
+  }
+  throw new ConflictError('Не удалось создать заявку — повторите попытку');
 }
