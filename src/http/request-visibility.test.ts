@@ -1,0 +1,150 @@
+/**
+ * H3 — GET /requests/:id and the dashboard must respect the same own-or-oversight
+ * visibility as the list (no intra-tenant IDOR; foreign id → 404).
+ * H4 — attachment upload/list/download require request visibility, and upload
+ * requires requests.upload_attachment (or ownership).
+ */
+import { describe, it, expect } from 'vitest';
+import request from 'supertest';
+import { PGlite } from '@electric-sql/pglite';
+import { drizzle } from 'drizzle-orm/pglite';
+import { migrate } from 'drizzle-orm/pglite/migrator';
+import { and, eq, isNull } from 'drizzle-orm';
+import * as schema from '../db/schema.js';
+import { seedSystemRolesAndPermissions } from '../db/seed.js';
+import { createRequest } from '../services/request.service.js';
+import { createApp } from '../server/app.js';
+
+const BOT = 'test:token';
+const SECRET = 'test-secret-long-enough';
+const B64 = Buffer.from('hello-file').toString('base64');
+
+async function make() {
+  const client = new PGlite();
+  const db = drizzle(client, { schema });
+  await migrate(db, { migrationsFolder: './drizzle' });
+  await seedSystemRolesAndPermissions(db);
+  const [holding] = await db.insert(schema.holdings).values({ name: 'H' }).returning();
+  const [factory] = await db.insert(schema.factories).values({ holdingId: holding.id, name: 'F' }).returning();
+  const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W', isActive: true }).returning();
+  const roleId = async (code: string): Promise<string> => {
+    const [r] = await db.select().from(schema.roles).where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, code)));
+    return r.id;
+  };
+  await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 1, stepName: 'A', stepKind: 'approval', approverRoleId: await roleId('director') });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const user = async (codes: string[], tg: string): Promise<string> => {
+    const [u] = await db.insert(schema.users).values({ holdingId: holding.id, fullName: tg, telegramId: tg, status: 'active' }).returning();
+    for (const c of codes) await db.insert(schema.userRoles).values({ userId: u.id, roleId: await roleId(c), holdingId: holding.id });
+    return u.id;
+  };
+  const mkReq = (requesterId: string) =>
+    createRequest(db, { holdingId: holding.id, requesterId, factoryId: factory.id, items: [{ name: 'X', quantity: 1, unitPrice: 100 }] });
+  const login = async (tg: string): Promise<string> => (await request(app).post('/api/auth/dev').send({ telegramId: tg }).expect(200)).body.token as string;
+  return { app, db, holding, factory, user, mkReq, login };
+}
+
+describe('H3 — request detail visibility', () => {
+  it('a requester cannot read another user\'s request (404, not 403/200)', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['requester'], 'bob');
+    const reqA = await mkReq(alice);
+    const bobTk = await login('bob');
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${bobTk}`).expect(404);
+  });
+
+  it('a requester can read their own request', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    const reqA = await mkReq(alice);
+    const tk = await login('alice');
+    const res = await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
+    expect(res.body.id).toBe(reqA.id);
+  });
+
+  it('an observer cannot read another user\'s request (no oversight perm)', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['observer'], 'obs');
+    const reqA = await mkReq(alice);
+    const tk = await login('obs');
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(404);
+  });
+
+  it('an oversight role (director) can read any request in the holding', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['director'], 'dir');
+    const reqA = await mkReq(alice);
+    const tk = await login('dir');
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
+  });
+
+  it('dashboard activity shows only the user\'s own requests for a pure requester', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    const bob = await user(['requester'], 'bob');
+    const reqA = await mkReq(alice);
+    await mkReq(bob);
+    const tk = await login('bob');
+    const res = await request(app).get('/api/dashboard').set('Authorization', `Bearer ${tk}`).expect(200);
+    expect(res.body.activity.some((a: { id: string }) => a.id === reqA.id)).toBe(false);
+  });
+});
+
+describe('H4 — attachment access', () => {
+  it('owner can upload to their own request', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    const reqA = await mkReq(alice);
+    const tk = await login('alice');
+    await request(app).post(`/api/requests/${reqA.id}/attachments`).set('Authorization', `Bearer ${tk}`).send({ filename: 'f.txt', dataBase64: B64 }).expect(201);
+  });
+
+  it('a requester cannot upload to another user\'s request (404 — cannot see it)', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['requester'], 'bob');
+    const reqA = await mkReq(alice);
+    const tk = await login('bob');
+    await request(app).post(`/api/requests/${reqA.id}/attachments`).set('Authorization', `Bearer ${tk}`).send({ filename: 'f.txt', dataBase64: B64 }).expect(404);
+  });
+
+  it('an oversight user who can SEE but lacks upload permission → 403 on upload', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['warehouse'], 'wh'); // warehouse.view = oversight, but no requests.upload_attachment
+    const reqA = await mkReq(alice);
+    const tk = await login('wh');
+    await request(app).post(`/api/requests/${reqA.id}/attachments`).set('Authorization', `Bearer ${tk}`).send({ filename: 'f.txt', dataBase64: B64 }).expect(403);
+  });
+
+  it('a user who cannot see the request cannot list or download its attachments (404)', async () => {
+    const { app, db, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['requester'], 'bob');
+    const reqA = await mkReq(alice);
+    const aliceTk = await login('alice');
+    const up = await request(app).post(`/api/requests/${reqA.id}/attachments`).set('Authorization', `Bearer ${aliceTk}`).send({ filename: 'f.txt', dataBase64: B64 }).expect(201);
+    const bobTk = await login('bob');
+    await request(app).get(`/api/requests/${reqA.id}/attachments`).set('Authorization', `Bearer ${bobTk}`).expect(404);
+    await request(app).get(`/api/attachments/${up.body.id}`).set('Authorization', `Bearer ${bobTk}`).expect(404);
+    // upload was audited
+    const audit = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.action, 'attachment.uploaded'));
+    expect(audit.length).toBe(1);
+  });
+
+  it('delete stays protected: a non-uploader without requests.edit cannot delete', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['director'], 'dir'); // oversight (can see) but not uploader, no requests.edit
+    const reqA = await mkReq(alice);
+    const aliceTk = await login('alice');
+    const up = await request(app).post(`/api/requests/${reqA.id}/attachments`).set('Authorization', `Bearer ${aliceTk}`).send({ filename: 'f.txt', dataBase64: B64 }).expect(201);
+    const dirTk = await login('dir');
+    await request(app).delete(`/api/attachments/${up.body.id}`).set('Authorization', `Bearer ${dirTk}`).expect(403);
+    // uploader can delete
+    await request(app).delete(`/api/attachments/${up.body.id}`).set('Authorization', `Bearer ${aliceTk}`).expect(200);
+  });
+});

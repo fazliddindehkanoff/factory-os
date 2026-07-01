@@ -15,8 +15,8 @@ async function make() {
   const client = new PGlite();
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
-  const { holding } = await setupTenant(db, { holdingName: 'Zelal', ownerTelegramId: '999', ownerName: 'Owner' });
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
+  const { holding } = await setupTenant(db, { holdingName: 'Zelal', ownerTelegramId: '999', ownerName: 'Owner', seedDemoUsers: true });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
   return { app, db, holding };
 }
 
@@ -38,7 +38,7 @@ describe('constructor / admin API', () => {
     const token = await login(app, '999');
 
     const perms = await request(app).get('/api/admin/permissions').set('Authorization', `Bearer ${token}`).expect(200);
-    expect(perms.body.length).toBe(25);
+    expect(perms.body.length).toBe(26); // 2026-07-02: 7 dead permissions removed (M5)
 
     const roles = await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(200);
     expect(roles.body.some((r: any) => r.code === 'owner')).toBe(true);
@@ -236,12 +236,14 @@ describe('admin: people (Block B)', () => {
       .expect(201);
     expect(inv.body.holdingId).toBe(holding.id);
     expect(inv.body.status).toBe('active');
-    // existing demo user already in this holding → 200
-    await request(app)
+    expect(inv.body.fullName).toBe('New Guy');
+    // existing demo user already in this holding → 200, and the admin-entered name wins
+    const re = await request(app)
       .post('/api/admin/users/invite')
       .set('Authorization', `Bearer ${token}`)
       .send({ telegram_id: 'demo_requester', name: 'X' })
       .expect(200);
+    expect(re.body.fullName).toBe('X');
   });
 
   it('invite of a user owned by another holding → 409', async () => {
@@ -255,28 +257,74 @@ describe('admin: people (Block B)', () => {
       .expect(409);
   });
 
-  it('deactivating a user disables them and revokes roles; cannot deactivate self', async () => {
+  it('archiving a user: never hard-deletes, revokes roles, hides from list, blocks login; cannot delete self', async () => {
     const { app, db, holding } = await make();
     const token = await login(app, '999');
     const [target] = await db
       .insert(schema.users)
-      .values({ holdingId: holding.id, fullName: 'T', telegramId: 'tt1' })
+      .values({ holdingId: holding.id, fullName: 'T', telegramId: 'tt1', status: 'active' })
       .returning();
     await db
       .insert(schema.userRoles)
       .values({ userId: target.id, roleId: await roleId(db, 'requester'), holdingId: holding.id });
 
-    await request(app).delete(`/api/admin/users/${target.id}`).set('Authorization', `Bearer ${token}`).expect(200);
-    const [u2] = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
-    expect(u2.status).toBe('disabled');
+    // While active, the user can use the API.
+    const targetTk = await login(app, 'tt1');
+    await request(app).get('/api/me').set('Authorization', `Bearer ${targetTk}`).expect(200);
+
+    // "Delete" archives — never hard-deletes.
+    const del = await request(app)
+      .delete(`/api/admin/users/${target.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(del.body.archived).toBe(true);
+
+    // Row preserved, status archived, active role assignments revoked.
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
+    expect(row.status).toBe('archived');
     const stillActive = await db
       .select()
       .from(schema.userRoles)
       .where(and(eq(schema.userRoles.userId, target.id), eq(schema.userRoles.status, 'active')));
     expect(stillActive.length).toBe(0);
 
+    // Audit event user.archived recorded.
+    const audits = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(and(eq(schema.auditLogs.action, 'user.archived'), eq(schema.auditLogs.entityId, target.id)));
+    expect(audits.length).toBe(1);
+
+    // Excluded from the active users list.
+    const list = await request(app).get('/api/admin/users').set('Authorization', `Bearer ${token}`).expect(200);
+    expect(list.body.some((x: { id: string }) => x.id === target.id)).toBe(false);
+
+    // Archived user can no longer authenticate.
+    await request(app).get('/api/me').set('Authorization', `Bearer ${targetTk}`).expect(401);
+
+    // Cannot delete self.
     const me = await request(app).get('/api/me').set('Authorization', `Bearer ${token}`).expect(200);
     await request(app).delete(`/api/admin/users/${me.body.user.id}`).set('Authorization', `Bearer ${token}`).expect(400);
+  });
+
+  it('archives even a referenced user, keeping the reference intact (no hard-delete)', async () => {
+    const { app, db, holding } = await make();
+    const token = await login(app, '999');
+    const [target] = await db
+      .insert(schema.users)
+      .values({ holdingId: holding.id, fullName: 'Ref', telegramId: 'tt2', status: 'active' })
+      .returning();
+    // A history row that references the user — a hard delete would violate this FK.
+    await db
+      .insert(schema.auditLogs)
+      .values({ holdingId: holding.id, userId: target.id, action: 'request.created', module: 'requests' });
+
+    await request(app).delete(`/api/admin/users/${target.id}`).set('Authorization', `Bearer ${token}`).expect(200);
+
+    const [row] = await db.select().from(schema.users).where(eq(schema.users.id, target.id));
+    expect(row.status).toBe('archived');
+    const refs = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.userId, target.id));
+    expect(refs.length).toBeGreaterThan(0); // history preserved
   });
 
   it('lists and revokes a user role assignment', async () => {
@@ -373,6 +421,12 @@ describe('admin: workflow (Block D)', () => {
       .send({ name: 'Новая цепочка' })
       .expect(201);
     expect(wf.body.isActive).toBe(false);
+    // Must add at least one step before activating (CRIT-08 guard)
+    await request(app)
+      .post(`/api/admin/workflows/${wf.body.id}/steps`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Согласование', step_kind: 'approval', order_index: 1 })
+      .expect(201);
     await request(app)
       .put(`/api/admin/workflows/${wf.body.id}`)
       .set('Authorization', `Bearer ${token}`)

@@ -16,10 +16,10 @@ const TABS: { key: Tab; label: string; perm: string | null }[] = [
   { key: 'dashboard', label: 'Обзор', perm: null },
   { key: 'structure', label: 'Структура', perm: 'settings.manage' },
   { key: 'people', label: 'Люди', perm: 'users.manage' },
-  { key: 'roles', label: 'Роли', perm: 'roles.manage' },
+  { key: 'roles', label: 'Права', perm: 'roles.manage' },
   { key: 'workflow', label: 'Workflow', perm: 'workflows.manage' },
   { key: 'form', label: 'Форма', perm: 'settings.manage' },
-  { key: 'materials', label: 'Материалы', perm: 'warehouse.view' },
+  { key: 'materials', label: 'Материалы', perm: 'settings.manage' },
   { key: 'audit', label: 'Аудит', perm: 'audit.view' },
   { key: 'settings', label: 'Настройки', perm: 'settings.manage' },
 ];

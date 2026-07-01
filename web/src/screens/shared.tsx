@@ -70,7 +70,7 @@ export const money = (n: number) => new Intl.NumberFormat('ru-RU').format(n || 0
 
 export const ADMIN_PERMS = ['roles.manage', 'users.manage', 'workflows.manage', 'settings.manage'];
 export const INBOX_ACTOR_PERMS = [
-  'approvals.approve', 'warehouse.check_stock', 'warehouse.reserve',
+  'approvals.approve', 'warehouse.check_stock',
   'warehouse.receive', 'warehouse.issue', 'procurement.quote',
   'procurement.select_supplier', 'finance.mark_paid',
 ];

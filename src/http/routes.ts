@@ -5,18 +5,31 @@ import * as schema from '../db/schema.js';
 import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
 import { requireAuth, type AuthedRequest } from './auth.middleware.js';
-import { hasPermission, getUserPermissionCodes } from '../rbac/rbac.js';
+import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
 import { performAction, availableActions, statusLabelFor } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
-import { hashPin } from '../auth/pin.js';
+import { hashPin, verifyPin } from '../auth/pin.js';
+import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
 import { getDashboard } from '../services/dashboard.service.js';
 import type { Notifier } from '../bot/bot.js';
 import { approvedStageMessage, approvedFinalMessage, rejectedMessage, newRequestForApproverMessage } from '../bot/messages.js';
 import { buildAdminRouter } from './admin.routes.js';
 
 type Db = any;
+
+/** Oversight permissions that let a user see requests beyond their own. */
+// NB: reports.view is intentionally NOT here — an existing contract (request-
+// visibility test) keeps a pure observer scoped to their own requests. Whether the
+// observer role should see the whole holding read-only is a product decision (R8).
+const OVERSIGHT_PERMS = ['requests.edit', 'approvals.view', 'warehouse.view', 'procurement.view', 'finance.view', 'audit.view'];
+/** A user may see a request if they own it or hold any oversight permission (H3/H4). */
+async function userCanSeeRequest(db: Db, userId: string, reqRow: { requesterId: string }): Promise<boolean> {
+  if (reqRow.requesterId === userId) return true;
+  const codes = await getUserPermissionCodes(db, userId);
+  return OVERSIGHT_PERMS.some((p) => codes.includes(p));
+}
 
 export interface RouterDeps {
   db: Db;
@@ -28,6 +41,8 @@ export interface RouterDeps {
   notify?: Notifier;
   /** Serve the bundled design (public/) via the compat API instead of the React app. */
   serveDesign?: boolean;
+  /** Rate limiting on /api (default on). Tests pass false to skip the auth/api limiters. */
+  rateLimit?: boolean;
 }
 
 async function notifyRequester(db: Db, notify: Notifier | undefined, requestId: string, text: (reqNumber: string) => string): Promise<void> {
@@ -108,7 +123,8 @@ export function buildRouter(deps: RouterDeps): Router {
   r.post('/auth/dev', async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!devAuth) {
-        res.status(403).json({ error: 'Disabled' });
+        // Stealth 404 (not 403) so the dev-only endpoint is invisible in prod.
+        res.status(404).json({ error: 'Not found' });
         return;
       }
       const telegramId = String((req.body ?? {}).telegramId ?? '').trim();
@@ -204,12 +220,16 @@ export function buildRouter(deps: RouterDeps): Router {
         )
           .filter((d: { status: string | null }) => d.status !== 'inactive')
           .map((d: { id: string; name: string }) => ({ id: d.id, name: d.name }));
-        // Users for department-head selection
-        const userRows = await db
-          .select({ id: schema.users.id, fullName: schema.users.fullName })
-          .from(schema.users)
-          .where(and(eq(schema.users.holdingId, u.holdingId), eq(schema.users.status, 'active')));
-        users = userRows.map((u0: { id: string; fullName: string }) => ({ id: u0.id, fullName: u0.fullName, departmentId: null }));
+        // Users for department-head selection — needed only by the create-request
+        // form, so don't hand the full employee directory to roles that can't
+        // create requests (L8).
+        if (await hasPermissionInHolding(db, u.id, 'requests.create', u.holdingId)) {
+          const userRows = await db
+            .select({ id: schema.users.id, fullName: schema.users.fullName })
+            .from(schema.users)
+            .where(and(eq(schema.users.holdingId, u.holdingId), eq(schema.users.status, 'active')));
+          users = userRows.map((u0: { id: string; fullName: string }) => ({ id: u0.id, fullName: u0.fullName, departmentId: null }));
+        }
       }
       res.json({
         factoryName: settingsMap.factory_name || 'Factory OS',
@@ -303,16 +323,23 @@ export function buildRouter(deps: RouterDeps): Router {
         res.json([]);
         return;
       }
-      if (!(await hasPermission(db, u.id, 'requests.view', { holdingId: u.holdingId }))) {
+      if (!(await hasPermissionInHolding(db, u.id, 'requests.view', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
       const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
+      // Visibility: a pure requester/observer (no oversight permission) sees only
+      // their OWN requests; oversight roles see the whole holding.
+      const codes = await getUserPermissionCodes(db, u.id);
+      const seeAll = OVERSIGHT_PERMS.some((p) => codes.includes(p));
+      const visScope = seeAll
+        ? eq(schema.requests.holdingId, u.holdingId)
+        : and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.requesterId, u.id));
       const rows = await db
         .select()
         .from(schema.requests)
-        .where(eq(schema.requests.holdingId, u.holdingId))
+        .where(visScope)
         .orderBy(desc(schema.requests.createdAt))
         .limit(limit + 1) // fetch one extra to detect "has more"
         .offset(offset);
@@ -331,12 +358,26 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(400).json({ error: 'Пользователь не привязан к организации' });
         return;
       }
-      if (!(await hasPermission(db, u.id, 'requests.create', { holdingId: u.holdingId }))) {
+      if (!(await hasPermissionInHolding(db, u.id, 'requests.create', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
       const body = req.body ?? {};
+      if (body.factoryId) {
+        const [f] = await db.select().from(schema.factories).where(and(eq(schema.factories.id, body.factoryId), eq(schema.factories.holdingId, u.holdingId)));
+        if (!f) { res.status(400).json({ error: 'Factory not found in your holding' }); return; }
+      }
+      if (body.departmentId) {
+        const [d] = await db.select().from(schema.departments).where(and(eq(schema.departments.id, body.departmentId), eq(schema.departments.holdingId, u.holdingId)));
+        if (!d) { res.status(400).json({ error: 'Department not found in your holding' }); return; }
+      }
       const PRIORITIES = ['low', 'normal', 'high', 'urgent', 'critical'];
+      let neededDate: Date | null = null;
+      if (body.neededDate) {
+        const d = new Date(body.neededDate);
+        if (isNaN(d.getTime())) { res.status(400).json({ error: 'Invalid neededDate' }); return; }
+        neededDate = d;
+      }
       const customFields = await sanitizeCustomFields(db, u.holdingId, 'request_create', body.customFields);
       const result = await createRequest(db, {
         holdingId: u.holdingId,
@@ -348,7 +389,7 @@ export function buildRouter(deps: RouterDeps): Router {
         warehouseName: body.warehouseName ?? null,
         title: body.title,
         description: body.description,
-        neededDate: body.neededDate ? new Date(body.neededDate) : null,
+        neededDate,
         customFields,
         items: Array.isArray(body.items) ? body.items : [],
       });
@@ -438,6 +479,11 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
+      // Visibility: own-or-oversight; 404 (not 403) so a foreign id doesn't reveal existence. (H3)
+      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
       const items = await db
         .select()
         .from(schema.requestItems)
@@ -473,11 +519,18 @@ export function buildRouter(deps: RouterDeps): Router {
         changedByName: h.changedBy ? actorMap.get(h.changedBy)?.name ?? null : null,
         changedByRole: h.changedBy ? actorMap.get(h.changedBy)?.role ?? null : null,
       }));
-      const quotations = await db
-        .select()
-        .from(schema.quotations)
-        .where(eq(schema.quotations.requestId, reqRow.id))
-        .orderBy(schema.quotations.createdAt);
+      // КП are commercially sensitive: expose them only to roles that work with
+      // money/procurement — mirroring the UI's canSeeProcurement gate on the
+      // server side instead of trusting the client to hide them. (M3b)
+      const viewerCodes = await getUserPermissionCodes(db, u.id);
+      const canSeeQuotes = ['procurement.view', 'finance.view', 'audit.view'].some((p) => viewerCodes.includes(p));
+      const quotations = canSeeQuotes
+        ? await db
+            .select()
+            .from(schema.quotations)
+            .where(eq(schema.quotations.requestId, reqRow.id))
+            .orderBy(schema.quotations.createdAt)
+        : [];
       const actions = await availableActions(db, reqRow, u.id);
       // Build workflow timeline: all steps with completed/current/future state
       let workflowTimeline: { stepName: string; stepKind: string; state: 'completed' | 'current' | 'future' }[] = [];
@@ -527,6 +580,9 @@ export function buildRouter(deps: RouterDeps): Router {
     try {
       const u = (req as AuthedRequest).user!;
       const body = req.body ?? {};
+      // Capture current status before the action so we can detect real transitions
+      const [beforeReq] = await db.select({ status: schema.requests.status }).from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      const fromStatus = beforeReq?.status;
       const result = await performAction(db, {
         requestId: req.params.id as string,
         action: String(body.action ?? ''),
@@ -535,6 +591,7 @@ export function buildRouter(deps: RouterDeps): Router {
         comment: body.comment,
         amount: body.amount,
         supplierName: body.supplierName,
+        supplierId: body.supplierId,
         leadTime: body.leadTime,
         quotationId: body.quotationId,
       });
@@ -546,7 +603,8 @@ export function buildRouter(deps: RouterDeps): Router {
         notifyRequester(db, notify, result.id, (rn) => approvedFinalMessage(rn));
       } else if (result.status === 'rejected') {
         notifyRequester(db, notify, result.id, (rn) => rejectedMessage(rn, String(body.comment ?? '').trim()));
-      } else {
+      } else if (result.currentStepId && result.status !== fromStatus) {
+        // Only notify about stage progression when status actually changed
         notifyRequester(db, notify, result.id, (rn) => approvedStageMessage(rn));
       }
       res.json({ ...result, statusLabel: await statusLabelFor(db, result) });
@@ -595,11 +653,31 @@ export function buildRouter(deps: RouterDeps): Router {
     try {
       const u = (req as AuthedRequest).user!;
       const body = req.body ?? {};
+      // Approval is a sensitive sign-off: require the permission AND a valid PIN before
+      // anything is written (the signature is only inserted after this passes). (C1 fix)
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'approvals.approve', u.holdingId))) {
+        res.status(403).json({ error: 'Недостаточно прав для согласования' });
+        return;
+      }
+      if (pinLockoutRemaining(u.id) > 0) {
+        res.status(429).json({ error: 'Слишком много попыток PIN — попробуйте позже' });
+        return;
+      }
+      const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+      if (!full?.pinHash) {
+        res.status(403).json({ error: 'PIN не задан — установите его в профиле' });
+        return;
+      }
+      if (!verifyPin(String(body.pin ?? ''), full.pinHash)) {
+        recordPinFailure(u.id);
+        res.status(403).json({ error: 'Неверный PIN' });
+        return;
+      }
+      clearPinFailures(u.id);
       const result = await approveApproval(db, {
         approvalId: (req.params.id as string),
         actorUserId: u.id,
         comment: body.comment,
-        inStock: body.inStock,
       });
       await notifyRequester(db, notify, result.requestId, (rn) =>
         result.status === 'approved' ? approvedFinalMessage(rn) : approvedStageMessage(rn),
@@ -614,6 +692,10 @@ export function buildRouter(deps: RouterDeps): Router {
     try {
       const u = (req as AuthedRequest).user!;
       const body = req.body ?? {};
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'approvals.reject', u.holdingId))) {
+        res.status(403).json({ error: 'Недостаточно прав для отклонения' });
+        return;
+      }
       const result = await rejectApproval(db, {
         approvalId: (req.params.id as string),
         actorUserId: u.id,
@@ -646,7 +728,7 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       // Only the author OR someone with requests.edit can update
       const isAuthor = reqRow.requesterId === u.id;
-      if (!isAuthor && !(await hasPermission(db, u.id, 'requests.edit', { holdingId: u.holdingId }))) {
+      if (!isAuthor && !(await hasPermissionInHolding(db, u.id, 'requests.edit', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
@@ -696,7 +778,7 @@ export function buildRouter(deps: RouterDeps): Router {
         res.json([]);
         return;
       }
-      if (!(await hasPermission(db, u.id, 'warehouse.view', { holdingId: u.holdingId }))) {
+      if (!(await hasPermissionInHolding(db, u.id, 'warehouse.view', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
@@ -725,16 +807,23 @@ export function buildRouter(deps: RouterDeps): Router {
   r.post('/warehouse/receive', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
-      if (!u.holdingId || !(await hasPermission(db, u.id, 'warehouse.receive', { holdingId: u.holdingId }))) {
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'warehouse.receive', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
       const body = req.body ?? {};
+      const quantity = Number(body.quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        res.status(400).json({ error: 'Quantity must be a positive number' }); return;
+      }
+      const materialId = String(body.materialId ?? '');
+      const [mat] = await db.select().from(schema.materials).where(and(eq(schema.materials.id, materialId), eq(schema.materials.holdingId, u.holdingId!)));
+      if (!mat) { res.status(400).json({ error: 'Material not found in your holding' }); return; }
       const result = await receiveStock(db, {
         holdingId: u.holdingId,
-        materialId: String(body.materialId ?? ''),
+        materialId,
         warehouseId: body.warehouseId ?? null,
-        quantity: Number(body.quantity) || 0,
+        quantity,
         performedBy: u.id,
         requestId: body.requestId ?? null,
         reason: body.reason ?? null,
@@ -748,16 +837,23 @@ export function buildRouter(deps: RouterDeps): Router {
   r.post('/warehouse/issue', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
-      if (!u.holdingId || !(await hasPermission(db, u.id, 'warehouse.issue', { holdingId: u.holdingId }))) {
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'warehouse.issue', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
       const body = req.body ?? {};
+      const quantity = Number(body.quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        res.status(400).json({ error: 'Quantity must be a positive number' }); return;
+      }
+      const materialId = String(body.materialId ?? '');
+      const [mat] = await db.select().from(schema.materials).where(and(eq(schema.materials.id, materialId), eq(schema.materials.holdingId, u.holdingId!)));
+      if (!mat) { res.status(400).json({ error: 'Material not found in your holding' }); return; }
       const result = await issueStock(db, {
         holdingId: u.holdingId,
-        materialId: String(body.materialId ?? ''),
+        materialId,
         warehouseId: body.warehouseId ?? null,
-        quantity: Number(body.quantity) || 0,
+        quantity,
         performedBy: u.id,
         requestId: body.requestId ?? null,
         reason: body.reason ?? null,
@@ -771,7 +867,7 @@ export function buildRouter(deps: RouterDeps): Router {
   r.get('/warehouse/movements', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
-      if (!u.holdingId || !(await hasPermission(db, u.id, 'warehouse.view', { holdingId: u.holdingId }))) {
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'warehouse.view', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
@@ -813,6 +909,10 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(404).json({ error: 'Not found' });
         return;
       }
+      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
       const rows = await db.select({
         id: schema.attachments.id,
         filename: schema.attachments.filename,
@@ -820,6 +920,158 @@ export function buildRouter(deps: RouterDeps): Router {
         size: schema.attachments.size,
         createdAt: schema.attachments.createdAt,
       }).from(schema.attachments).where(eq(schema.attachments.requestId, reqRow.id));
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Suppliers (procurement directory, holding-scoped) ─────────────────────
+  r.get('/suppliers', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'suppliers.view', u.holdingId))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const rows = await db
+        .select()
+        .from(schema.suppliers)
+        .where(and(eq(schema.suppliers.holdingId, u.holdingId), eq(schema.suppliers.status, 'active')))
+        .orderBy(desc(schema.suppliers.createdAt));
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/suppliers', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'suppliers.manage', u.holdingId))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const body = req.body ?? {};
+      const name = String(body.name ?? '').trim();
+      if (!name) {
+        res.status(400).json({ error: 'Название поставщика обязательно' });
+        return;
+      }
+      const clean = (v: unknown) => (v == null || String(v).trim() === '' ? null : String(v).trim());
+      const [row] = await db
+        .insert(schema.suppliers)
+        .values({
+          holdingId: u.holdingId,
+          name,
+          inn: clean(body.inn),
+          phone: clean(body.phone),
+          email: clean(body.email),
+          contactPerson: clean(body.contactPerson),
+          category: clean(body.category),
+          note: clean(body.note),
+        })
+        .returning();
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        userId: u.id,
+        action: 'supplier.created',
+        module: 'procurement',
+        entityType: 'supplier',
+        entityId: row.id,
+        newValue: { name },
+        source: 'api',
+      });
+      res.status(201).json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.patch('/suppliers/:id', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'suppliers.manage', u.holdingId))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const id = req.params.id as string;
+      const [existing] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+      if (!existing || existing.holdingId !== u.holdingId) {
+        res.status(404).json({ error: 'Поставщик не найден' });
+        return;
+      }
+      const body = req.body ?? {};
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      for (const f of ['name', 'inn', 'phone', 'email', 'contactPerson', 'category', 'note'] as const) {
+        if (body[f] !== undefined) patch[f] = body[f] == null ? null : String(body[f]).trim();
+      }
+      if (patch.name === '') {
+        res.status(400).json({ error: 'Название поставщика не может быть пустым' });
+        return;
+      }
+      const [row] = await db.update(schema.suppliers).set(patch).where(eq(schema.suppliers.id, id)).returning();
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        userId: u.id,
+        action: 'supplier.updated',
+        module: 'procurement',
+        entityType: 'supplier',
+        entityId: id,
+        newValue: patch,
+        source: 'api',
+      });
+      res.json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.delete('/suppliers/:id', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'suppliers.manage', u.holdingId))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const id = req.params.id as string;
+      const [existing] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, id));
+      if (!existing || existing.holdingId !== u.holdingId) {
+        res.status(404).json({ error: 'Поставщик не найден' });
+        return;
+      }
+      // Archive, never hard-delete — quotations may reference this supplier.
+      await db.update(schema.suppliers).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.suppliers.id, id));
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        userId: u.id,
+        action: 'supplier.archived',
+        module: 'procurement',
+        entityType: 'supplier',
+        entityId: id,
+        oldValue: { status: existing.status },
+        newValue: { status: 'archived' },
+        source: 'api',
+      });
+      res.json({ ok: true, archived: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Procurement queue: requests currently sitting on a procurement step ───
+  r.get('/procurement/queue', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'procurement.view', u.holdingId))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const rows = await db
+        .select()
+        .from(schema.requests)
+        .where(and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.status, 'procurement')))
+        .orderBy(desc(schema.requests.createdAt));
       res.json(rows);
     } catch (e) {
       next(e);
@@ -836,6 +1088,15 @@ export function buildRouter(deps: RouterDeps): Router {
       const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, (req.params.id as string)));
       if (!reqRow || reqRow.holdingId !== u.holdingId) {
         res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      // Visibility + upload authority: must see the request, and own it OR hold the upload perm. (H4)
+      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      if (reqRow.requesterId !== u.id && !(await hasPermissionInHolding(db, u.id, 'requests.upload_attachment', u.holdingId))) {
+        res.status(403).json({ error: 'Недостаточно прав для загрузки вложения' });
         return;
       }
       const body = req.body ?? {};
@@ -864,6 +1125,17 @@ export function buildRouter(deps: RouterDeps): Router {
           dataBase64: String(body.dataBase64),
         })
         .returning();
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        factoryId: reqRow.factoryId,
+        userId: u.id,
+        action: 'attachment.uploaded',
+        module: 'requests',
+        entityType: 'attachment',
+        entityId: att.id,
+        newValue: { filename: att.filename, size: att.size },
+        source: 'api',
+      });
       res.status(201).json({ id: att.id, filename: att.filename, size: att.size });
     } catch (e) {
       next(e);
@@ -875,6 +1147,11 @@ export function buildRouter(deps: RouterDeps): Router {
       const u = (req as AuthedRequest).user!;
       const [att] = await db.select().from(schema.attachments).where(eq(schema.attachments.id, (req.params.id as string)));
       if (!att || att.holdingId !== u.holdingId) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      const [attReq] = await db.select().from(schema.requests).where(eq(schema.requests.id, att.requestId));
+      if (!attReq || !(await userCanSeeRequest(db, u.id, attReq))) {
         res.status(404).json({ error: 'Not found' });
         return;
       }
@@ -899,11 +1176,22 @@ export function buildRouter(deps: RouterDeps): Router {
         return;
       }
       // Only uploader or someone with requests.edit can delete
-      if (att.uploaderId !== u.id && !(await hasPermission(db, u.id, 'requests.edit', { holdingId: u.holdingId }))) {
+      if (att.uploaderId !== u.id && !(await hasPermissionInHolding(db, u.id, 'requests.edit', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
       await db.delete(schema.attachments).where(eq(schema.attachments.id, att.id));
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId,
+        factoryId: null,
+        userId: u.id,
+        action: 'attachment.deleted',
+        module: 'requests',
+        entityType: 'attachment',
+        entityId: att.id,
+        oldValue: { filename: att.filename },
+        source: 'api',
+      });
       res.json({ ok: true });
     } catch (e) {
       next(e);

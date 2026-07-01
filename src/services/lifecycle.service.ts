@@ -11,13 +11,13 @@
  * the new status, a status-history row, approval/signature bookkeeping and a DNA
  * audit log.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, scopeCovers, type Scope } from '../rbac/rbac.js';
 import { verifyPin } from '../auth/pin.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from '../http/rate-limit.js';
-import { receiveStock, issueStock } from './warehouse.service.js';
+import { applyStockOp } from './warehouse.service.js';
 import { nextStep, firstStep, type WorkflowContext } from '../workflow/engine.js';
 import {
   actionsForKind,
@@ -175,10 +175,15 @@ const toUi = (a: StepActionDef): UiAction => ({
  * they the person responsible for the current step? Reject is then offered only
  * to that same responsible handler, never to every reject-permission holder.
  */
+/** SoD: the requester may not decide money/routing on their own request. */
+const sodBlocked = (def: StepActionDef, req: RequestRow, userId: string): boolean =>
+  (def.action === 'approve' || !!def.sod) && req.requesterId === userId;
+
 async function canHandleStep(db: Db, userId: string, req: RequestRow, step: KindStep): Promise<boolean> {
   for (const a of actionsForKind(step.stepKind)) {
     if (a.reject) continue;
-    if (a.action === 'approve' && req.requesterId === userId) continue; // separation of duties
+    if (sodBlocked(a, req, userId)) continue; // separation of duties
+    if (a.requesterOnly && req.requesterId !== userId) continue;
     if (await actorMayAct(db, userId, req, step, a)) return true;
   }
   return false;
@@ -194,8 +199,9 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   let isHandler = false;
   for (const a of defs) {
     if (a.reject) continue;
-    // Self-approval is forbidden by default (separation of duties).
-    if (a.action === 'approve' && req.requesterId === userId) continue;
+    // Self-service on money/routing decisions is forbidden (separation of duties).
+    if (sodBlocked(a, req, userId)) continue;
+    if (a.requesterOnly && req.requesterId !== userId) continue;
     if (!(await actorMayAct(db, userId, req, step, a))) continue;
     out.push(toUi(a));
     isHandler = true;
@@ -225,6 +231,7 @@ export interface PerformInput {
   comment?: string;
   amount?: number;
   supplierName?: string;
+  supplierId?: string;
   leadTime?: string;
   quotationId?: string;
 }
@@ -238,9 +245,20 @@ async function enterApprovalIfNeeded(tx: Db, requestId: string, step: KindStep):
 
 export async function performAction(db: Db, input: PerformInput) {
   return db.transaction(async (tx: Db) => {
+    // Acquire row-level lock to prevent concurrent modifications
+    await tx.execute(sql`SELECT 1 FROM requests WHERE id = ${input.requestId} FOR UPDATE`);
+    // Then use Drizzle select (returns camelCase fields)
     const [req] = (await tx.select().from(schema.requests).where(eq(schema.requests.id, input.requestId))) as RequestRow[];
     if (!req || req.holdingId !== input.actor.holdingId) throw new NotFoundError('Заявка не найдена');
-    if (!req.currentStepId) throw new ConflictError('Заявка уже завершена');
+    if (!req.currentStepId) {
+      // Distinguish a never-started draft (no workflow matched at creation) from a
+      // finished request — the old message misled users about drafts. (B10)
+      throw new ConflictError(
+        req.status === 'draft'
+          ? 'Заявка в черновике: не привязана к workflow — настройте активный workflow и создайте заявку заново'
+          : 'Заявка уже завершена',
+      );
+    }
 
     const step = await loadStep(tx, req.currentStepId);
     if (!step) throw new ConflictError('Текущий шаг не найден');
@@ -248,8 +266,15 @@ export async function performAction(db: Db, input: PerformInput) {
     const def = findKindAction(step.stepKind, input.action);
     if (!def) throw new ValidationError('Действие недоступно на этом шаге');
 
-    if (def.action === 'approve' && req.requesterId === input.actor.id) {
-      throw new ForbiddenError('Нельзя согласовывать собственную заявку');
+    if (sodBlocked(def, req, input.actor.id)) {
+      throw new ForbiddenError(
+        def.action === 'approve'
+          ? 'Нельзя согласовывать собственную заявку'
+          : 'Нельзя выполнять это действие по собственной заявке (разделение обязанностей)',
+      );
+    }
+    if (def.requesterOnly && req.requesterId !== input.actor.id) {
+      throw new ForbiddenError('Подтвердить получение может только автор заявки');
     }
     if (!(await actorMayAct(tx, input.actor.id, req, step, def))) {
       throw new ForbiddenError('Недостаточно прав для этого действия');
@@ -281,25 +306,65 @@ export async function performAction(db: Db, input: PerformInput) {
     if (def.setInStock !== undefined) patch.inStock = def.setInStock;
 
     // Procurement: 'add' records a real КП; 'select' picks one and locks the amount.
+    const warnings: string[] = [];
     if (def.quote === 'add') {
       const amt = Math.max(0, Math.round(Number(input.amount) || 0));
-      const supplier = String(input.supplierName ?? '').trim();
-      if (!supplier) throw new ValidationError('Укажите поставщика');
       if (!amt) throw new ValidationError('Укажите сумму КП');
-      await tx.insert(schema.quotations).values({
+      let supplierName = String(input.supplierName ?? '').trim();
+      let supplierId: string | null = null;
+      // Preferred: a normalized supplier (validated within the holding). Legacy
+      // free-text supplierName is kept as a snapshot / fallback.
+      if (input.supplierId) {
+        const [sup] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, input.supplierId));
+        if (!sup || sup.holdingId !== req.holdingId) throw new ValidationError('Поставщик не найден');
+        supplierId = sup.id;
+        if (!supplierName) supplierName = sup.name;
+      }
+      if (!supplierName) throw new ValidationError('Укажите поставщика');
+      const [quote] = await tx
+        .insert(schema.quotations)
+        .values({
+          holdingId: req.holdingId,
+          requestId: req.id,
+          supplierId,
+          supplierName,
+          amount: amt,
+          leadTime: String(input.leadTime ?? '').trim() || null,
+          createdBy: input.actor.id,
+        })
+        .returning();
+      await tx.insert(schema.auditLogs).values({
         holdingId: req.holdingId,
-        requestId: req.id,
-        supplierName: supplier,
-        amount: amt,
-        leadTime: String(input.leadTime ?? '').trim() || null,
-        createdBy: input.actor.id,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'quotation.created',
+        module: 'procurement',
+        entityType: 'quotation',
+        entityId: quote.id,
+        newValue: { supplierId, supplierName, amount: amt },
+        source: 'lifecycle',
       });
-      patch.estimatedAmount = amt;
+      // The request amount is locked only when a supplier is SELECTED — merely
+      // recording another КП must not swing estimatedAmount around. (L4)
     } else if (def.quote === 'select') {
       const [q] = await tx.select().from(schema.quotations).where(eq(schema.quotations.id, String(input.quotationId ?? '')));
       if (!q || q.requestId !== req.id) throw new ValidationError('Выберите КП поставщика');
+      const all = await tx.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
+      // Single-quotation warning: don't block (a sole supplier is sometimes valid).
+      if (all.length === 1) warnings.push('Только одно КП по заявке — сравнение цен невозможно');
       await tx.update(schema.quotations).set({ selected: false }).where(eq(schema.quotations.requestId, req.id));
       await tx.update(schema.quotations).set({ selected: true }).where(eq(schema.quotations.id, q.id));
+      await tx.insert(schema.auditLogs).values({
+        holdingId: req.holdingId,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'supplier.selected',
+        module: 'procurement',
+        entityType: 'quotation',
+        entityId: q.id,
+        newValue: { supplierId: q.supplierId ?? null, supplierName: q.supplierName, amount: q.amount, singleQuotation: all.length === 1 },
+        source: 'lifecycle',
+      });
       patch.estimatedAmount = q.amount;
     } else if (def.amount) {
       const n = Number(input.amount);
@@ -326,6 +391,27 @@ export async function performAction(db: Db, input: PerformInput) {
             signatureType: 'telegram_pin',
           });
         }
+      } else if (!def.reject) {
+        // No pending row (workflow edited after creation, legacy data): an approval
+        // must still leave a resolved record + signature in the DNA — never a silent
+        // "approved without a trace". (L2)
+        const [made] = await tx
+          .insert(schema.approvals)
+          .values({
+            requestId: req.id,
+            workflowStepId: step.id,
+            status: resolveTo,
+            approverUserId: input.actor.id,
+            comment: input.comment ?? null,
+            approvedAt: new Date(),
+          })
+          .returning();
+        await tx.insert(schema.signatures).values({
+          approvalId: made.id,
+          requestId: req.id,
+          userId: input.actor.id,
+          signatureType: 'telegram_pin',
+        });
       }
     }
 
@@ -355,35 +441,51 @@ export async function performAction(db: Db, input: PerformInput) {
         newCurrentStepId = next.id;
         await enterApprovalIfNeeded(tx, req.id, next);
       } else {
-        to = step.stepKind === 'close' ? TERMINAL_CLOSED : TERMINAL_APPROVED;
+        // A chain that ends after physical fulfilment (issue/close) is CLOSED;
+        // ending anywhere earlier means "approved but not fulfilled". (L3)
+        to = step.stepKind === 'close' || step.stepKind === 'issue' ? TERMINAL_CLOSED : TERMINAL_APPROVED;
         newCurrentStepId = null;
         patch.closedAt = new Date();
       }
     }
 
-    // Warehouse integration: auto-update stock balances on receiving/issue steps.
-    // Uses request_items to determine what materials and quantities to process.
+    // Warehouse integration: stock moves through the warehouse service (the single
+    // authoritative path) on receiving/issue steps, using request_items for the
+    // materials and quantities. Fail-loud: if a stock op fails (e.g. insufficient
+    // stock) it throws, this whole transaction rolls back, and the step does NOT
+    // advance — never a silent completion with drifted balances. Idempotency in the
+    // service keeps a given (request, material, type) from being applied twice.
     if (!def.reject && def.advance && (step.stepKind === 'receiving' || step.stepKind === 'issue')) {
       const items = await tx.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
+      // Aggregate quantities by materialId so duplicate rows don't cause
+      // multiple independent stock ops for the same material.
+      const byMaterial = new Map<string, number>();
+      const skipped: string[] = [];
       for (const item of items) {
-        if (!item.materialId) continue;
         const qty = Number(item.quantity);
-        if (!qty || qty <= 0) continue;
-        try {
-          const op = {
-            holdingId: req.holdingId,
-            materialId: item.materialId,
-            quantity: qty,
-            performedBy: input.actor.id,
-            requestId: req.id,
-            reason: `Lifecycle: ${step.stepKind} — ${req.id.slice(0, 8)}`,
-          };
-          if (step.stepKind === 'receiving') await receiveStock(tx, op);
-          else await issueStock(tx, op);
-        } catch {
-          // Best-effort: if stock op fails (e.g. insufficient stock), the lifecycle
-          // step still completes — the warehouse discrepancy can be resolved manually.
+        if (!item.materialId || !qty || qty <= 0) {
+          skipped.push(item.name);
+          continue;
         }
+        byMaterial.set(item.materialId, (byMaterial.get(item.materialId) ?? 0) + qty);
+      }
+      // Free-text items can't move stock — say so instead of finishing silently. (M3)
+      if (skipped.length) {
+        warnings.push(`Позиции без привязки к материалу склад не двигали: ${skipped.join(', ')}`);
+      }
+      for (const [materialId, quantity] of byMaterial) {
+        const op = {
+          holdingId: req.holdingId,
+          materialId,
+          quantity,
+          performedBy: input.actor.id,
+          requestId: req.id,
+          workflowStepId: step.id,
+          reason: `Lifecycle: ${step.stepKind} — ${req.id.slice(0, 8)}`,
+          source: 'lifecycle',
+        };
+        if (step.stepKind === 'receiving') await applyStockOp(tx, op, 'income');
+        else await applyStockOp(tx, op, 'outcome');
       }
     }
 
@@ -413,6 +515,6 @@ export async function performAction(db: Db, input: PerformInput) {
     });
 
     const [updated] = await tx.select().from(schema.requests).where(eq(schema.requests.id, req.id));
-    return updated;
+    return { ...updated, warnings };
   });
 }

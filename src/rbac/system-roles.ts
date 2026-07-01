@@ -23,6 +23,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'audit.view',
       'requests.view',
       'reports.view',
+      'suppliers.view',
+      'suppliers.manage',
     ],
   },
   {
@@ -60,6 +62,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'procurement.view',
       'procurement.quote',
       'procurement.select_supplier',
+      'suppliers.view',
+      'suppliers.manage',
     ],
   },
   {
@@ -72,10 +76,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'approvals.reject',
       'warehouse.view',
       'warehouse.check_stock',
-      'warehouse.reserve',
       'warehouse.receive',
       'warehouse.issue',
-      'warehouse.adjust',
     ],
   },
   {
@@ -92,7 +94,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'requester',
     name: 'Заявитель',
-    permissions: ['requests.view', 'requests.create'],
+    permissions: ['requests.view', 'requests.create', 'requests.upload_attachment'],
   },
   {
     code: 'warehouse_worker',
@@ -108,6 +110,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'procurement.view',
       'procurement.quote',
       'procurement.select_supplier',
+      'suppliers.view',
+      'suppliers.manage',
       'approvals.view',
       'approvals.approve',
       'approvals.reject',
@@ -152,5 +156,38 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'workflows.manage',
       'settings.manage',
     ],
+  },
+  {
+    code: 'procurement_manager',
+    name: 'Менеджер по снабжению',
+    permissions: [
+      'requests.view',
+      'approvals.view',
+      'procurement.view',
+      'procurement.quote',
+      'procurement.select_supplier',
+      'suppliers.view',
+      'suppliers.manage',
+    ],
+  },
+  {
+    code: 'finance_manager',
+    name: 'Финансовый менеджер',
+    permissions: ['requests.view', 'approvals.view', 'finance.view', 'finance.mark_paid'],
+  },
+  {
+    code: 'accountant',
+    name: 'Бухгалтер',
+    permissions: ['requests.view', 'finance.view'],
+  },
+  {
+    code: 'auditor',
+    name: 'Аудитор',
+    permissions: ['requests.view', 'reports.view', 'audit.view', 'suppliers.view'],
+  },
+  {
+    code: 'observer',
+    name: 'Наблюдатель',
+    permissions: ['requests.view', 'reports.view'],
   },
 ];

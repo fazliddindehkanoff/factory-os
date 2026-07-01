@@ -1,6 +1,6 @@
 /** Production entrypoint: load env, connect to Postgres, serve the API. */
 import 'dotenv/config';
-import { loadEnv } from '../config/env.js';
+import { loadEnv, devAuthEnabled } from '../config/env.js';
 import { createDb } from '../db/client.js';
 import { createApp } from './app.js';
 import { createBot, makeNotifier, type Notifier } from '../bot/bot.js';
@@ -10,16 +10,18 @@ import { getUserPermissionCodes } from '../rbac/rbac.js';
 
 const env = loadEnv();
 const { db } = createDb(env.DATABASE_URL);
-// Dev login is OFF unless explicitly enabled in a development environment.
-const devAuth = env.NODE_ENV === 'development' && env.ENABLE_DEV_AUTH === '1';
-// serveDesign=true → old compat layer (public/); false → new React Mini App (web/dist)
-const serveDesign = process.env.SERVE_DESIGN !== '0';
+// Dev login is OFF unless explicitly enabled in a development environment (fail-closed).
+const devAuth = devAuthEnabled(env);
+// serveDesign=true → old compat layer (public/); false → canonical React Mini App (web/dist).
+// Default to the canonical path; the legacy compat layer is opt-in via SERVE_DESIGN=1. (H2)
+const serveDesign = process.env.SERVE_DESIGN === '1';
 
 // Bot is optional: only runs if a token is configured.
 let notify: Notifier | undefined;
+let bot: ReturnType<typeof createBot> | undefined;
 if (env.BOT_TOKEN) {
   const appUrl = env.APP_URL ?? `http://localhost:${env.PORT}`;
-  const bot = createBot(env.BOT_TOKEN, appUrl, async (tgId) => {
+  bot = createBot(env.BOT_TOKEN, appUrl, async (tgId) => {
     const [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgId));
     return u?.holdingId ? getUserPermissionCodes(db, u.id) : [];
   });
@@ -40,6 +42,21 @@ const app = createApp({
   serveDesign,
 });
 
-app.listen(env.PORT, () => {
+const server = app.listen(env.PORT, () => {
   console.log(`✅ Factory OS API on http://localhost:${env.PORT}`);
 });
+
+const shutdown = (signal: string) => {
+  console.log(`[server] ${signal} received, shutting down gracefully...`);
+  if (bot) bot.stop();
+  server.close(() => {
+    console.log('[server] HTTP server closed');
+    process.exit(0);
+  });
+  setTimeout(() => {
+    console.error('[server] Forced shutdown after timeout');
+    process.exit(1);
+  }, 10_000);
+};
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));

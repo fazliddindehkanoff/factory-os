@@ -30,7 +30,7 @@ async function makeApp(devAuth = false) {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
   await seedSystemRolesAndPermissions(db);
-  return { app: createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth }), db };
+  return { app: createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth, rateLimit: false }), db };
 }
 
 async function systemRoleId(db: any, code: string): Promise<string> {
@@ -70,9 +70,9 @@ describe('HTTP API', () => {
     await request(app).post('/api/auth/telegram').send({ initData: 'garbage' }).expect(401);
   });
 
-  it('dev login is 403 when disabled and issues a token when enabled', async () => {
+  it('dev login is 404 when disabled and issues a token when enabled', async () => {
     const off = await makeApp(false);
-    await request(off.app).post('/api/auth/dev').send({ telegramId: '1' }).expect(403);
+    await request(off.app).post('/api/auth/dev').send({ telegramId: '1' }).expect(404);
 
     const on = await makeApp(true);
     const res = await request(on.app).post('/api/auth/dev').send({ telegramId: '1' }).expect(200);

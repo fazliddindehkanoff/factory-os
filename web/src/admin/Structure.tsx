@@ -213,7 +213,7 @@ export function Structure() {
 
       <BottomSheet
         open={!!sheet}
-        title={sheet ? `${sheet.mode === 'add' ? 'Новый' : 'Переименовать'} ${sheet.kind === 'department' ? 'отдел' : 'склад'}` : ''}
+        title={sheet ? `${sheet.mode === 'add' ? 'Новый' : 'Переименовать'} ${sheet.kind === 'factory' ? 'завод' : sheet.kind === 'department' ? 'отдел' : 'склад'}` : ''}
         onClose={() => setSheet(null)}
       >
         {sheet && (
@@ -223,9 +223,9 @@ export function Structure() {
               autoFocus
               value={sheet.name}
               onChange={(e) => setSheet({ ...sheet, name: e.target.value })}
-              placeholder={sheet.kind === 'department' ? 'напр. Снабжение' : 'напр. Главный склад'}
+              placeholder={sheet.kind === 'factory' ? 'напр. Главный завод' : sheet.kind === 'department' ? 'напр. Снабжение' : 'напр. Главный склад'}
             />
-            {sheet.mode === 'add' && (
+            {sheet.mode === 'add' && sheet.kind !== 'factory' && (
               <div className="mt-4">
                 <Label>Завод</Label>
                 <Select value={sheet.factoryId} onChange={(e) => setSheet({ ...sheet, factoryId: (e.target as HTMLSelectElement).value })}>

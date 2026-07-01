@@ -1,4 +1,14 @@
 /** Pure Telegram message builders (no side effects) — easy to unit-test. */
+
+/**
+ * Escape special chars for Telegram MarkdownV2.
+ * Currently messages are sent as plain text (no parse_mode), so this helper
+ * is not yet applied — but it future-proofs against injection when we switch
+ * to MarkdownV2.
+ */
+export function esc(s: string): string {
+  return s.replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
+}
 export const startMessage = (name?: string): string =>
   `👋 ${name ? name + ', добро' : 'Добро'} пожаловать в Factory OS.\n\nНажмите кнопку ниже, чтобы открыть приложение.`;
 

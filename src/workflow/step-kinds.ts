@@ -35,6 +35,14 @@ export interface StepActionDef {
   /** A reject action: ends the request as 'rejected' instead of advancing. */
   reject?: boolean;
   /**
+   * Separation of duties: the requester may not perform this action on their own
+   * request (money/routing decisions: payment, supplier choice, stock verdict).
+   * 'approve' is always SoD-protected regardless of this flag.
+   */
+  sod?: boolean;
+  /** Only the request's author may perform this action (receipt confirmation). */
+  requesterOnly?: boolean;
+  /**
    * For warehouse_check branching: records request.inStock so downstream steps
    * gated by { inStock: false } (procurement) include/skip themselves correctly.
    */
@@ -65,17 +73,17 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
     REJECT,
   ],
   warehouse_check: [
-    { action: 'wh_in_stock', label: 'В наличии', perm: 'warehouse.check_stock', setInStock: true, advance: true },
-    { action: 'wh_out_of_stock', label: 'Нет в наличии', perm: 'warehouse.check_stock', setInStock: false, advance: true },
+    { action: 'wh_in_stock', label: 'В наличии', perm: 'warehouse.check_stock', setInStock: true, sod: true, advance: true },
+    { action: 'wh_out_of_stock', label: 'Нет в наличии', perm: 'warehouse.check_stock', setInStock: false, sod: true, advance: true },
     REJECT,
   ],
   procurement: [
     { action: 'add_quotation', label: 'Добавить КП', perm: 'procurement.quote', amount: true, quote: 'add', advance: false },
-    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', advance: true },
+    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: true },
     REJECT,
   ],
   finance_payment: [
-    { action: 'mark_paid', label: 'Отметить оплату', perm: 'finance.mark_paid', pin: true, advance: true },
+    { action: 'mark_paid', label: 'Отметить оплату', perm: 'finance.mark_paid', pin: true, sod: true, advance: true },
     REJECT,
   ],
   delivery: [
@@ -91,7 +99,9 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
     REJECT,
   ],
   close: [
-    { action: 'close', label: 'Подтвердить получение', perm: 'requests.create', advance: true },
+    // requesterOnly: receipt is confirmed by the request's author, not by any
+    // holder of requests.create in the holding (B9).
+    { action: 'close', label: 'Подтвердить получение', perm: 'requests.create', requesterOnly: true, advance: true },
   ],
 };
 

@@ -61,6 +61,36 @@ export async function hasPermission(
   return rows.some((r: Scope) => scopeCovers(r, target));
 }
 
+/**
+ * Module-level gate: the user holds `code` via ANY active assignment that belongs
+ * to this holding (or a global one). Narrower scope levels (factory/department)
+ * are deliberately ignored — list/module endpoints have no concrete object to
+ * scope against, and a factory-scoped role must still open its module instead of
+ * being locked out with 403 (M7). Object-level checks (lifecycle actions) keep
+ * using hasPermission with the full request scope.
+ */
+export async function hasPermissionInHolding(
+  db: Db,
+  userId: string,
+  code: string,
+  holdingId: string | null,
+): Promise<boolean> {
+  if (!holdingId) return false;
+  const rows = await db
+    .select({ holdingId: schema.userRoles.holdingId })
+    .from(schema.userRoles)
+    .innerJoin(schema.rolePermissions, eq(schema.rolePermissions.roleId, schema.userRoles.roleId))
+    .innerJoin(schema.permissions, eq(schema.permissions.id, schema.rolePermissions.permissionId))
+    .where(
+      and(
+        eq(schema.userRoles.userId, userId),
+        eq(schema.userRoles.status, 'active'),
+        eq(schema.permissions.code, code),
+      ),
+    );
+  return rows.some((r: { holdingId: string | null }) => r.holdingId == null || r.holdingId === holdingId);
+}
+
 /** All distinct permission codes the user holds anywhere (for UI gating). */
 export async function getUserPermissionCodes(db: Db, userId: string): Promise<string[]> {
   const rows = await db

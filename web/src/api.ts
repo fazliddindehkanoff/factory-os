@@ -100,7 +100,7 @@ export const api = {
   // ── Lifecycle ──
   requestAction: (
     id: string,
-    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; leadTime?: string; quotationId?: string },
+    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string },
   ) => call(`/requests/${id}/action`, { method: 'POST', body: JSON.stringify(body) }),
   setPin: (pin: string) => call('/me/pin', { method: 'POST', body: JSON.stringify({ pin }) }),
   updateProfile: (data: { fullName?: string; phone?: string; email?: string; position?: string }) =>
@@ -114,6 +114,23 @@ export const api = {
     issue: (data: { materialId: string; warehouseId?: string; quantity: number; requestId?: string; reason?: string }) =>
       call('/warehouse/issue', { method: 'POST', body: JSON.stringify(data) }),
     movements: () => call('/warehouse/movements'),
+  },
+
+  // ── Suppliers (procurement directory) ──
+  suppliers: {
+    list: () => call('/suppliers'),
+    create: (data: { name: string; inn?: string; phone?: string; email?: string; contactPerson?: string; category?: string; note?: string }) =>
+      call('/suppliers', { method: 'POST', body: JSON.stringify(data) }),
+    update: (
+      id: string,
+      data: Partial<{ name: string; inn: string; phone: string; email: string; contactPerson: string; category: string; note: string }>,
+    ) => call('/suppliers/' + id, { method: 'PATCH', body: JSON.stringify(data) }),
+    archive: (id: string) => call('/suppliers/' + id, { method: 'DELETE' }),
+  },
+
+  // ── Procurement ──
+  procurement: {
+    queue: () => call('/procurement/queue'),
   },
 
   // ── Attachments ──
@@ -156,8 +173,6 @@ export const api = {
     userRoles: (id: string) => call(`/admin/users/${id}/roles`),
     assignRole: (userId: string, roleId: string, scope?: { factoryId?: string; departmentId?: string }) =>
       call(`/admin/users/${userId}/roles`, { method: 'POST', body: JSON.stringify({ roleId, ...(scope ?? {}) }) }),
-    revokeRole: (userId: string, roleId: string) =>
-      call(`/admin/users/${userId}/roles/${roleId}`, { method: 'DELETE' }),
     revokeAssignment: (userId: string, assignmentId: string) =>
       call(`/admin/users/${userId}/assignments/${assignmentId}`, { method: 'DELETE' }),
 
@@ -200,7 +215,6 @@ export const api = {
       call('/admin/workflows', { method: 'POST', body: JSON.stringify({ name }) }),
     updateWorkflow: (id: string, patch: { name?: string; is_active?: boolean }) =>
       call('/admin/workflows/' + id, { method: 'PUT', body: JSON.stringify(patch) }),
-    workflowSteps: (id: string) => call(`/admin/workflows/${id}/steps`),
     addStep: (
       wfId: string,
       data: { name: string; step_kind?: string; approver_role_id: string | null; order_index: number; threshold_amount: number | null },

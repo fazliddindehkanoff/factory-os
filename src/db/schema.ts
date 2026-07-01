@@ -545,6 +545,9 @@ export const stockBalances = pgTable(
     minQty: numeric('min_qty').notNull().default('0'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
+  // NOTE: uniqueness of (holding, material, COALESCE(warehouse)) is enforced by
+  // the raw-SQL index stock_balances_uniq from migration 0009 (B8); the service
+  // additionally recovers from its 23505 by re-reading the winner's row.
   (t) => ({ matIdx: index('stock_balances_material_idx').on(t.holdingId, t.materialId) }),
 );
 
@@ -562,6 +565,10 @@ export const stockMovements = pgTable(
     movementType: movementType('movement_type').notNull(),
     quantity: numeric('quantity').notNull(),
     requestId: uuid('request_id').references(() => requests.id),
+    // Lifecycle step that produced this movement — part of the idempotency key
+    // (a workflow may legitimately hold two receiving/issue steps). Null for
+    // manual /warehouse operations.
+    workflowStepId: uuid('workflow_step_id').references(() => workflowSteps.id),
     performedBy: uuid('performed_by').references(() => users.id),
     reason: text('reason'),
     source: text('source'),
@@ -601,6 +608,7 @@ export const quotations = pgTable(
       .notNull()
       .references(() => requests.id, { onDelete: 'cascade' }),
     supplierName: text('supplier_name').notNull(),
+    supplierId: uuid('supplier_id').references(() => suppliers.id),
     amount: bigint('amount', { mode: 'number' }).notNull().default(0),
     leadTime: text('lead_time'),
     note: text('note'),
@@ -609,6 +617,29 @@ export const quotations = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ reqIdx: index('quotations_request_idx').on(t.requestId) }),
+);
+
+// ── Suppliers (procurement) — normalized supplier directory, holding-scoped ──
+export const suppliers = pgTable(
+  'suppliers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    holdingId: uuid('holding_id')
+      .notNull()
+      .references(() => holdings.id),
+    name: text('name').notNull(),
+    inn: text('inn'),
+    phone: text('phone'),
+    email: text('email'),
+    contactPerson: text('contact_person'),
+    category: text('category'),
+    rating: numeric('rating'),
+    note: text('note'),
+    status: entityStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ holdingIdx: index('suppliers_holding_idx').on(t.holdingId) }),
 );
 
 // ── Attachments (base64 stored in text; capped at the API boundary) ──────────

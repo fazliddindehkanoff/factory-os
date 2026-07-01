@@ -302,9 +302,9 @@ export function WorkflowPage() {
               <div className="mt-1 text-xs text-fg3">Определяет, что происходит на шаге и какие действия доступны.</div>
             </div>
             <div className="mt-4">
-              <Label>Согласующая роль{stepSheet.kind === 'approval' ? '' : ' (для подписи)'}</Label>
+              <Label>Кто согласует{stepSheet.kind === 'approval' ? '' : ' (для подписи)'}</Label>
               <Select value={stepSheet.roleId} onChange={(e) => setStepSheet({ ...stepSheet, roleId: (e.target as HTMLSelectElement).value })}>
-                <option value="">Без роли</option>
+                <option value="">Не выбрано</option>
                 {roles.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.name}

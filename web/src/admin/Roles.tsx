@@ -22,6 +22,7 @@ const MODULE_LABEL: Record<string, string> = {
   approvals: 'Согласования',
   warehouse: 'Склад',
   procurement: 'Закупки',
+  suppliers: 'Поставщики',
   finance: 'Финансы',
   admin: 'Администрирование',
   audit: 'Аудит',
@@ -65,7 +66,7 @@ export function Roles() {
     <div className="space-y-4">
       {error && <Err>{error}</Err>}
       <PrimaryBtn className="w-full" onClick={() => setCreateOpen(true)}>
-        + Создать роль
+        + Создать набор прав
       </PrimaryBtn>
       <div className="space-y-2.5">
         {roles.map((r) => (
@@ -160,7 +161,7 @@ function RoleEditor({
   };
 
   const remove = async () => {
-    if (!(await confirmDialog(`Удалить роль «${role.name}»?`))) return;
+    if (!(await confirmDialog(`Удалить набор прав «${role.name}»?`))) return;
     try {
       await api.admin.deleteRole(role.id);
       onChanged();
@@ -193,7 +194,7 @@ function RoleEditor({
 
       {readOnly && (
         <div className="mb-4 rounded-xl bg-white/5 px-3 py-2.5 text-xs text-fg2">
-          Системная роль — права только для просмотра.
+          Системный набор — права только для просмотра.
         </div>
       )}
 
@@ -237,7 +238,7 @@ function RoleEditor({
         </PrimaryBtn>
       )}
 
-      <BottomSheet open={renameOpen} title="Переименовать роль" onClose={() => setRenameOpen(false)}>
+      <BottomSheet open={renameOpen} title="Переименовать набор прав" onClose={() => setRenameOpen(false)}>
         <Label>Название</Label>
         <Field autoFocus value={name} onChange={(e) => setName(e.target.value)} />
         <div className="mt-5 flex gap-2.5">
@@ -284,7 +285,7 @@ function CreateRoleSheet({
   };
 
   return (
-    <BottomSheet open={open} title="Новая роль" onClose={onClose}>
+    <BottomSheet open={open} title="Новый набор прав" onClose={onClose}>
       <Label>Код (латиницей)</Label>
       <Field value={code} onChange={(e) => setCode(e.target.value)} placeholder="напр. buyer" />
       <div className="mt-4">

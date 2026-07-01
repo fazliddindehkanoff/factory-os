@@ -190,9 +190,9 @@ function InviteSheet({
         <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="Имя Фамилия" />
       </div>
       <div className="mt-4">
-        <Label>Роль (необязательно)</Label>
+        <Label>Права (необязательно)</Label>
         <Select value={roleId} onChange={(e) => setRoleId((e.target as HTMLSelectElement).value)}>
-          <option value="">Без роли</option>
+          <option value="">Без прав</option>
           {roles.map((r) => (
             <option key={r.id} value={r.id}>
               {r.name}
@@ -202,7 +202,7 @@ function InviteSheet({
       </div>
       {roleId && depts.length > 0 && (
         <div className="mt-4">
-          <Label>Отдел (область роли)</Label>
+          <Label>Отдел (область прав)</Label>
           <Select value={deptId} onChange={(e) => setDeptId((e.target as HTMLSelectElement).value)}>
             <option value="">Весь холдинг</option>
             {depts.map((d) => (
@@ -264,7 +264,7 @@ function UserDetail({
   useEffect(load, [load]);
 
   const revoke = async (assignmentId: string) => {
-    if (!(await confirmDialog('Снять роль?'))) return;
+    if (!(await confirmDialog('Снять права?'))) return;
     try {
       await api.admin.revokeAssignment(user.id, assignmentId);
       load();
@@ -313,13 +313,13 @@ function UserDetail({
       </div>
 
       <div className="mb-2 flex items-center justify-between">
-        <Label>Роли и права</Label>
+        <Label>Права</Label>
         <MiniBtn className="bg-accent/15 text-accent" onClick={() => setAssignOpen(true)}>
-          + Роль
+          + Права
         </MiniBtn>
       </div>
       {!list && <Skeleton />}
-      {list && list.length === 0 && <Empty>Ролей нет.</Empty>}
+      {list && list.length === 0 && <Empty>Прав нет.</Empty>}
       <div className="space-y-2.5">
         {list?.map((r) => (
           <div key={r.assignmentId} className="rounded-2xl border border-line bg-card p-3">
@@ -346,10 +346,10 @@ function UserDetail({
         Удалить пользователя
       </button>
 
-      <BottomSheet open={assignOpen} title="Назначить роль" onClose={() => setAssignOpen(false)}>
-        <Label>Роль</Label>
+      <BottomSheet open={assignOpen} title="Назначить права" onClose={() => setAssignOpen(false)}>
+        <Label>Права</Label>
         <Select value={roleId} onChange={(e) => setRoleId((e.target as HTMLSelectElement).value)}>
-          <option value="">Выберите роль</option>
+          <option value="">Выберите права</option>
           {roles.map((r) => (
             <option key={r.id} value={r.id}>
               {r.name}

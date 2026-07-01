@@ -2,6 +2,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import express, { type Request, type Response, type NextFunction } from 'express';
+import helmet from 'helmet';
 import { buildRouter, type RouterDeps } from '../http/routes.js';
 import { buildCompatRouter } from '../http/compat.routes.js';
 import { legacyAuth } from '../http/legacy-auth.js';
@@ -11,6 +12,13 @@ import { logger } from '../http/logger.js';
 
 export function createApp(deps: RouterDeps) {
   const app = express();
+  // Behind a reverse proxy (Caddy): trust the first hop so req.ip / X-Forwarded-For
+  // resolve to the real client and the rate limiters key on the client IP, not the proxy.
+  app.set('trust proxy', 1);
+  app.use(helmet({
+    contentSecurityPolicy: false, // Telegram Mini App needs inline scripts
+    crossOriginEmbedderPolicy: false, // Mini App loaded in iframe
+  }));
   app.use(express.json({ limit: '4mb' })); // design uploads base64 attachments
 
   app.get('/healthz', (_req: Request, res: Response) => res.json({ ok: true, uptime: process.uptime() }));
@@ -27,9 +35,11 @@ export function createApp(deps: RouterDeps) {
     next();
   });
 
-  // Rate limiting
-  app.use('/api/auth', authLimiter);
-  app.use('/api', apiLimiter);
+  // Rate limiting (skippable in tests via deps.rateLimit === false)
+  if (deps.rateLimit !== false) {
+    app.use('/api/auth', authLimiter);
+    app.use('/api', apiLimiter);
+  }
 
   if (deps.serveDesign) {
     // Serve the bundled design (public/) and answer its API contract via the compat layer.

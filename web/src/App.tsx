@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { api, clearToken, getToken, setToken, type CreateRequestData } from './api';
 import { getTelegram } from './telegram';
 import { AdminPanel } from './admin/AdminPanel';
 import { WarehouseScreen } from './screens/Warehouse';
 import { InboxScreen } from './screens/Inbox';
+import { ProcurementScreen } from './screens/Procurement';
 import { Icon, TINT_BG, TINT_FG } from './icons';
 import { applyTheme, getTheme, type Theme } from './theme';
 import { DASHBOARD_ACTIONS, DASHBOARD_STATS } from './dashboard.config';
+// Single source of truth for status labels/progress (covers every workflow-driven
+// status incl. finance_payment/delivery/receiving/issue) — see screens/shared.tsx.
+import { statusMeta, progressOf } from './screens/shared';
 
 const ADMIN_PERMS = ['roles.manage', 'users.manage', 'workflows.manage', 'settings.manage'];
 // Perms that let a user act on a request somewhere in the lifecycle → they get the inbox tab.
 const INBOX_ACTOR_PERMS = [
   'approvals.approve',
   'warehouse.check_stock',
-  'warehouse.reserve',
   'warehouse.receive',
   'warehouse.issue',
   'procurement.quote',
@@ -82,9 +85,11 @@ type Screen =
   | { name: 'home' }
   | { name: 'list' }
   | { name: 'create' }
-  | { name: 'detail'; id: string }
+  // `from` — the screen that opened the detail, so "back" returns to the source.
+  | { name: 'detail'; id: string; from?: 'home' | 'list' | 'approvals' | 'procurement' }
   | { name: 'approvals' }
   | { name: 'warehouse' }
+  | { name: 'procurement' }
   | { name: 'menu' }
   | { name: 'admin' };
 
@@ -176,12 +181,13 @@ export default function App() {
     detail: 'Заявка',
     approvals: 'Согласования',
     warehouse: 'Склад',
+    procurement: 'Закупки',
     menu: 'Меню',
     admin: 'Администрирование',
   };
   const title = TITLES[screen.name];
   const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse'].includes(screen.name);
-  const showNav = ['home', 'list', 'approvals', 'warehouse', 'menu', 'admin'].includes(screen.name);
+  const showNav = ['home', 'list', 'approvals', 'warehouse', 'procurement', 'menu', 'admin'].includes(screen.name);
   const iconBtn: CSSProperties = {
     width: 38,
     height: 38,
@@ -227,25 +233,28 @@ export default function App() {
       <main className={fullBleed ? 'flex-1 overflow-y-auto' : 'flex-1 overflow-y-auto p-4'}>
         {!me.user.holdingId && (
           <div className={fullBleed ? 'p-4' : ''}>
-            <Note>Вы не привязаны к организации. Попросите администратора назначить вам роль.</Note>
+            <Note>Вы не привязаны к организации. Попросите администратора назначить вам права.</Note>
           </div>
         )}
         {screen.name === 'home' && (
-          <Home me={me} onNav={setScreen} onOpen={(id) => setScreen({ name: 'detail', id })} />
+          <Home me={me} onNav={setScreen} onOpen={(id) => setScreen({ name: 'detail', id, from: 'home' })} />
         )}
         {screen.name === 'list' && (
           <RequestsList
             me={me}
             onCreate={() => setScreen({ name: 'create' })}
-            onOpen={(id) => setScreen({ name: 'detail', id })}
+            onOpen={(id) => setScreen({ name: 'detail', id, from: 'list' })}
           />
         )}
         {screen.name === 'create' && <CreateRequest onDone={() => setScreen({ name: 'list' })} />}
         {screen.name === 'detail' && (
-          <RequestDetailView id={screen.id} me={me} onBack={() => setScreen({ name: 'list' })} />
+          <RequestDetailView id={screen.id} me={me} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
         )}
-        {screen.name === 'approvals' && <InboxScreen onOpen={(id) => setScreen({ name: 'detail', id })} permissions={me.permissions} />}
-        {screen.name === 'warehouse' && <WarehouseScreen />}
+        {screen.name === 'approvals' && <InboxScreen onOpen={(id) => setScreen({ name: 'detail', id, from: 'approvals' })} permissions={me.permissions} />}
+        {screen.name === 'warehouse' && <WarehouseScreen permissions={me.permissions} />}
+        {screen.name === 'procurement' && (
+          <ProcurementScreen canManage={me.permissions.includes('suppliers.manage')} onOpen={(id) => setScreen({ name: 'detail', id, from: 'procurement' })} />
+        )}
         {screen.name === 'menu' && <Menu me={me} theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onLogout={() => { clearToken(); setMe(null); }} onProfileUpdated={loadMe} />}
         {screen.name === 'admin' && (
           <AdminPanel permissions={me.permissions} onExit={() => setScreen({ name: 'home' })} />
@@ -266,8 +275,11 @@ function BottomNav({ me, active, onNav }: { me: Me; active: Screen['name']; onNa
   const tabs: { key: Screen['name']; label: string; ic: string }[] = [{ key: 'home', label: 'Главная', ic: 'home' }];
   if (can('requests.view')) tabs.push({ key: 'list', label: 'Заявки', ic: 'file' });
   if (canAct) tabs.push({ key: 'approvals', label: 'Согласования', ic: 'checkCircle' });
+  // Independent tabs: warehouse/procurement show by their own permission,
+  // in parallel with the admin tab (an else-if chain hid them from combined roles).
   if (isAdmin) tabs.push({ key: 'admin', label: 'Админ', ic: 'shield' });
-  else if (can('warehouse.view')) tabs.push({ key: 'warehouse', label: 'Склад', ic: 'box' });
+  if (can('warehouse.view')) tabs.push({ key: 'warehouse', label: 'Склад', ic: 'box' });
+  if (can('procurement.view')) tabs.push({ key: 'procurement', label: 'Закупки', ic: 'box' });
   tabs.push({ key: 'menu', label: 'Меню', ic: 'grid' });
 
   return (
@@ -460,7 +472,7 @@ function Home({
 }) {
   const [dash, setDash] = useState<DashboardData | null>(null);
   useEffect(() => {
-    api.dashboard().then(setDash).catch(() => {});
+    api.dashboard().then(setDash).catch((e) => console.error('Dashboard load failed:', e));
   }, []);
   const can = (p: string) => me.permissions.includes(p);
 
@@ -741,6 +753,10 @@ function RequestsList({
             <option value="draft">Черновик</option>
             <option value="warehouse_check">Склад</option>
             <option value="procurement">Закупка</option>
+            <option value="finance_payment">Ожидает оплаты</option>
+            <option value="delivery">Доставка</option>
+            <option value="receiving">Приёмка</option>
+            <option value="issue">Выдача</option>
             <option value="closed">Закрыта</option>
           </select>
         </div>
@@ -840,6 +856,7 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [submittedNo, setSubmittedNo] = useState<string | null>(null);
+  const submitLock = useRef(false);
 
   useEffect(() => {
     api
@@ -917,6 +934,8 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
   const missingRequired = stepFields(steps[idx] ?? -1).filter((f) => f.required && !filled(f));
 
   const submit = async () => {
+    if (submitLock.current) return;
+    submitLock.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -949,7 +968,8 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
       // still produces a readable request. Items are optional — build one only if named.
       const title = itemName || firstText;
       if (title) payload.title = title;
-      payload.items = itemName ? [{ name: itemName, quantity: quantity || 1, unitPrice: 0, unit }] : [];
+      if (itemName && !(quantity > 0)) throw new Error('Укажите количество больше нуля');
+      payload.items = itemName ? [{ name: itemName, quantity, unitPrice: 0, unit }] : [];
       if (Object.keys(custom).length) payload.customFields = custom;
       const res = await api.createRequest(payload);
       // Upload attached files (if any)
@@ -966,6 +986,7 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
       setError((e as Error).message);
     } finally {
       setSaving(false);
+      submitLock.current = false;
     }
   };
 
@@ -1113,7 +1134,7 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
               let pending = selected.length;
               for (let i = 0; i < selected.length; i++) {
                 const file = selected[i];
-                if (file.size > 2 * 1024 * 1024) { setError('Файл ' + file.name + ' больше 2 МБ'); continue; }
+                if (file.size > 2 * 1024 * 1024) { setError('Файл ' + file.name + ' больше 2 МБ'); pending--; if (pending <= 0) { setValues((p) => ({ ...p, ['__files_' + f.key]: [...((p as any)['__files_' + f.key] || []), ...newFiles] as any })); } continue; }
                 const reader = new FileReader();
                 reader.onload = () => {
                   const base64 = (reader.result as string).split(',')[1] || '';
@@ -1267,12 +1288,21 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
 function ImageThumb({ attachmentId, alt }: { attachmentId: string; alt: string }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
     const token = getToken();
     fetch(`/api/attachments/${attachmentId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then((r) => r.blob())
-      .then((b) => setSrc(URL.createObjectURL(b)))
+      .then((b) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(b);
+        setSrc(objectUrl);
+      })
       .catch(() => {});
-    return () => { if (src) URL.revokeObjectURL(src); };
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
   }, [attachmentId]);
   if (!src) return <span style={{ width: 40, height: 40, borderRadius: 8, flex: 'none', background: 'var(--skel)', display: 'block' }} />;
   return <img src={src} alt={alt} style={{ width: 40, height: 40, borderRadius: 8, flex: 'none', objectFit: 'cover' }} />;
@@ -1428,27 +1458,45 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<LifecycleActionBtn | null>(null);
   const [busy, setBusy] = useState(false);
+  const actionLock = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    api.getRequest(id)
+      .then(data => { if (!cancelled) setReq(data); })
+      .catch(e => { if (!cancelled) setError((e as Error).message); });
+    return () => { cancelled = true; };
+  }, [id]);
 
   const load = useCallback(() => {
     api.getRequest(id).then(setReq).catch((e) => setError((e as Error).message));
   }, [id]);
-  useEffect(load, [load]);
 
   const run = async (
     action: string,
-    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; leadTime?: string; quotationId?: string } = {},
+    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string } = {},
   ) => {
-    setBusy(true);
-    setError(null);
+    if (actionLock.current) return;
+    actionLock.current = true;
     try {
-      await api.requestAction(id, { action, ...vals });
+      setBusy(true);
+      setError(null);
+      const res = await api.requestAction(id, { action, ...vals });
       setPending(null);
       load();
+      if (res?.warnings?.length) {
+        const msg = (res.warnings as string[]).join('\n');
+        const tg = (window as { Telegram?: { WebApp?: { showAlert?: (m: string) => void } } }).Telegram?.WebApp;
+        if (tg?.showAlert) tg.showAlert(msg);
+        else window.alert(msg);
+      }
     } catch (e) {
       setError((e as Error).message);
       throw e;
     } finally {
       setBusy(false);
+      actionLock.current = false;
     }
   };
   const onAction = (a: LifecycleActionBtn) => {
@@ -1545,8 +1593,13 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
                   <div style={{ paddingBottom: 14, paddingTop: 1 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
                     <div style={{ fontSize: 11, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg2)', marginTop: 2 }}>
-                      {step.state === 'completed' ? 'Согласовано' : step.state === 'current' ? 'Текущий этап' : 'Ожидает'}
+                      {step.state === 'completed' ? 'Готово' : step.state === 'current' ? 'Текущий этап' : 'Ожидает'}
                     </div>
+                    {step.state === 'current' && (
+                      <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 3, fontWeight: 600 }}>
+                        → {nextActionHint(step.stepKind)}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -1625,23 +1678,28 @@ function ActionModal({
   error: string | null;
   quotations: QuotationRow[];
   onCancel: () => void;
-  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; leadTime?: string; quotationId?: string }) => void;
+  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string }) => void;
 }) {
   const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
   const [amount, setAmount] = useState('');
   const [supplier, setSupplier] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [suppliers, setSuppliers] = useState<{ id: string; name: string }[]>([]);
   const [leadTime, setLeadTime] = useState('');
   const [quotationId, setQuotationId] = useState(quotations.find((q) => q.selected)?.id ?? '');
   const isAdd = action.quote === 'add';
   const isSelect = action.quote === 'select';
+  useEffect(() => {
+    if (isAdd) api.suppliers.list().then(setSuppliers).catch(() => {});
+  }, [isAdd]);
   const inputStyle: CSSProperties = { width: '100%', padding: '13px 15px', fontSize: 15, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
   const lbl: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 8 };
   const ok =
     (!action.pin || pin.length >= 4) &&
     (!action.comment || comment.trim().length > 0) &&
-    (!action.amount || (amount !== '' && Number(amount) >= 0)) &&
-    (!isAdd || (supplier.trim().length > 0 && amount !== '' && Number(amount) > 0)) &&
+    (!action.amount || (amount !== '' && Number(amount) > 0)) &&
+    (!isAdd || ((supplierId !== '' || supplier.trim().length > 0) && amount !== '' && Number(amount) > 0)) &&
     (!isSelect || quotationId !== '');
 
   return (
@@ -1653,7 +1711,30 @@ function ActionModal({
           <>
             <div style={{ marginBottom: 12 }}>
               <div style={lbl}>Поставщик</div>
-              <input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="напр. ООО «Метизы»" style={inputStyle} />
+              {suppliers.length > 0 && (
+                <select
+                  value={supplierId}
+                  onChange={(e) => {
+                    setSupplierId(e.target.value);
+                    const s = suppliers.find((x) => x.id === e.target.value);
+                    if (s) setSupplier(s.name);
+                  }}
+                  style={inputStyle}
+                >
+                  <option value="">— выберите из справочника —</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              )}
+              {!supplierId && (
+                <input
+                  value={supplier}
+                  onChange={(e) => setSupplier(e.target.value)}
+                  placeholder={suppliers.length > 0 ? 'или впишите вручную' : 'напр. ООО «Метизы»'}
+                  style={{ ...inputStyle, marginTop: suppliers.length > 0 ? 8 : 0 }}
+                />
+              )}
             </div>
             <div style={{ marginBottom: 12 }}>
               <div style={lbl}>Сумма КП (UZS)</div>
@@ -1688,7 +1769,7 @@ function ActionModal({
             )}
           </div>
         )}
-        {action.amount && (
+        {action.amount && !isAdd && (
           <div style={{ marginBottom: 12 }}>
             <div style={lbl}>Сумма КП (UZS)</div>
             <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
@@ -1715,7 +1796,8 @@ function ActionModal({
                 pin: action.pin ? pin : undefined,
                 comment: action.comment ? comment : undefined,
                 amount: action.amount || isAdd ? Number(amount) : undefined,
-                supplierName: isAdd ? supplier.trim() : undefined,
+                supplierId: isAdd && supplierId ? supplierId : undefined,
+                supplierName: isAdd ? supplier.trim() || undefined : undefined,
                 leadTime: isAdd && leadTime.trim() ? leadTime.trim() : undefined,
                 quotationId: isSelect ? quotationId : undefined,
               })
@@ -1735,15 +1817,19 @@ function ActionModal({
 function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () => void }) {
   const [tgId, setTgId] = useState('');
   const [err, setErr] = useState<string | null>(error);
+  const [loading, setLoading] = useState(false);
 
   const login = async () => {
     setErr(null);
+    setLoading(true);
     try {
       const r = await api.loginDev(tgId.trim());
       setToken(r.token);
       onLoggedIn();
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1762,9 +1848,10 @@ function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () 
         />
         <button
           onClick={login}
-          className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-white shadow-lg shadow-accent/20 active:scale-95"
+          disabled={loading}
+          className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-white shadow-lg shadow-accent/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Войти (dev)
+          {loading ? 'Вход...' : 'Войти (dev)'}
         </button>
         {err && <Err>{err}</Err>}
       </div>
@@ -1775,80 +1862,17 @@ function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () 
 function Centered({ children }: { children: ReactNode }) {
   return <div className="flex min-h-screen items-center justify-center p-6 text-fg2">{children}</div>;
 }
-function statusMeta(status: string): { label: string; color: string; bg: string } {
-  switch (status) {
-    case 'warehouse_check':
-      return { label: 'Проверка склада', color: 'var(--accent)', bg: 'var(--accent-bg)' };
-    case 'in_stock':
-      return { label: 'В наличии', color: 'var(--success)', bg: 'var(--success-bg)' };
-    case 'partially_available':
-      return { label: 'Частично в наличии', color: 'var(--warning)', bg: 'var(--warning-bg)' };
-    case 'out_of_stock':
-      return { label: 'Нет в наличии', color: 'var(--danger)', bg: 'var(--danger-bg)' };
-    case 'procurement':
-      return { label: 'В закупке', color: 'var(--accent)', bg: 'var(--accent-bg)' };
-    case 'quotation_received':
-      return { label: 'Получены КП', color: 'var(--accent)', bg: 'var(--accent-bg)' };
-    case 'approval_pending':
-    case 'pending_approval':
-      return { label: 'На согласовании', color: 'var(--warning)', bg: 'var(--warning-bg)' };
-    case 'approved':
-      return { label: 'Согласована', color: 'var(--success)', bg: 'var(--success-bg)' };
-    case 'rejected':
-      return { label: 'Отклонена', color: 'var(--danger)', bg: 'var(--danger-bg)' };
-    case 'paid':
-      return { label: 'Оплачена', color: 'var(--accent)', bg: 'var(--accent-bg)' };
-    case 'in_delivery':
-      return { label: 'В доставке', color: 'var(--accent)', bg: 'var(--accent-bg)' };
-    case 'warehouse_receiving':
-      return { label: 'Приёмка на складе', color: 'var(--accent)', bg: 'var(--accent-bg)' };
-    case 'accepted_to_warehouse':
-      return { label: 'Принята на склад', color: 'var(--success)', bg: 'var(--success-bg)' };
-    case 'issued':
-      return { label: 'Выдана в отдел', color: 'var(--success)', bg: 'var(--success-bg)' };
-    case 'closed':
-      return { label: 'Закрыта', color: 'var(--fg3)', bg: 'var(--chip)' };
-    case 'draft':
-      return { label: 'Черновик', color: 'var(--fg3)', bg: 'var(--chip)' };
-    default:
-      return { label: status, color: 'var(--fg2)', bg: 'var(--chip)' };
-  }
-}
-
-function progressOf(status: string): string {
-  switch (status) {
-    case 'draft':
-      return '8%';
-    case 'warehouse_check':
-      return '20%';
-    case 'in_stock':
-    case 'partially_available':
-    case 'out_of_stock':
-      return '40%';
-    case 'procurement':
-    case 'quotation_received':
-      return '60%';
-    case 'approval_pending':
-    case 'pending_approval':
-      return '80%';
-    case 'approved':
-      // Terminal in the data-driven engine (set only when no next step remains).
-      return '100%';
-    case 'paid':
-      return '88%';
-    case 'in_delivery':
-      return '91%';
-    case 'warehouse_receiving':
-      return '94%';
-    case 'accepted_to_warehouse':
-      return '96%';
-    case 'issued':
-      return '98%';
-    case 'closed':
-    case 'rejected':
-      return '100%';
-    default:
-      return '30%';
+function nextActionHint(stepKind: string): string {
+  switch (stepKind) {
+    case 'approval': return 'Ожидает согласования';
+    case 'warehouse_check': return 'Склад должен проверить наличие';
+    case 'procurement': return 'Снабжение подбирает поставщика';
+    case 'finance_payment': return 'Ожидает оплаты';
+    case 'delivery': return 'Ожидает доставки';
+    case 'receiving': return 'Склад принимает товар';
+    case 'issue': return 'Склад должен выдать материал';
+    case 'close': return 'Ожидает подтверждения получения';
+    default: return 'Ожидает действия';
   }
 }
 

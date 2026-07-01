@@ -3,6 +3,19 @@ interface TgWebApp {
   ready?: () => void;
   expand?: () => void;
   showConfirm?: (message: string, callback: (ok: boolean) => void) => void;
+  BackButton: {
+    show: () => void;
+    hide: () => void;
+    onClick: (cb: () => void) => void;
+    offClick: (cb: () => void) => void;
+  };
+  MainButton: {
+    show: () => void;
+    hide: () => void;
+    setText: (text: string) => void;
+    onClick: (cb: () => void) => void;
+    offClick: (cb: () => void) => void;
+  };
 }
 
 export function getTelegram(): TgWebApp | null {

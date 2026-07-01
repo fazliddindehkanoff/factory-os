@@ -8,6 +8,9 @@ export function createDb(connectionString: string) {
   const pool = new pg.Pool({
     connectionString,
     ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
+    max: 10,
+    connectionTimeoutMillis: 5000,
+    idleTimeoutMillis: 30000,
   });
   const db = drizzle(pool, { schema });
   return { db, pool };

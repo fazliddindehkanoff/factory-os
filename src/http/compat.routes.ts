@@ -12,6 +12,7 @@ import { getDashboard } from '../services/dashboard.service.js';
 import { createRequest } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
+import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
 import { receiveStock } from '../services/warehouse.service.js';
 
 type Db = any;
@@ -360,6 +361,13 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
       const body = req.body ?? {};
       const approvalId = req.params.id as string;
 
+      // R2: same permission gate as the canonical route — the step-role check
+      // inside the service alone is not an authorization to approve.
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'approvals.approve', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Недостаточно прав для согласования' });
+        return;
+      }
+
       // PIN gate for money-bearing stages (finance/director/owner), matching the design.
       const [ap] = await db.select().from(schema.approvals).where(eq(schema.approvals.id, approvalId));
       if (ap?.workflowStepId) {
@@ -370,10 +378,13 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
             res.status(403).json({ error: 'PIN не задан — задайте PIN в настройках для подписи' });
             return;
           }
+          const lockMsApprove = pinLockoutRemaining(u.id);
+          if (lockMsApprove > 0) { res.status(403).json({ error: `PIN locked, retry in ${Math.ceil(lockMsApprove/60000)} min` }); return; }
           if (!verifyPin(body.pin, usr.pinHash)) {
-            res.status(403).json({ error: 'Неверный PIN' });
-            return;
+            const lockedApprove = recordPinFailure(u.id);
+            res.status(403).json({ error: lockedApprove ? 'Too many attempts — locked 15 min' : 'Wrong PIN' }); return;
           }
+          clearPinFailures(u.id);
         }
       }
 
@@ -381,7 +392,6 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         approvalId,
         actorUserId: u.id,
         comment: body.comment,
-        inStock: body.in_stock,
       });
       res.json({ ok: true, next_stage: result.nextStepId, closed: result.status === 'approved' });
     } catch (e) {
@@ -408,9 +418,11 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
     try {
       const u = (req as AuthedReq).dbUser;
       const b = req.body ?? {};
-      const role = u.holdingId ? await primaryRole(db, u.id) : 'requester';
-      if (role !== 'owner') {
-        res.status(403).json({ error: 'Только учредитель' });
+      // Override is gated by the dedicated permission from the catalog (owner
+      // holds 'all'), so re-mapping roles in the constructor actually applies —
+      // this also puts the previously-dead approvals.override to work (M5).
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'approvals.override', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Только учредитель (approvals.override)' });
         return;
       }
       if (!['approve', 'cancel'].includes(b.action)) {
@@ -426,10 +438,13 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         res.status(403).json({ error: 'PIN не задан — задайте PIN в настройках' });
         return;
       }
+      const lockMsOverride = pinLockoutRemaining(u.id);
+      if (lockMsOverride > 0) { res.status(403).json({ error: `PIN locked, retry in ${Math.ceil(lockMsOverride/60000)} min` }); return; }
       if (!verifyPin(b.pin, usr.pinHash)) {
-        res.status(403).json({ error: 'Неверный PIN' });
-        return;
+        const lockedOverride = recordPinFailure(u.id);
+        res.status(403).json({ error: lockedOverride ? 'Too many attempts — locked 15 min' : 'Wrong PIN' }); return;
       }
+      clearPinFailures(u.id);
       const [rq] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
       if (!rq) {
         res.status(404).json({ error: 'Not found' });
@@ -458,6 +473,15 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
           .update(schema.requests)
           .set({ status: newStatus, currentStepId: null, updatedAt: new Date(), closedAt: new Date() })
           .where(eq(schema.requests.id, rq.id));
+        // E5: every transition writes status history — the legacy layer included.
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: rq.id,
+          oldStatus: rq.status,
+          newStatus,
+          changedBy: u.id,
+          comment: 'OWNER OVERRIDE: ' + String(b.reason).trim(),
+          source: 'api',
+        });
         await tx.insert(schema.auditLogs).values({
           holdingId: rq.holdingId,
           userId: u.id,
@@ -481,6 +505,11 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
     try {
       const u = (req as AuthedReq).dbUser;
       const body = req.body ?? {};
+      // R3: mirror the canonical route's permission gate.
+      if (!u.holdingId || !(await hasPermission(db, u.id, 'approvals.reject', { holdingId: u.holdingId }))) {
+        res.status(403).json({ error: 'Недостаточно прав для отклонения' });
+        return;
+      }
       await rejectApproval(db, { approvalId: req.params.id as string, actorUserId: u.id, comment: body.comment ?? '' });
       res.json({ ok: true });
     } catch (e) {
@@ -496,7 +525,15 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         res.json({ ok: true, no_pin: true });
         return;
       }
-      res.json({ ok: verifyPin(String((req.body ?? {}).pin ?? ''), usr.pinHash) });
+      const lockMsVerify = pinLockoutRemaining(u.id);
+      if (lockMsVerify > 0) { res.status(403).json({ error: `PIN locked, retry in ${Math.ceil(lockMsVerify/60000)} min` }); return; }
+      const pinOk = verifyPin(String((req.body ?? {}).pin ?? ''), usr.pinHash);
+      if (!pinOk) {
+        const lockedVerify = recordPinFailure(u.id);
+        res.status(403).json({ error: lockedVerify ? 'Too many attempts — locked 15 min' : 'Wrong PIN' }); return;
+      }
+      clearPinFailures(u.id);
+      res.json({ ok: true });
     } catch (e) {
       next(e);
     }
@@ -550,18 +587,33 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      const [q] = await db
-        .insert(schema.quotations)
-        .values({
+      const q = await db.transaction(async (tx: Db) => {
+        const [row] = await tx
+          .insert(schema.quotations)
+          .values({
+            holdingId: rq.holdingId,
+            requestId: rq.id,
+            supplierName: String(b.supplier_name).trim(),
+            amount: amt,
+            leadTime: b.lead_time ?? null,
+            note: b.note ?? null,
+            createdBy: u.id,
+          })
+          .returning();
+        // E5: mirror the canonical layer's audit for КП.
+        await tx.insert(schema.auditLogs).values({
           holdingId: rq.holdingId,
-          requestId: rq.id,
-          supplierName: String(b.supplier_name).trim(),
-          amount: amt,
-          leadTime: b.lead_time ?? null,
-          note: b.note ?? null,
-          createdBy: u.id,
-        })
-        .returning();
+          factoryId: rq.factoryId,
+          userId: u.id,
+          action: 'quotation.created',
+          module: 'procurement',
+          entityType: 'quotation',
+          entityId: row.id,
+          newValue: { supplierName: row.supplierName, amount: amt },
+          source: 'api',
+        });
+        return row;
+      });
       res.json({ ok: true, id: q.id });
     } catch (e) {
       next(e);
@@ -594,6 +646,18 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         await tx.update(schema.quotations).set({ selected: false }).where(eq(schema.quotations.requestId, q.requestId));
         await tx.update(schema.quotations).set({ selected: true }).where(eq(schema.quotations.id, q.id));
         await tx.update(schema.requests).set({ estimatedAmount: q.amount, updatedAt: new Date() }).where(eq(schema.requests.id, q.requestId));
+        // E5: supplier selection changes the request amount — audit it like the canonical layer.
+        await tx.insert(schema.auditLogs).values({
+          holdingId: rqS.holdingId,
+          factoryId: rqS.factoryId,
+          userId: u.id,
+          action: 'supplier.selected',
+          module: 'procurement',
+          entityType: 'quotation',
+          entityId: q.id,
+          newValue: { supplierName: q.supplierName, amount: q.amount },
+          source: 'api',
+        });
       });
       res.json({ ok: true, total_amount: q.amount });
     } catch (e) {
@@ -633,8 +697,9 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         return;
       }
       const [rqAtt] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      if (!rqAtt || rqAtt.holdingId !== u.holdingId) { res.status(403).json({ error: 'Forbidden' }); return; }
       const roleAtt = u.holdingId ? await primaryRole(db, u.id) : 'requester';
-      if (!rqAtt || !canAccessRequest(roleAtt, u.id, u.holdingId, rqAtt)) {
+      if (!canAccessRequest(roleAtt, u.id, u.holdingId, rqAtt)) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
@@ -702,6 +767,16 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
       const u = (req as AuthedReq).dbUser;
       if (!u.holdingId) {
         res.json([]);
+        return;
+      }
+      // R1: stock levels are not public within the holding. Keep the design's
+      // staff roles working, but require warehouse.view from everyone else.
+      const stockRole = await primaryRole(db, u.id);
+      if (
+        !['owner', 'admin', 'director', 'warehouse'].includes(stockRole) &&
+        !(await hasPermission(db, u.id, 'warehouse.view', { holdingId: u.holdingId }))
+      ) {
+        res.status(403).json({ error: 'Forbidden' });
         return;
       }
       const rows = await db
@@ -799,8 +874,16 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
       await db.transaction(async (tx: Db) => {
         await tx
           .update(schema.requests)
-          .set({ status: 'approved', currentStepId: null, updatedAt: new Date(), closedAt: new Date() })
+          .set({ status: 'closed', currentStepId: null, updatedAt: new Date(), closedAt: new Date() })
           .where(eq(schema.requests.id, rq.id));
+        // E5: legacy receive-close also leaves a history row.
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: rq.id,
+          oldStatus: rq.status,
+          newStatus: 'closed',
+          changedBy: u.id,
+          source: 'api',
+        });
         await tx.insert(schema.auditLogs).values({
           holdingId: rq.holdingId,
           userId: u.id,
@@ -890,7 +973,7 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         .select({ userId: schema.userRoles.userId, code: schema.roles.code })
         .from(schema.userRoles)
         .innerJoin(schema.roles, eq(schema.roles.id, schema.userRoles.roleId))
-        .where(eq(schema.userRoles.status, 'active'));
+        .where(and(eq(schema.userRoles.status, 'active'), eq(schema.userRoles.holdingId, ctx.holdingId)));
       const byUser = new Map<string, string[]>();
       for (const x of urs as { userId: string; code: string }[]) {
         if (!byUser.has(x.userId)) byUser.set(x.userId, []);
@@ -951,6 +1034,8 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
     try {
       const ctx = await requirePerm(req, res, 'users.manage');
       if (!ctx) return;
+      const [target] = await db.select().from(schema.users).where(eq(schema.users.id, req.params.id as string));
+      if (!target || target.holdingId !== ctx.holdingId) { res.status(404).json({ error: 'User not found' }); return; }
       const actorRole = await primaryRole(db, ctx.id);
       const b = req.body ?? {};
       const updates: Record<string, unknown> = {};
@@ -981,6 +1066,8 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         res.status(400).json({ error: 'Нельзя деактивировать себя' });
         return;
       }
+      const [targetDel] = await db.select().from(schema.users).where(eq(schema.users.id, req.params.id as string));
+      if (!targetDel || targetDel.holdingId !== ctx.holdingId) { res.status(404).json({ error: 'User not found' }); return; }
       await db.update(schema.users).set({ status: 'disabled' }).where(eq(schema.users.id, req.params.id as string));
       res.json({ ok: true, active: 0 });
     } catch (e) {
@@ -992,6 +1079,8 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
     try {
       const ctx = await requirePerm(req, res, 'users.manage');
       if (!ctx) return;
+      const [targetAct] = await db.select().from(schema.users).where(eq(schema.users.id, req.params.id as string));
+      if (!targetAct || targetAct.holdingId !== ctx.holdingId) { res.status(404).json({ error: 'User not found' }); return; }
       await db.update(schema.users).set({ status: 'active' }).where(eq(schema.users.id, req.params.id as string));
       res.json({ ok: true, active: 1 });
     } catch (e) {

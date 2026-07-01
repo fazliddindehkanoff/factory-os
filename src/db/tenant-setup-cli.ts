@@ -19,10 +19,14 @@ const pool = new pg.Pool({
 });
 const db = drizzle(pool);
 
+// M3: demo users (demo_owner etc.) only outside production — or with an explicit force flag.
+const seedDemoUsers = process.env.NODE_ENV !== 'production' || process.env.FORCE_DEMO_SEED === '1';
+if (seedDemoUsers) console.warn('⚠️  Seeding demo users (demo_owner etc.) — dev/staging only, never production.');
 const result = await setupTenant(db, {
   holdingName: process.env.HOLDING_NAME ?? 'Zelal Tekstil',
   ownerTelegramId: process.env.OWNER_TELEGRAM_ID,
   ownerName: process.env.OWNER_NAME,
+  seedDemoUsers,
 });
 
 console.log(

@@ -166,6 +166,39 @@ async function actorMissingCodes(db: Db, userId: string, codes: string[], scope:
   return missing;
 }
 
+/**
+ * H1: financial-control ordering. Routing only moves FORWARD through stepOrder, so
+ * an amount-gated approval step (thresholdAmount / conditionRule.amountGte) placed
+ * BEFORE a procurement step never re-fires after the КП raises the amount — the
+ * threshold approval is silently skipped. Reject such configurations up-front.
+ * Runs inside the mutation's transaction: an invalid layout rolls back.
+ */
+async function assertThresholdsAfterProcurement(tx: Db, workflowId: string): Promise<void> {
+  const steps: {
+    stepName: string;
+    stepKind: string;
+    stepOrder: number;
+    enabled: boolean;
+    thresholdAmount: number | null;
+    conditionRule: Record<string, unknown> | null;
+  }[] = await tx.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.workflowId, workflowId));
+  const enabled = steps.filter((s) => s.enabled !== false);
+  const procurementOrders = enabled.filter((s) => s.stepKind === 'procurement').map((s) => s.stepOrder);
+  if (!procurementOrders.length) return;
+  const lastProcurement = Math.max(...procurementOrders);
+  const bad = enabled.find(
+    (s) =>
+      s.stepKind === 'approval' &&
+      s.stepOrder < lastProcurement &&
+      (s.thresholdAmount != null || (s.conditionRule as { amountGte?: unknown } | null)?.amountGte != null),
+  );
+  if (bad) {
+    throw new ValidationError(
+      `Шаг согласования с порогом суммы («${bad.stepName}») должен стоять ПОСЛЕ шага закупки — иначе рост суммы при выборе КП обойдёт финконтроль`,
+    );
+  }
+}
+
 export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
   const r = Router();
   r.use(auth); // every admin route requires an authenticated user
@@ -214,6 +247,24 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       .innerJoin(schema.permissions, eq(schema.permissions.id, schema.rolePermissions.permissionId))
       .where(eq(schema.rolePermissions.roleId, roleId));
     return rows.map((x: { code: string }) => x.code);
+  }
+
+  /**
+   * R6: anti-escalation must also cover REVOCATION. You may archive a user or strip
+   * their roles only if you yourself hold (at holding scope) every permission their
+   * active roles confer — otherwise a users.manage holder could "behead" the owner.
+   */
+  async function assertActorOutranks(actorId: string, actorHoldingId: string, targetUserId: string): Promise<void> {
+    const assigns: { roleId: string }[] = await db
+      .select({ roleId: schema.userRoles.roleId })
+      .from(schema.userRoles)
+      .where(and(eq(schema.userRoles.userId, targetUserId), eq(schema.userRoles.status, 'active')));
+    const codes = new Set<string>();
+    for (const a of assigns) for (const c of await rolePermissionCodes(a.roleId)) codes.add(c);
+    const missing = await actorMissingCodes(db, actorId, [...codes], { holdingId: actorHoldingId });
+    if (missing.length) {
+      throw new ForbiddenError('Нельзя администрировать пользователя с более широкими правами, чем ваши');
+    }
   }
 
   /** Count active user-role assignments scoped to each department. */
@@ -548,14 +599,18 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
   // ─────────────────────────────────────────────────────────────────────────
 
   // BUG 1 FIX: GET /users now filters userRoles by holdingId to prevent cross-tenant leak
-  r.get('/users', requirePerm('users.manage'), async (req, res, next) => {
+  // R10: reading the list is allowed to users.view holders (read-only: director);
+  // users.manage still qualifies so a manage-only custom role keeps working.
+  r.get('/users', requireAnyPerm(['users.view', 'users.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
       const hid = u.holdingId as string;
-      const users = await db
+      const allUsers = await db
         .select()
         .from(schema.users)
         .where(eq(schema.users.holdingId, hid));
+      // Archived users (soft-deleted) are excluded from the active management list.
+      const users = allUsers.filter((usr: { status: string }) => usr.status !== 'archived');
       const assigns = await db
         .select()
         .from(schema.userRoles)
@@ -601,7 +656,9 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         const updated = await db.transaction(async (tx: Db) => {
           const [row] = await tx
             .update(schema.users)
-            .set({ holdingId: u.holdingId, status: 'active', updatedAt: new Date() })
+            // The admin-entered name wins: a person who self-registered keeps a Telegram
+            // display name until an admin sets it here — so reactivation must update it too.
+            .set({ holdingId: u.holdingId, status: 'active', fullName: name, updatedAt: new Date() })
             .where(eq(schema.users.id, existing.id))
             .returning();
           await writeAudit(tx, {
@@ -641,45 +698,38 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
     }
   });
 
-  /** Deactivate (soft) a user: disable + revoke their role assignments. */
-  // Delete a user: hard-delete if they have no history (no requests/approvals/audit
-  // referencing them), otherwise archive (data-integrity — referenced rows must keep
-  // pointing at a real user). Returns { deleted } so the UI can tell the difference.
+  /** "Delete" a user = ARCHIVE, never hard-delete (Factory OS is an accountability
+   *  system, so people are never physically removed): keep the row for audit/history,
+   *  set status='archived', revoke active role assignments, and write a user.archived
+   *  audit event. Archived users are excluded from the active list and — since auth is
+   *  fail-closed on status==='active' — cannot authenticate. */
   r.delete('/users/:id', requirePerm('users.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
       const id = req.params.id as string;
       if (id === u.id) throw new ValidationError('Нельзя удалить самого себя');
       const target = await loadHoldingRow(db, schema.users, id, u.holdingId as string);
+      await assertActorOutranks(u.id, u.holdingId as string, id); // R6
 
-      let deleted = false;
-      try {
-        await db.transaction(async (tx: Db) => {
-          await tx.delete(schema.userRoles).where(eq(schema.userRoles.userId, id));
-          await tx.delete(schema.users).where(eq(schema.users.id, id));
-        });
-        deleted = true;
-      } catch {
-        // Foreign-key references (requests/approvals/audit) → can't physically delete.
-        await db.transaction(async (tx: Db) => {
-          await tx.update(schema.users).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.users.id, id));
-          await tx
-            .update(schema.userRoles)
-            .set({ status: 'revoked' })
-            .where(and(eq(schema.userRoles.userId, id), eq(schema.userRoles.status, 'active')));
-        });
-      }
+      await db.transaction(async (tx: Db) => {
+        await tx.update(schema.users).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.users.id, id));
+        await tx
+          .update(schema.userRoles)
+          .set({ status: 'revoked' })
+          .where(and(eq(schema.userRoles.userId, id), eq(schema.userRoles.status, 'active')));
+      });
+
       await writeAudit(db, {
         holdingId: u.holdingId as string,
         userId: u.id,
-        action: deleted ? 'user.deleted' : 'user.archived',
+        action: 'user.archived',
         module: 'admin',
         entityType: 'user',
         entityId: id,
         oldValue: { fullName: target.fullName, status: target.status },
-        newValue: { status: deleted ? 'deleted' : 'archived' },
+        newValue: { status: 'archived' },
       });
-      res.json({ ok: true, deleted });
+      res.json({ ok: true, archived: true });
     } catch (e) {
       next(e);
     }
@@ -797,6 +847,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       const id = req.params.id as string;
       const roleId = req.params.roleId as string;
       await loadHoldingRow(db, schema.users, id, u.holdingId as string);
+      await assertActorOutranks(u.id, u.holdingId as string, id); // R6
       const active: { id: string }[] = await db
         .select({ id: schema.userRoles.id })
         .from(schema.userRoles)
@@ -842,6 +893,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       const userId = req.params.id as string;
       const assignmentId = req.params.assignmentId as string;
       await loadHoldingRow(db, schema.users, userId, u.holdingId as string);
+      await assertActorOutranks(u.id, u.holdingId as string, userId); // R6
       const [row] = await db.select().from(schema.userRoles).where(eq(schema.userRoles.id, assignmentId));
       if (!row || row.userId !== userId || row.holdingId !== u.holdingId || row.status !== 'active') {
         throw new NotFoundError('Назначение не найдено');
@@ -930,6 +982,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       if (role.isSystem || role.holdingId === null) throw new ForbiddenError('Системную роль нельзя изменить');
       if (role.holdingId !== u.holdingId) throw new NotFoundError('Роль не найдена');
       const [updated] = await db.update(schema.roles).set({ name }).where(eq(schema.roles.id, id)).returning();
+      await writeAudit(db, { holdingId: u.holdingId!, userId: u.id, action: 'role.renamed', module: 'admin', entityType: 'role', entityId: id, oldValue: { name: role.name }, newValue: { name } });
       res.json(updated);
     } catch (e) {
       next(e);
@@ -1087,6 +1140,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       const module = (wf as unknown as { module: string }).module;
       const [updated] = await db.transaction(async (tx: Db) => {
         if (wantActive === true) {
+          const stepCount = await tx.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.workflowId, id));
+          if (stepCount.length === 0) throw new ValidationError('Cannot activate workflow with no steps');
           // Find the currently active workflow(s) for this module and check for in-flight requests
           const currentlyActive: { id: string }[] = await tx
             .select({ id: schema.workflows.id })
@@ -1170,6 +1225,16 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
             .set({ stepOrder: Math.round(it.orderIndex) })
             .where(eq(schema.workflowSteps.id, it.id));
         }
+        await assertThresholdsAfterProcurement(tx, id); // H1
+      });
+      await writeAudit(db, {
+        holdingId: u.holdingId!,
+        userId: u.id,
+        action: 'workflow.steps_reordered',
+        module: 'admin',
+        entityType: 'workflow',
+        entityId: id,
+        newValue: { order: items.map((it) => ({ id: it.id, orderIndex: it.orderIndex })) },
       });
       res.json({ ok: true, count: items.length });
     } catch (e) {
@@ -1196,23 +1261,30 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       }
       const orderIndex = body.order_index !== undefined ? Number(body.order_index) : NaN;
       if (!Number.isFinite(orderIndex)) throw new ValidationError('order_index обязателен');
+      const existing = await db.select().from(schema.workflowSteps)
+        .where(and(eq(schema.workflowSteps.workflowId, id), eq(schema.workflowSteps.stepOrder, Math.round(orderIndex))));
+      if (existing.length > 0) throw new ConflictError('Step with this order already exists in workflow');
       const thresholdAmount =
         body.threshold_amount === undefined || body.threshold_amount === null ? null : Number(body.threshold_amount);
       if (thresholdAmount !== null && (!Number.isFinite(thresholdAmount) || thresholdAmount < 0)) {
         throw new ValidationError('threshold_amount должен быть неотрицательным числом');
       }
-      const [step] = await db
-        .insert(schema.workflowSteps)
-        .values({
-          workflowId: id,
-          stepOrder: Math.round(orderIndex),
-          stepName,
-          stepKind,
-          approverRoleId,
-          conditionRule: (body.condition_rule as Record<string, unknown>) ?? null,
-          thresholdAmount,
-        })
-        .returning();
+      const step = await db.transaction(async (tx: Db) => {
+        const [row] = await tx
+          .insert(schema.workflowSteps)
+          .values({
+            workflowId: id,
+            stepOrder: Math.round(orderIndex),
+            stepName,
+            stepKind,
+            approverRoleId,
+            conditionRule: (body.condition_rule as Record<string, unknown>) ?? null,
+            thresholdAmount,
+          })
+          .returning();
+        await assertThresholdsAfterProcurement(tx, id); // H1
+        return row;
+      });
       res.status(201).json(step);
     } catch (e) {
       next(e);
@@ -1265,11 +1337,15 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         patch.stepKind = k;
       }
       if (body.enabled !== undefined) patch.enabled = Boolean(body.enabled);
-      const [updated] = await db
-        .update(schema.workflowSteps)
-        .set(patch)
-        .where(eq(schema.workflowSteps.id, stepId))
-        .returning();
+      const updated = await db.transaction(async (tx: Db) => {
+        const [row] = await tx
+          .update(schema.workflowSteps)
+          .set(patch)
+          .where(eq(schema.workflowSteps.id, stepId))
+          .returning();
+        await assertThresholdsAfterProcurement(tx, id); // H1
+        return row;
+      });
       res.json(updated);
     } catch (e) {
       next(e);
@@ -1381,7 +1457,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
   // Block E2 — Materials catalog (6.1.11)
   // ─────────────────────────────────────────────────────────────────────────
 
-  r.get('/materials', requirePerm('warehouse.view'), async (req, res, next) => {
+  r.get('/materials', requireAnyPerm(['warehouse.view', 'settings.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
       const rows = await db
@@ -1589,7 +1665,13 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         patch.label = l;
       }
       if (body.required !== undefined) patch.required = !!body.required;
-      if (body.enabled !== undefined) patch.enabled = !!body.enabled;
+      // A required system field cannot be disabled — it would break request creation.
+      if (body.enabled !== undefined) {
+        if (!body.enabled && field.system && field.required) {
+          throw new ValidationError('Required system fields cannot be disabled');
+        }
+        patch.enabled = !!body.enabled;
+      }
       if (body.placeholder !== undefined) patch.placeholder = str(body.placeholder).slice(0, 500) || null;
       if (body.step !== undefined && Number(body.step) >= 1) patch.stepGroup = Math.floor(Number(body.step));
       if (body.orderIndex !== undefined && Number.isFinite(Number(body.orderIndex))) {
@@ -1624,6 +1706,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       const id = req.params.id as string;
       const [field] = await db.select().from(schema.formFields).where(eq(schema.formFields.id, id));
       if (!field || field.holdingId !== u.holdingId) throw new NotFoundError('Поле не найдено');
+      // System fields are column-mapped and load-bearing — they can only be disabled, never deleted.
+      if (field.system) throw new ValidationError('System fields cannot be deleted — only disabled');
       await db.transaction(async (tx: Db) => {
         await tx.delete(schema.formFields).where(eq(schema.formFields.id, id));
         await writeAudit(tx, {

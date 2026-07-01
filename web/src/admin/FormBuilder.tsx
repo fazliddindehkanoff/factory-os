@@ -137,10 +137,14 @@ export function FormBuilder() {
                           ↓
                         </MiniBtn>
                       </div>
-                      <MiniBtn onClick={() => toggleEnabled(f)}>{f.enabled ? 'Выкл' : 'Вкл'}</MiniBtn>
-                      <MiniBtn className="bg-danger/15 text-danger" onClick={() => remove(f)}>
-                        Удалить
-                      </MiniBtn>
+                      {!(f.system && f.required) && (
+                        <MiniBtn onClick={() => toggleEnabled(f)}>{f.enabled ? 'Выкл' : 'Вкл'}</MiniBtn>
+                      )}
+                      {!f.system && (
+                        <MiniBtn className="bg-danger/15 text-danger" onClick={() => remove(f)}>
+                          Удалить
+                        </MiniBtn>
+                      )}
                     </div>
                   </div>
                 </div>

@@ -33,10 +33,12 @@ interface Movement {
 
 type Tab = 'balances' | 'receive' | 'issue' | 'journal';
 
-const TABS: { key: Tab; label: string }[] = [
+// Receive/issue are mutating actions — their tabs need the matching permission
+// (viewing balances/journal only needs warehouse.view, which gates the screen).
+const TABS: { key: Tab; label: string; perm?: string }[] = [
   { key: 'balances', label: 'Остатки' },
-  { key: 'receive', label: 'Приёмка' },
-  { key: 'issue', label: 'Выдача' },
+  { key: 'receive', label: 'Приёмка', perm: 'warehouse.receive' },
+  { key: 'issue', label: 'Выдача', perm: 'warehouse.issue' },
   { key: 'journal', label: 'Журнал' },
 ];
 
@@ -107,8 +109,9 @@ const movementBadge = (type: string): { label: string; fg: string; bg: string } 
 };
 
 // ── Component ────────────────────────────────────────────────────────────────
-export function WarehouseScreen() {
+export function WarehouseScreen({ permissions = [] }: { permissions?: string[] }) {
   const [tab, setTab] = useState<Tab>('balances');
+  const tabs = TABS.filter((t) => !t.perm || permissions.includes(t.perm));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '0 0 24px' }}>
@@ -123,7 +126,7 @@ export function WarehouseScreen() {
           scrollbarWidth: 'none',
         }}
       >
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
@@ -147,8 +150,8 @@ export function WarehouseScreen() {
       </div>
 
       {tab === 'balances' && <BalancesTab />}
-      {tab === 'receive' && <OperationForm mode="receive" />}
-      {tab === 'issue' && <OperationForm mode="issue" />}
+      {tab === 'receive' && permissions.includes('warehouse.receive') && <OperationForm mode="receive" />}
+      {tab === 'issue' && permissions.includes('warehouse.issue') && <OperationForm mode="issue" />}
       {tab === 'journal' && <JournalTab />}
     </div>
   );
@@ -336,6 +339,13 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
   const [success, setSuccess] = useState(false);
   const [materials, setMaterials] = useState<MatOpt[]>([]);
   const [warehouses, setWarehouses] = useState<WhOpt[]>([]);
+
+  useEffect(() => {
+    if (success) {
+      const t = setTimeout(() => setSuccess(false), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [success]);
 
   useEffect(() => {
     api.admin.materials().then((m: MatOpt[]) => setMaterials(m)).catch(() => {});
