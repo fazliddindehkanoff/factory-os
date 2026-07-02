@@ -68,18 +68,38 @@ interface StatusHistoryRow {
   changedByRole?: string | null;
 }
 interface WorkflowTimelineStep {
+  stepId?: string;
   stepName: string;
   stepKind: string;
-  state: 'completed' | 'current' | 'future';
+  state: 'completed' | 'current' | 'future' | 'rejected';
+  actorName?: string | null;
+  actorRole?: string | null;
+  at?: string | null;
+  action?: string | null;
 }
 interface RequestDetail extends RequestRow {
-  items: { id: string; name: string; quantity: string; totalAmount: number }[];
+  items: { id: string; name: string; quantity: string; unit?: string | null; estimatedPrice?: number | null; totalAmount: number | null }[];
   approvals: ApprovalRow[];
   statusLabel?: string;
   statusHistory?: StatusHistoryRow[];
   quotations?: QuotationRow[];
   actions?: LifecycleActionBtn[];
   workflowTimeline?: WorkflowTimelineStep[];
+  canSeeMoney?: boolean;
+  // full-info fields (bug #9)
+  requesterName?: string | null;
+  responsibleName?: string | null;
+  factoryName?: string | null;
+  departmentNameResolved?: string | null;
+  departmentName?: string | null;
+  warehouseName?: string | null;
+  priority?: string | null;
+  requestType?: string | null;
+  neededDate?: string | null;
+  description?: string | null;
+  customFields?: Record<string, unknown> | null;
+  updatedAt?: string | null;
+  currency?: string | null;
 }
 type Screen =
   | { name: 'home' }
@@ -1845,10 +1865,26 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
   const history = req.statusHistory ?? [];
   const canSeeProcurement = me.permissions.includes('procurement.view') || me.permissions.includes('procurement.quote') || me.permissions.includes('procurement.select_supplier');
   const quotations = canSeeProcurement ? (req.quotations ?? []) : [];
-  const info = [
-    { k: 'Статус', v: req.statusLabel ?? statusMeta(req.status).label },
-    ...(canSeeProcurement ? [{ k: 'Позиций', v: String(req.items.length) }] : []),
-  ];
+
+  // Full info (bug #9): show every meaningful field, not just status.
+  const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
+  const TYPE_LABEL: Record<string, string> = { material_request: 'Материалы / товар', service_request: 'Услуга', other: 'Другое' };
+  const info: { k: string; v: string }[] = [];
+  const pushInfo = (k: string, v: unknown) => { if (v != null && String(v).trim() !== '') info.push({ k, v: String(v) }); };
+  pushInfo('Статус', req.statusLabel ?? statusMeta(req.status).label);
+  pushInfo('Автор', req.requesterName);
+  pushInfo('Завод', req.factoryName);
+  pushInfo('Отдел', req.departmentNameResolved ?? req.departmentName);
+  pushInfo('Склад', req.warehouseName);
+  pushInfo('Приоритет', req.priority ? (PRIORITY_LABEL[req.priority] ?? req.priority) : null);
+  pushInfo('Тип', req.requestType ? (TYPE_LABEL[req.requestType] ?? req.requestType) : null);
+  pushInfo('Ответственный', req.responsibleName);
+  pushInfo('Нужно к', req.neededDate ? fmtDate(req.neededDate) : null);
+  pushInfo('Создана', fmtDate(req.createdAt));
+  if (req.canSeeMoney && req.estimatedAmount != null) pushInfo('Сумма', `${Number(req.estimatedAmount).toLocaleString('ru-RU')} ${req.currency || 'UZS'}`);
+  pushInfo('Позиций', String(req.items.length));
+  // Custom form fields entered at creation.
+  const customEntries = req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : [];
 
   return (
     <div style={{ padding: '16px 16px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -1872,15 +1908,77 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
         </div>
       </div>
 
+      {/* Progress timeline — top of the card (#10), per-step actor/date-time (#7), correct rejected state (#4) */}
+      {(req.workflowTimeline ?? []).length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Прогресс согласования</div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {(req.workflowTimeline ?? []).map((step, idx, arr) => {
+              const last = idx === arr.length - 1;
+              const done = step.state === 'completed';
+              const cur = step.state === 'current';
+              const rej = step.state === 'rejected';
+              const color = rej ? 'var(--danger)' : done ? 'var(--success)' : cur ? 'var(--warning)' : 'var(--fg3)';
+              const mark = rej ? '✕' : done ? '✓' : cur ? '●' : '';
+              const lineColor = rej ? 'var(--danger)' : step.state === 'future' ? 'var(--line)' : color;
+              return (
+                <div key={step.stepId ?? idx} style={{ display: 'flex', gap: 13 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 'none' }}>
+                    <span style={{ width: 18, height: 18, borderRadius: '50%', marginTop: 2, flex: 'none', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', fontWeight: 700 }}>{mark}</span>
+                    {!last && <span style={{ width: 2, flex: 1, minHeight: 26, background: lineColor }} />}
+                  </div>
+                  <div style={{ paddingBottom: 16, flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
+                    <div style={{ fontSize: 11.5, marginTop: 2, fontWeight: cur || rej ? 600 : 500, color: rej ? 'var(--danger)' : cur ? 'var(--warning)' : done ? 'var(--success)' : 'var(--fg3)' }}>
+                      {rej ? 'Отклонено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
+                    </div>
+                    {(step.actorName || step.at) && (
+                      <div style={{ fontSize: 11, color: 'var(--fg3)', marginTop: 3, fontFamily: "'IBM Plex Mono', monospace" }}>
+                        {step.actorName ?? ''}{step.actorRole ? ` · ${step.actorRole}` : ''}{step.at ? ` · ${fmtDateTime(step.at)}` : ''}
+                      </div>
+                    )}
+                    {cur && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 3, fontWeight: 600 }}>→ {nextActionHint(step.stepKind)}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {req.description && String(req.description).trim() !== '' && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Примечание</div>
+          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
+        </div>
+      )}
+
+      {customEntries.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Дополнительно</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '11px 12px' }}>
+            {customEntries.map(([k, v]) => (
+              <div key={k}>
+                <div style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{k}</div>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', marginTop: 3 }}>{v == null || v === '' ? '—' : String(v)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {req.items.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Позиции</div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {req.items.map((it) => (
-              <div key={it.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderTop: '1px solid var(--line)' }}>
-                <span style={{ fontSize: 14, color: 'var(--fg)' }}>
-                  {it.name} <span style={{ color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace" }}>× {it.quantity}</span>
+              <div key={it.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 0', borderTop: '1px solid var(--line)' }}>
+                <span style={{ fontSize: 14, color: 'var(--fg)', minWidth: 0 }}>
+                  {it.name} <span style={{ color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace" }}>× {it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
                 </span>
+                {req.canSeeMoney && it.totalAmount != null && (
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace", flex: 'none' }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
+                )}
               </div>
             ))}
           </div>
@@ -1909,39 +2007,6 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
 
       <AttachmentsSection requestId={id} />
 
-      {/* Workflow timeline — shows all steps with completed/current/future state */}
-      {(req.workflowTimeline ?? []).length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Этапы согласования</div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {(req.workflowTimeline ?? []).map((step, idx) => {
-              const last = idx === (req.workflowTimeline ?? []).length - 1;
-              const color = step.state === 'completed' ? 'var(--success)' : step.state === 'current' ? 'var(--warning)' : 'var(--fg3)';
-              const stateLabel = step.state === 'completed' ? '✓' : step.state === 'current' ? '●' : '';
-              return (
-                <div key={idx} style={{ display: 'flex', gap: 13 }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 'none' }}>
-                    <span style={{ width: 12, height: 12, borderRadius: '50%', marginTop: 4, flex: 'none', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, color: '#fff', fontWeight: 700 }}>{stateLabel}</span>
-                    {!last && <span style={{ width: 2, flex: 1, minHeight: 18, background: step.state === 'future' ? 'var(--line)' : color }} />}
-                  </div>
-                  <div style={{ paddingBottom: 14, paddingTop: 1 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
-                    <div style={{ fontSize: 11, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg2)', marginTop: 2 }}>
-                      {step.state === 'completed' ? 'Готово' : step.state === 'current' ? 'Текущий этап' : 'Ожидает'}
-                    </div>
-                    {step.state === 'current' && (
-                      <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 3, fontWeight: 600 }}>
-                        → {nextActionHint(step.stepKind)}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {history.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>История действий</div>
@@ -1964,7 +2029,7 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
                       </div>
                     )}
                     {h.comment && <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{h.comment}</div>}
-                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{fmtDate(h.createdAt)}</div>
+                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{fmtDateTime(h.createdAt)}</div>
                   </div>
                 </div>
               );

@@ -424,7 +424,11 @@ export function buildRouter(deps: RouterDeps): Router {
       const hasMore = rows.length > limit;
       if (hasMore) rows.pop();
       const [{ total }] = await db.select({ total: count() }).from(schema.requests).where(where);
-      res.json({ items: rows, hasMore, offset, limit, total });
+      // Money gate (bug #9): hide estimatedAmount from roles below the procurement manager.
+      const listCodes = await getUserPermissionCodes(db, u.id);
+      const canSeeMoney = ['procurement.view', 'finance.view', 'audit.view'].some((p) => listCodes.includes(p));
+      const items = canSeeMoney ? rows : rows.map((r: any) => ({ ...r, estimatedAmount: null }));
+      res.json({ items, hasMore, offset, limit, total });
     } catch (e) {
       next(e);
     }
@@ -579,7 +583,11 @@ export function buildRouter(deps: RouterDeps): Router {
         .where(eq(schema.requestStatusHistory.requestId, reqRow.id))
         .orderBy(schema.requestStatusHistory.createdAt);
       // Enrich each history row with WHO acted (name + their role) for the timeline.
-      const actorIds = [...new Set(statusHistory.map((h: { changedBy: string | null }) => h.changedBy).filter(Boolean))] as string[];
+      // Covers both status-history changers and approval actors (for per-step who/when).
+      const actorIds = [...new Set([
+        ...statusHistory.map((h: { changedBy: string | null }) => h.changedBy),
+        ...approvals.map((a: { approverUserId: string | null }) => a.approverUserId),
+      ].filter(Boolean))] as string[];
       const actorMap = new Map<string, { name: string; role: string | null }>();
       if (actorIds.length) {
         const us = await db
@@ -613,8 +621,12 @@ export function buildRouter(deps: RouterDeps): Router {
             .orderBy(schema.quotations.createdAt)
         : [];
       const actions = await availableActions(db, reqRow, u.id);
-      // Build workflow timeline: all steps with completed/current/future state
-      let workflowTimeline: { stepName: string; stepKind: string; state: 'completed' | 'current' | 'future' }[] = [];
+      // Build workflow timeline with per-step state + WHO/WHEN acted (bugs #4, #7, #10).
+      type TLState = 'completed' | 'current' | 'future' | 'rejected';
+      let workflowTimeline: {
+        stepId: string; stepName: string; stepKind: string; state: TLState;
+        actorName: string | null; actorRole: string | null; at: unknown; action: string | null;
+      }[] = [];
       if (reqRow.workflowId) {
         const allSteps = await db
           .select()
@@ -623,30 +635,86 @@ export function buildRouter(deps: RouterDeps): Router {
         const sorted = allSteps
           .filter((s: { enabled: boolean }) => s.enabled !== false)
           .sort((a: { stepOrder: number }, b: { stepOrder: number }) => a.stepOrder - b.stepOrder);
+
+        // Resolved action per step (approved / rejected) from the approvals rows.
+        const stepAction = new Map<string, { action: string; at: unknown; actorId: string | null }>();
+        for (const a of approvals as { workflowStepId: string | null; status: string; approvedAt: unknown; approverUserId: string | null }[]) {
+          if (a.workflowStepId && (a.status === 'approved' || a.status === 'rejected')) {
+            stepAction.set(a.workflowStepId, { action: a.status, at: a.approvedAt, actorId: a.approverUserId });
+          }
+        }
+        // Rejected request → the step where it was rejected splits the timeline. (#4)
+        const rejectedStep = sorted.find((s: { id: string }) => stepAction.get(s.id)?.action === 'rejected');
+        const rejectedOrder = rejectedStep ? (rejectedStep as { stepOrder: number }).stepOrder : null;
+
         let foundCurrent = false;
         for (const s of sorted) {
-          let state: 'completed' | 'current' | 'future';
-          if (reqRow.currentStepId === s.id) {
+          let state: TLState;
+          if (rejectedOrder != null) {
+            // A rejected chain: steps before are done, the rejection step is red,
+            // everything after was never reached.
+            if ((s as { stepOrder: number }).stepOrder < rejectedOrder) state = 'completed';
+            else if ((s as { stepOrder: number }).stepOrder === rejectedOrder) state = 'rejected';
+            else state = 'future';
+          } else if (reqRow.currentStepId === s.id) {
             state = 'current';
             foundCurrent = true;
-          } else if (!foundCurrent && reqRow.currentStepId) {
+          } else if (reqRow.currentStepId && !foundCurrent) {
             state = 'completed';
           } else if (!reqRow.currentStepId) {
-            // Terminal state (approved/rejected/closed) — all steps are completed
-            state = 'completed';
+            state = 'completed'; // approved/closed terminal — all done
           } else {
             state = 'future';
           }
-          workflowTimeline.push({ stepName: s.stepName, stepKind: s.stepKind, state });
+          const act = stepAction.get(s.id);
+          const actor = act?.actorId ? actorMap.get(act.actorId) : undefined;
+          workflowTimeline.push({
+            stepId: s.id,
+            stepName: s.stepName,
+            stepKind: s.stepKind,
+            state,
+            action: act?.action ?? null,
+            at: act?.at ?? null,
+            actorName: actor?.name ?? null,
+            actorRole: actor?.role ?? null,
+          });
         }
       }
+
+      // Resolve human names for the full info card (bug #9).
+      const [requesterRow] = reqRow.requesterId
+        ? await db.select({ name: schema.users.fullName }).from(schema.users).where(eq(schema.users.id, reqRow.requesterId))
+        : [];
+      const [respRow] = reqRow.responsibleUserId
+        ? await db.select({ name: schema.users.fullName }).from(schema.users).where(eq(schema.users.id, reqRow.responsibleUserId))
+        : [];
+      const [facRow] = reqRow.factoryId
+        ? await db.select({ name: schema.factories.name }).from(schema.factories).where(eq(schema.factories.id, reqRow.factoryId))
+        : [];
+      const [depRow] = reqRow.departmentId
+        ? await db.select({ name: schema.departments.name }).from(schema.departments).where(eq(schema.departments.id, reqRow.departmentId))
+        : [];
+
+      // Money is visible to the procurement manager and everyone above (bug #9):
+      // same gate as КП. Others get null money fields instead of the values.
+      const canSeeMoney = canSeeQuotes;
+      const itemsOut = items.map((it: any) =>
+        canSeeMoney ? it : { ...it, estimatedPrice: null, totalAmount: null },
+      );
+
       res.json({
         ...reqRow,
+        estimatedAmount: canSeeMoney ? reqRow.estimatedAmount : null,
+        requesterName: requesterRow?.name ?? null,
+        responsibleName: respRow?.name ?? null,
+        factoryName: facRow?.name ?? null,
+        departmentNameResolved: depRow?.name ?? reqRow.departmentName ?? null,
         statusLabel: await statusLabelFor(db, reqRow),
-        items,
+        items: itemsOut,
         approvals,
         statusHistory: statusHistoryOut,
         quotations,
+        canSeeMoney,
         actions,
         workflowTimeline,
       });
