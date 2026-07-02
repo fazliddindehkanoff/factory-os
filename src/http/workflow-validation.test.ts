@@ -29,7 +29,11 @@ async function make() {
     .from(schema.roles)
     .where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, 'admin')));
   await db.insert(schema.userRoles).values({ userId: admin.id, roleId: role.id, holdingId: holding.id });
-  const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W', isActive: true }).returning();
+  // Build steps on an INACTIVE workflow (the realistic constructor flow: build,
+  // then activate). This test pins the H1 *ordering* rule, which is independent of
+  // active state. The stronger existence rule for ACTIVE workflows is covered by
+  // workflow-active-step-invariant.test.ts (NEW-2).
+  const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W', isActive: false }).returning();
   const app = createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true, rateLimit: false });
   const token = (await request(app).post('/api/auth/dev').send({ telegramId: 'adm' }).expect(200)).body.token as string;
   const post = (body: Record<string, unknown>) =>

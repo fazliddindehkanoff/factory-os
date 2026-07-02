@@ -77,10 +77,14 @@ export const api = {
   config: () => call('/config'),
   form: (screen: string) => call('/form/' + screen),
   dashboard: () => call('/dashboard'),
-  listRequests: (opts?: { limit?: number; offset?: number }) => {
+  listRequests: (opts?: { limit?: number; offset?: number; search?: string; status?: string }) => {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));
     if (opts?.offset) params.set('offset', String(opts.offset));
+    // P1-7: search/filter run server-side so they match across the whole holding,
+    // not just the current page.
+    if (opts?.search) params.set('search', opts.search);
+    if (opts?.status) params.set('status', opts.status);
     const qs = params.toString();
     return call('/requests' + (qs ? '?' + qs : ''));
   },

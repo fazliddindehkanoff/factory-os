@@ -44,4 +44,26 @@ describe('getDashboard', () => {
     const d = await getDashboard(db, '00000000-0000-0000-0000-000000000000', null);
     expect(d).toEqual({ myActive: 0, pendingForMe: 0, totalActive: 0, activity: [] });
   });
+
+  // P2-1: a closed/cancelled/archived request is terminal — it must not keep
+  // counting as active on the dashboard.
+  it('treats closed/cancelled/archived requests as inactive', async () => {
+    const { db, holding, factory, requester } = await setup();
+    const [req] = await createRequest(db, {
+      holdingId: holding.id,
+      requesterId: requester.id,
+      factoryId: factory.id,
+      items: [{ name: 'X', quantity: 1, unitPrice: 1000 }],
+    }).then((r) => db.select().from(schema.requests).where(eq(schema.requests.id, r.id)));
+
+    for (const status of ['closed', 'cancelled', 'archived']) {
+      await db.update(schema.requests).set({ status }).where(eq(schema.requests.id, req.id));
+      const d = await getDashboard(db, requester.id, holding.id);
+      expect(d.myActive, `${status} must be inactive for requester`).toBe(0);
+
+      const [owner] = await db.select().from(schema.users).where(eq(schema.users.telegramId, '999'));
+      const od = await getDashboard(db, owner.id, holding.id);
+      expect(od.totalActive, `${status} must be inactive in holding total`).toBe(0);
+    }
+  });
 });

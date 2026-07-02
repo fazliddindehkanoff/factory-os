@@ -7,10 +7,11 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { and, eq, inArray } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { primaryRole } from './legacy-auth.js';
-import { hasPermission } from '../rbac/rbac.js';
+import { hasPermission, getUserPermissionCodes } from '../rbac/rbac.js';
 import { getDashboard } from '../services/dashboard.service.js';
 import { createRequest } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
+import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
 import { receiveStock } from '../services/warehouse.service.js';
@@ -62,6 +63,22 @@ function canAccessRequest(
 
 export function buildCompatRouter(db: Db, devAuth = false): Router {
   const r = Router();
+
+  // Compat strategy: the legacy layer must never be more dangerous than canonical.
+  // In production, disable ALL legacy write operations (fail-closed: unset NODE_ENV
+  // counts as production). Reads still work; every mutation must go through the
+  // canonical API, which has the full permission/scope/PIN/audit guards. Business
+  // mutations are additionally hardened below so dev/staging is safe too.
+  const prodCompatReadOnly = (process.env.NODE_ENV ?? 'production') === 'production';
+  if (prodCompatReadOnly) {
+    r.use((req: Request, res: Response, next: NextFunction) => {
+      if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') { next(); return; }
+      res.status(410).json({
+        error: 'Legacy compat mutations are disabled in production — use the canonical API.',
+        code: 'COMPAT_READONLY',
+      });
+    });
+  }
 
   // Map every workflow step id -> its approver role code (the old "status = stage name").
   async function stepRoleMap(): Promise<Map<string, string>> {
@@ -368,25 +385,21 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         return;
       }
 
-      // PIN gate for money-bearing stages (finance/director/owner), matching the design.
-      const [ap] = await db.select().from(schema.approvals).where(eq(schema.approvals.id, approvalId));
-      if (ap?.workflowStepId) {
-        const stage = (await stepRoleMap()).get(ap.workflowStepId);
-        if (stage && ['finance', 'director', 'owner'].includes(stage)) {
-          const [usr] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
-          if (!usr?.pinHash) {
-            res.status(403).json({ error: 'PIN не задан — задайте PIN в настройках для подписи' });
-            return;
-          }
-          const lockMsApprove = pinLockoutRemaining(u.id);
-          if (lockMsApprove > 0) { res.status(403).json({ error: `PIN locked, retry in ${Math.ceil(lockMsApprove/60000)} min` }); return; }
-          if (!verifyPin(body.pin, usr.pinHash)) {
-            const lockedApprove = recordPinFailure(u.id);
-            res.status(403).json({ error: lockedApprove ? 'Too many attempts — locked 15 min' : 'Wrong PIN' }); return;
-          }
-          clearPinFailures(u.id);
-        }
+      // P1-2: an approval is a signature — require a valid PIN ALWAYS, for every
+      // role, exactly like the canonical route. (The old code only asked money-stage
+      // roles for a PIN, so a custom-role approval was signed without one.)
+      const [usr] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+      if (!usr?.pinHash) {
+        res.status(403).json({ error: 'PIN не задан — задайте PIN в настройках для подписи' });
+        return;
       }
+      const lockMsApprove = pinLockoutRemaining(u.id);
+      if (lockMsApprove > 0) { res.status(403).json({ error: `PIN locked, retry in ${Math.ceil(lockMsApprove / 60000)} min` }); return; }
+      if (!verifyPin(body.pin, usr.pinHash)) {
+        const lockedApprove = recordPinFailure(u.id);
+        res.status(403).json({ error: lockedApprove ? 'Too many attempts — locked 15 min' : 'Wrong PIN' }); return;
+      }
+      clearPinFailures(u.id);
 
       const result = await approveApproval(db, {
         approvalId,
@@ -454,7 +467,7 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      if (['approved', 'rejected'].includes(rq.status)) {
+      if (isTerminalStatus(rq.status)) {
         res.status(400).json({ error: 'Заявка уже завершена' });
         return;
       }
@@ -638,8 +651,19 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      if (['approved', 'rejected'].includes(rqS.status)) {
+      if (isTerminalStatus(rqS.status)) {
         res.status(409).json({ error: 'Заявка завершена — сумму менять нельзя' });
+        return;
+      }
+      // P1-4: a supplier/quotation may only be selected while the request is on a
+      // procurement step — BEFORE any threshold approval. Changing the amount after
+      // approval would let a pricier КП slip past the financial control that already
+      // ran. After approval this requires a re-approval flow, not a silent edit.
+      const [curStep] = rqS.currentStepId
+        ? await db.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.id, rqS.currentStepId))
+        : [undefined];
+      if (!curStep || curStep.stepKind !== 'procurement') {
+        res.status(409).json({ error: 'REAPPROVAL_REQUIRED: выбрать поставщика можно только на шаге закупки (до согласования)' });
         return;
       }
       await db.transaction(async (tx: Db) => {
@@ -941,16 +965,49 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
     return !['owner', 'director', 'admin'].includes(targetRole);
   }
 
+  async function roleByCode(code: string, holdingId: string): Promise<{ id: string } | null> {
+    const rows = await db.select().from(schema.roles).where(eq(schema.roles.code, code));
+    // Prefer the system role (holdingId null), then this holding's role.
+    const r0 = rows.find((r: any) => r.holdingId === null) ?? rows.find((r: any) => r.holdingId === holdingId) ?? rows[0];
+    return r0 ? { id: r0.id } : null;
+  }
+
+  /** Resolve a role id by code, preferring the system role (holdingId null). */
   async function roleIdByCode(code: string): Promise<string | null> {
-    const [r0] = await db.select().from(schema.roles).where(eq(schema.roles.code, code));
+    const rows = await db.select().from(schema.roles).where(eq(schema.roles.code, code));
+    const r0 = rows.find((r: any) => r.holdingId === null) ?? rows[0];
     return r0?.id ?? null;
   }
 
+  /**
+   * P1-3: a user cannot grant a role whose permission set exceeds their own — this
+   * mirrors the canonical admin's anti-escalation guard, which the legacy name-based
+   * `canAssignRole` bypassed (a plain users.manage holder could hand out `finance`).
+   */
+  async function canGrantRole(actorId: string, holdingId: string, roleCode: string): Promise<boolean> {
+    const actorCodes = new Set(await getUserPermissionCodes(db, actorId));
+    const role = await roleByCode(roleCode, holdingId);
+    if (!role) return false;
+    const targetCodes: { code: string }[] = await db
+      .select({ code: schema.permissions.code })
+      .from(schema.rolePermissions)
+      .innerJoin(schema.permissions, eq(schema.permissions.id, schema.rolePermissions.permissionId))
+      .where(eq(schema.rolePermissions.roleId, role.id));
+    return targetCodes.every((p) => actorCodes.has(p.code));
+  }
+
+  /**
+   * P1-3: assign a single role WITHOUT hard-deleting assignment history. Existing
+   * active roles are revoked (status='revoked'), then the new role is added active.
+   */
   async function setSingleRole(userId: string, holdingId: string, code: string): Promise<void> {
-    const rid = await roleIdByCode(code);
-    if (!rid) return;
-    await db.delete(schema.userRoles).where(eq(schema.userRoles.userId, userId));
-    await db.insert(schema.userRoles).values({ userId, roleId: rid, holdingId });
+    const role = await roleByCode(code, holdingId);
+    if (!role) return;
+    await db
+      .update(schema.userRoles)
+      .set({ status: 'revoked' })
+      .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
+    await db.insert(schema.userRoles).values({ userId, roleId: role.id, holdingId, status: 'active' });
   }
 
   async function activeWorkflow(holdingId: string) {
@@ -1010,7 +1067,7 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         return;
       }
       const role = b.role || 'requester';
-      if (!canAssignRole(actorRole, role)) {
+      if (!canAssignRole(actorRole, role) || !(await canGrantRole(ctx.id, ctx.holdingId, role))) {
         res.status(403).json({ error: 'Недостаточно прав для назначения этой роли' });
         return;
       }
@@ -1046,7 +1103,7 @@ export function buildCompatRouter(db: Db, devAuth = false): Router {
         await db.update(schema.users).set(updates).where(eq(schema.users.id, req.params.id as string));
       }
       if (b.role) {
-        if (!canAssignRole(actorRole, b.role)) {
+        if (!canAssignRole(actorRole, b.role) || !(await canGrantRole(ctx.id, ctx.holdingId, b.role))) {
           res.status(403).json({ error: 'Недостаточно прав для назначения этой роли' });
           return;
         }

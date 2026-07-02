@@ -72,13 +72,14 @@ export function createBot(token: string, appUrl: string, resolvePerms?: PermReso
   return bot;
 }
 
-export type Notifier = (telegramId: string, text: string) => void;
+/**
+ * Promise-returning delivery channel: resolves on success, REJECTS on failure so
+ * the notification layer can record status='failed' (P1-6). This replaces the old
+ * fire-and-forget notifier that swallowed errors.
+ */
+export type Notifier = (telegramId: string, text: string) => Promise<void>;
 
-/** Wraps a bot into a fire-and-forget notifier (swallows delivery errors but logs them). */
+/** Wraps a bot into a delivery function whose promise reflects send success/failure. */
 export function makeNotifier(bot: Bot): Notifier {
-  return (telegramId, text) => {
-    bot.api.sendMessage(telegramId, text).catch((e: unknown) => {
-      console.error('[notify] failed for', telegramId, (e as Error)?.message);
-    });
-  };
+  return (telegramId, text) => bot.api.sendMessage(telegramId, text).then(() => undefined);
 }

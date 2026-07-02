@@ -1,6 +1,6 @@
 /** REST routes. Auth on every /api route except login; RBAC checked per action. */
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, notInArray, or, ilike, gte, lte, count, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
@@ -14,6 +14,13 @@ import { hashPin, verifyPin } from '../auth/pin.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
 import { getDashboard } from '../services/dashboard.service.js';
 import type { Notifier } from '../bot/bot.js';
+import {
+  notifyUser,
+  listUserNotifications,
+  unreadCount,
+  markRead,
+  markAllRead,
+} from '../services/notification.service.js';
 import { approvedStageMessage, approvedFinalMessage, rejectedMessage, newRequestForApproverMessage } from '../bot/messages.js';
 import { buildAdminRouter } from './admin.routes.js';
 
@@ -45,13 +52,48 @@ export interface RouterDeps {
   rateLimit?: boolean;
 }
 
+/**
+ * P2-3: a warehouse operation may only reference a warehouse and request that
+ * belong to the actor's holding. Returns the validated ids, or an error string.
+ */
+async function validateWarehouseScope(
+  db: Db, holdingId: string, warehouseIdRaw: unknown, requestIdRaw: unknown,
+): Promise<{ warehouseId: string | null; requestId: string | null; error?: string }> {
+  let warehouseId: string | null = null;
+  let requestId: string | null = null;
+  if (warehouseIdRaw != null && String(warehouseIdRaw) !== '') {
+    warehouseId = String(warehouseIdRaw);
+    const [wh] = await db
+      .select({ id: schema.warehouses.id })
+      .from(schema.warehouses)
+      .where(and(eq(schema.warehouses.id, warehouseId), eq(schema.warehouses.holdingId, holdingId)));
+    if (!wh) return { warehouseId, requestId, error: 'Warehouse not found in your holding' };
+  }
+  if (requestIdRaw != null && String(requestIdRaw) !== '') {
+    requestId = String(requestIdRaw);
+    const [rq] = await db
+      .select({ id: schema.requests.id })
+      .from(schema.requests)
+      .where(and(eq(schema.requests.id, requestId), eq(schema.requests.holdingId, holdingId)));
+    if (!rq) return { warehouseId, requestId, error: 'Request not found in your holding' };
+  }
+  return { warehouseId, requestId };
+}
+
+// P1-6: notifications are PERSISTED first (notification.service), then delivered.
+// A failed Telegram send is recorded, not lost. `notify` is the delivery channel.
 async function notifyRequester(db: Db, notify: Notifier | undefined, requestId: string, text: (reqNumber: string) => string): Promise<void> {
-  if (!notify) return;
   try {
     const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
     if (!reqRow) return;
-    const [u] = await db.select().from(schema.users).where(eq(schema.users.id, reqRow.requesterId));
-    if (u?.telegramId) notify(u.telegramId, text(reqRow.requestNumber));
+    await notifyUser(db, notify, {
+      holdingId: reqRow.holdingId,
+      recipientUserId: reqRow.requesterId,
+      title: `Заявка ${reqRow.requestNumber}`,
+      message: text(reqRow.requestNumber),
+      entityType: 'request',
+      entityId: reqRow.id,
+    });
   } catch {
     /* notifications are best-effort */
   }
@@ -62,7 +104,7 @@ async function notifyStepApprovers(
   db: Db, notify: Notifier | undefined,
   requestId: string, currentStepId: string | null,
 ): Promise<void> {
-  if (!notify || !currentStepId) return;
+  if (!currentStepId) return;
   try {
     const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
     if (!reqRow) return;
@@ -79,10 +121,18 @@ async function notifyStepApprovers(
       ));
     const userIds = [...new Set(assigns.map((a: { userId: string }) => a.userId))] as string[];
     if (!userIds.length) return;
-    const users = await db.select().from(schema.users).where(inArray(schema.users.id, userIds));
     const msg = newRequestForApproverMessage(reqRow.requestNumber, reqRow.title ?? '', step.stepName);
-    for (const u of users) {
-      if (u.telegramId && u.id !== reqRow.requesterId) notify(u.telegramId, msg);
+    for (const uId of userIds) {
+      if (uId === reqRow.requesterId) continue;
+      await notifyUser(db, notify, {
+        holdingId: reqRow.holdingId,
+        recipientUserId: uId,
+        title: `Требуется согласование — ${reqRow.requestNumber}`,
+        message: msg,
+        priority: 'high',
+        entityType: 'request',
+        entityId: reqRow.id,
+      });
     }
   } catch {
     /* best-effort */
@@ -327,25 +377,54 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
-      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      // Pagination: accept both limit/offset and page/page_size (page is 1-based).
+      const q = req.query;
+      const limit = Math.min(Math.max(Number(q.page_size ?? q.limit) || 30, 1), 100);
+      const offset =
+        q.page !== undefined
+          ? Math.max((Number(q.page) || 1) - 1, 0) * limit
+          : Math.max(Number(q.offset) || 0, 0);
+
       // Visibility: a pure requester/observer (no oversight permission) sees only
       // their OWN requests; oversight roles see the whole holding.
       const codes = await getUserPermissionCodes(db, u.id);
       const seeAll = OVERSIGHT_PERMS.some((p) => codes.includes(p));
-      const visScope = seeAll
-        ? eq(schema.requests.holdingId, u.holdingId)
-        : and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.requesterId, u.id));
+
+      // P1-7: all filtering happens in the DB, not on the current page, so search
+      // finds matching requests anywhere in the holding and totals are accurate.
+      const conds: (SQL | undefined)[] = [eq(schema.requests.holdingId, u.holdingId)];
+      if (!seeAll) conds.push(eq(schema.requests.requesterId, u.id));
+
+      const search = String(q.search ?? '').trim();
+      if (search) {
+        const like = `%${search.replace(/[%_]/g, (m) => '\\' + m)}%`;
+        conds.push(or(ilike(schema.requests.requestNumber, like), ilike(schema.requests.title, like)));
+      }
+      const status = String(q.status ?? '').trim();
+      if (status) conds.push(eq(schema.requests.status, status));
+      const priority = String(q.priority ?? '').trim();
+      if (priority) conds.push(eq(schema.requests.priority, priority as any));
+      if (q.factory_id) conds.push(eq(schema.requests.factoryId, String(q.factory_id)));
+      if (q.department_id) conds.push(eq(schema.requests.departmentId, String(q.department_id)));
+      if (q.requester_id) conds.push(eq(schema.requests.requesterId, String(q.requester_id)));
+      if (q.responsible_user_id) conds.push(eq(schema.requests.responsibleUserId, String(q.responsible_user_id)));
+      const dateFrom = q.date_from ? new Date(String(q.date_from)) : null;
+      if (dateFrom && !isNaN(dateFrom.getTime())) conds.push(gte(schema.requests.createdAt, dateFrom));
+      const dateTo = q.date_to ? new Date(String(q.date_to)) : null;
+      if (dateTo && !isNaN(dateTo.getTime())) conds.push(lte(schema.requests.createdAt, dateTo));
+
+      const where = and(...conds.filter(Boolean) as SQL[]);
       const rows = await db
         .select()
         .from(schema.requests)
-        .where(visScope)
+        .where(where)
         .orderBy(desc(schema.requests.createdAt))
         .limit(limit + 1) // fetch one extra to detect "has more"
         .offset(offset);
       const hasMore = rows.length > limit;
       if (hasMore) rows.pop();
-      res.json({ items: rows, hasMore, offset, limit });
+      const [{ total }] = await db.select({ total: count() }).from(schema.requests).where(where);
+      res.json({ items: rows, hasMore, offset, limit, total });
     } catch (e) {
       next(e);
     }
@@ -637,13 +716,82 @@ export function buildRouter(deps: RouterDeps): Router {
   r.post('/me/pin', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
-      const pin = String((req.body ?? {}).pin ?? '').trim();
+      const body = req.body ?? {};
+      const pin = String(body.pin ?? '').trim();
       if (!/^\d{4,8}$/.test(pin)) {
         res.status(400).json({ error: 'PIN — 4–8 цифр' });
         return;
       }
+      const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+      // P2-2: changing an EXISTING PIN requires the current PIN (with lockout).
+      // A stolen 7-day session must not be enough to reset the signing PIN.
+      if (full?.pinHash) {
+        if (pinLockoutRemaining(u.id) > 0) {
+          res.status(429).json({ error: 'Слишком много попыток PIN — попробуйте позже' });
+          return;
+        }
+        const oldPin = String(body.oldPin ?? '');
+        if (!verifyPin(oldPin, full.pinHash)) {
+          recordPinFailure(u.id);
+          res.status(403).json({ error: 'Неверный текущий PIN' });
+          return;
+        }
+        clearPinFailures(u.id);
+      }
       await db.update(schema.users).set({ pinHash: hashPin(pin) }).where(eq(schema.users.id, u.id));
+      // Never log the PIN itself — only that it changed.
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId ?? null,
+        userId: u.id,
+        action: full?.pinHash ? 'pin.changed' : 'pin.set',
+        module: 'auth',
+        entityType: 'user',
+        entityId: u.id,
+        source: 'api',
+      });
       res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Notification center (P1-6): a user's own persisted notifications ──────────
+  r.get('/me/notifications', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const unreadOnly = String((req.query.unread ?? '')) === '1';
+      const items = await listUserNotifications(db, u.id, { unreadOnly });
+      res.json({ items, unread: await unreadCount(db, u.id) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.get('/me/notifications/unread-count', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      res.json({ unread: await unreadCount(db, u.id) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/me/notifications/:id/read', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const ok = await markRead(db, u.id, String(req.params.id));
+      if (!ok) { res.status(404).json({ error: 'Not found' }); return; }
+      res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/me/notifications/read-all', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const count = await markAllRead(db, u.id);
+      res.json({ ok: true, count });
     } catch (e) {
       next(e);
     }
@@ -795,8 +943,16 @@ export function buildRouter(deps: RouterDeps): Router {
           warehouseName: schema.warehouses.name,
         })
         .from(schema.stockBalances)
-        .innerJoin(schema.materials, eq(schema.materials.id, schema.stockBalances.materialId))
-        .leftJoin(schema.warehouses, eq(schema.warehouses.id, schema.stockBalances.warehouseId))
+        // P2-3: joins are holding-scoped too (defense in depth) so a cross-holding
+        // material/warehouse name can never leak through the join.
+        .innerJoin(
+          schema.materials,
+          and(eq(schema.materials.id, schema.stockBalances.materialId), eq(schema.materials.holdingId, u.holdingId)),
+        )
+        .leftJoin(
+          schema.warehouses,
+          and(eq(schema.warehouses.id, schema.stockBalances.warehouseId), eq(schema.warehouses.holdingId, u.holdingId)),
+        )
         .where(eq(schema.stockBalances.holdingId, u.holdingId));
       res.json(rows);
     } catch (e) {
@@ -819,13 +975,15 @@ export function buildRouter(deps: RouterDeps): Router {
       const materialId = String(body.materialId ?? '');
       const [mat] = await db.select().from(schema.materials).where(and(eq(schema.materials.id, materialId), eq(schema.materials.holdingId, u.holdingId!)));
       if (!mat) { res.status(400).json({ error: 'Material not found in your holding' }); return; }
+      const scoped = await validateWarehouseScope(db, u.holdingId!, body.warehouseId, body.requestId);
+      if (scoped.error) { res.status(400).json({ error: scoped.error }); return; }
       const result = await receiveStock(db, {
         holdingId: u.holdingId,
         materialId,
-        warehouseId: body.warehouseId ?? null,
+        warehouseId: scoped.warehouseId,
         quantity,
         performedBy: u.id,
-        requestId: body.requestId ?? null,
+        requestId: scoped.requestId,
         reason: body.reason ?? null,
       });
       res.json(result);
@@ -849,13 +1007,15 @@ export function buildRouter(deps: RouterDeps): Router {
       const materialId = String(body.materialId ?? '');
       const [mat] = await db.select().from(schema.materials).where(and(eq(schema.materials.id, materialId), eq(schema.materials.holdingId, u.holdingId!)));
       if (!mat) { res.status(400).json({ error: 'Material not found in your holding' }); return; }
+      const scoped = await validateWarehouseScope(db, u.holdingId!, body.warehouseId, body.requestId);
+      if (scoped.error) { res.status(400).json({ error: scoped.error }); return; }
       const result = await issueStock(db, {
         holdingId: u.holdingId,
         materialId,
-        warehouseId: body.warehouseId ?? null,
+        warehouseId: scoped.warehouseId,
         quantity,
         performedBy: u.id,
-        requestId: body.requestId ?? null,
+        requestId: scoped.requestId,
         reason: body.reason ?? null,
       });
       res.json(result);

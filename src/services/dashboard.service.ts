@@ -8,6 +8,7 @@
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
+import { TERMINAL_STATUSES } from '../workflow/step-kinds.js';
 
 type Db = any;
 
@@ -26,8 +27,10 @@ export interface Dashboard {
   activity: DashboardActivity[];
 }
 
-const TERMINAL = ['approved', 'rejected'];
-const INACTIVE = ['approved', 'rejected', 'draft'];
+// P2-1: closed/cancelled/archived are terminal too — a finished request must not
+// keep counting as "active" on the dashboard.
+const TERMINAL = [...TERMINAL_STATUSES];
+const INACTIVE = [...TERMINAL_STATUSES, 'draft'];
 
 export async function getDashboard(db: Db, userId: string, holdingId: string | null): Promise<Dashboard> {
   if (!holdingId) return { myActive: 0, pendingForMe: 0, totalActive: 0, activity: [] };

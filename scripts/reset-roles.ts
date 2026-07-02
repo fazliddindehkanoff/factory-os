@@ -6,10 +6,16 @@ import 'dotenv/config';
 import { eq, isNull } from 'drizzle-orm';
 import { createDb } from '../src/db/client.js';
 import * as schema from '../src/db/schema.js';
+import { assertWipeAllowed } from './_wipe-guard.js';
 
-const OWNER_TG_ID = process.env.OWNER_TG_ID ?? '8236045489';
+// No hardcoded production owner id: the caller must name the owner explicitly.
+const OWNER_TG_ID = process.env.OWNER_TG_ID;
 
 async function main() {
+  assertWipeAllowed('reset-roles.ts');
+  if (!OWNER_TG_ID) {
+    throw new Error('OWNER_TG_ID env var is required (telegram id of the owner to keep).');
+  }
   const { db } = createDb(process.env.DATABASE_URL!);
   console.log('🔄 Resetting roles...\n');
 
