@@ -77,6 +77,7 @@ export const api = {
   config: () => call('/config'),
   form: (screen: string) => call('/form/' + screen),
   dashboard: () => call('/dashboard'),
+  notificationsUnreadCount: () => call('/me/notifications/unread-count'),
   listRequests: (opts?: { limit?: number; offset?: number; search?: string; status?: string }) => {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));

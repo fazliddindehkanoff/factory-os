@@ -7,7 +7,7 @@ import { InboxScreen } from './screens/Inbox';
 import { ProcurementScreen } from './screens/Procurement';
 import { Icon, TINT_BG, TINT_FG } from './icons';
 import { applyTheme, getTheme, type Theme } from './theme';
-import { DASHBOARD_ACTIONS, DASHBOARD_STATS } from './dashboard.config';
+import { DASHBOARD_ACTIONS } from './dashboard.config';
 // Single source of truth for status labels/progress (covers every workflow-driven
 // status incl. finance_payment/delivery/receiving/issue) — see screens/shared.tsx.
 import { statusMeta, progressOf } from './screens/shared';
@@ -83,7 +83,8 @@ interface RequestDetail extends RequestRow {
 }
 type Screen =
   | { name: 'home' }
-  | { name: 'list' }
+  // `status` — optional prefilter applied when the list opens (KPI/by-status click).
+  | { name: 'list'; status?: string }
   | { name: 'create' }
   // `from` — the screen that opened the detail, so "back" returns to the source.
   | { name: 'detail'; id: string; from?: 'home' | 'list' | 'approvals' | 'procurement' }
@@ -98,17 +99,15 @@ interface DashboardData {
   pendingForMe: number;
   totalActive: number;
   activity: { id: string; requestNumber: string; status: string; title: string | null }[];
+  // Sprint 1 additive aggregates. null = no permission → card hidden.
+  awaitingPayment: number | null;
+  inProcurement: number | null;
+  lowStock: number | null;
+  byStatus: Record<string, number> | null;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const money = (n: number) => new Intl.NumberFormat('ru-RU').format(n || 0);
-const STATUS: Record<string, { label: string; cls: string }> = {
-  draft: { label: 'Черновик', cls: 'bg-fg3/20 text-fg2' },
-  pending_approval: { label: 'На согласовании', cls: 'bg-warning/15 text-warning' },
-  approved: { label: 'Согласована', cls: 'bg-success/15 text-success' },
-  rejected: { label: 'Отклонена', cls: 'bg-danger/15 text-danger' },
-};
-const statusOf = (s: string) => STATUS[s] ?? { label: s, cls: 'bg-fg3/20 text-fg2' };
 
 // ── Root ─────────────────────────────────────────────────────────────────────
 interface TenantConfig {
@@ -242,6 +241,7 @@ export default function App() {
         {screen.name === 'list' && (
           <RequestsList
             me={me}
+            initialStatus={screen.status}
             onCreate={() => setScreen({ name: 'create' })}
             onOpen={(id) => setScreen({ name: 'detail', id, from: 'list' })}
           />
@@ -461,6 +461,78 @@ const SECTION_LABEL: CSSProperties = {
   marginBottom: 12,
 };
 
+// A compact request row shared by the recent-activity feed and the queue previews.
+function RequestRowButton({ id, title, requestNumber, status, onOpen, first }: {
+  id: string; title: string | null; requestNumber: string; status: string; onOpen: (id: string) => void; first: boolean;
+}) {
+  const t = actTint(status);
+  return (
+    <button
+      onClick={() => onOpen(id)}
+      style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 13, padding: '13px 15px', border: 'none', borderTop: first ? 'none' : '1px solid var(--line)', background: 'none', cursor: 'pointer' }}
+    >
+      <span style={{ width: 36, height: 36, flex: 'none', borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[t.tint], color: TINT_FG[t.tint] }}>
+        <Icon name={t.ic} size={18} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title || requestNumber}</div>
+        <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{statusMeta(status).label} · {requestNumber}</div>
+      </div>
+    </button>
+  );
+}
+
+type QueueItem = { id: string; title: string | null; requestNumber: string; status: string };
+const normalizeReq = (x: any): QueueItem => ({ id: x.id, title: x.title ?? null, requestNumber: x.requestNumber ?? '', status: x.status ?? '' });
+const pickItems = (res: any): QueueItem[] => (Array.isArray(res) ? res : res?.items ?? []).map(normalizeReq);
+
+// Role-aware queue preview: fetches a list endpoint, shows top items with
+// loading / empty / error states. Used for "My Approvals" and the profile queue.
+function QueuePreview({ title, load, onOpen, onSeeAll, emptyText }: {
+  title: string;
+  load: () => Promise<QueueItem[]>;
+  onOpen: (id: string) => void;
+  onSeeAll?: () => void;
+  emptyText: string;
+}) {
+  const [rows, setRows] = useState<QueueItem[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setRows(null); setErr(null);
+    load().then((r) => { if (alive) setRows(r); }).catch((e) => { if (alive) setErr((e as Error).message); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title]);
+  const top = rows ? rows.slice(0, 4) : [];
+  return (
+    <div style={{ padding: '22px 20px 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ ...SECTION_LABEL, marginBottom: 0 }}>{title}{rows ? ` · ${rows.length}` : ''}</div>
+        {onSeeAll && rows && rows.length > 0 && (
+          <button onClick={onSeeAll} style={{ border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>все →</button>
+        )}
+      </div>
+      {!rows && !err && <div className="animate-pulse" style={{ height: 60, borderRadius: 14, background: 'var(--skel)' }} />}
+      {err && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, padding: '14px 16px', fontSize: 13, color: 'var(--danger)' }}>
+          Не удалось загрузить: {err}
+        </div>
+      )}
+      {rows && !err && rows.length === 0 && (
+        <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '20px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>{emptyText}</div>
+      )}
+      {rows && rows.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', overflow: 'hidden' }}>
+          {top.map((r, i) => <RequestRowButton key={r.id} {...r} onOpen={onOpen} first={i === 0} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface KpiCard { key: string; label: string; value: number | null; tint: string; ic: string; onClick?: () => void; }
+
 function Home({
   me,
   onNav,
@@ -471,24 +543,44 @@ function Home({
   onOpen: (id: string) => void;
 }) {
   const [dash, setDash] = useState<DashboardData | null>(null);
+  const [unread, setUnread] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
-    api.dashboard().then(setDash).catch((e) => console.error('Dashboard load failed:', e));
+    let alive = true;
+    setErr(null);
+    api.dashboard().then((d) => { if (alive) setDash(d); }).catch((e) => { if (alive) setErr((e as Error).message); });
+    // Unread count is best-effort — its failure must not blank the dashboard.
+    api.notificationsUnreadCount().then((r: any) => { if (alive) setUnread(r?.unread ?? 0); }).catch(() => { if (alive) setUnread(null); });
+    return () => { alive = false; };
   }, []);
   const can = (p: string) => me.permissions.includes(p);
+  const oversight = can('reports.view') || can('audit.view');
 
-  const values: Record<string, number | string> = {
-    myActive: dash?.myActive ?? '—',
-    pendingForMe: dash?.pendingForMe ?? '—',
-    totalActive: dash?.totalActive ?? '—',
-  };
-  const stats = DASHBOARD_STATS.filter((s) =>
-    s.valueKey === 'totalActive' ? can('reports.view') || can('audit.view') : can(s.perm),
-  );
+  // KPI cards — permission-gated; the new aggregates are hidden unless the backend
+  // returned a non-null value (permission-hiding driven by GET /dashboard).
+  const cards: KpiCard[] = [];
+  if (can('requests.view')) cards.push({ key: 'myActive', label: 'Мои заявки', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
+  if (can('approvals.approve')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
+  if (oversight) cards.push({ key: 'total', label: 'Активных всего', value: dash?.totalActive ?? null, tint: 'success', ic: 'box', onClick: () => onNav({ name: 'list' }) });
+  if (dash && dash.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
+  if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'В закупке', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'procurement' }) });
+  if (dash && dash.lowStock != null) cards.push({ key: 'low', label: 'Низкий остаток', value: dash.lowStock, tint: 'danger', ic: 'alert', onClick: () => onNav({ name: 'warehouse' }) });
+  if (unread != null) cards.push({ key: 'unread', label: 'Непрочитанные', value: unread, tint: 'accent', ic: 'bell' }); // no target yet (notification center = next sprint)
 
-  const actions: { label: string; tint: string; ic: string; onClick: () => void }[] = [];
-  for (const a of DASHBOARD_ACTIONS) if (can(a.perm)) actions.push({ label: a.label, tint: a.tint, ic: a.ic, onClick: () => onNav({ name: a.go }) });
-  if (ADMIN_PERMS.some((p) => can(p)))
-    actions.push({ label: 'Администрирование', tint: 'accent', ic: 'gear', onClick: () => onNav({ name: 'admin' }) });
+  // by-status breakdown (oversight only) — chips deep-link to the filtered list.
+  const byStatus = dash?.byStatus ?? null;
+  const byStatusEntries = byStatus ? Object.entries(byStatus).sort((a, b) => b[1] - a[1]) : [];
+
+  // Profile queue (one, by role) — only endpoints that exist as a single call.
+  // NOTE: warehouse "receiving|issue" tasks need a multi-status list the API does
+  // not expose (out of this sprint's backend scope), so warehouse users get a link
+  // to the Warehouse screen instead of an inline list — not a silent single-status hack.
+  const profileQueue: { title: string; load: () => Promise<QueueItem[]>; onSeeAll?: () => void; emptyText: string } | null =
+    can('procurement.view')
+      ? { title: 'Очередь снабжения', load: async () => pickItems(await api.procurement.queue()), onSeeAll: () => onNav({ name: 'procurement' }), emptyText: 'Нет заявок в закупке.' }
+      : can('finance.view')
+        ? { title: 'Ожидают оплаты', load: async () => pickItems(await api.listRequests({ status: 'finance_payment', limit: 8 })), onSeeAll: () => onNav({ name: 'list', status: 'finance_payment' }), emptyText: 'Нет заявок на оплату.' }
+        : null;
 
   return (
     <div>
@@ -504,57 +596,137 @@ function Home({
         </div>
       </div>
 
-      {/* Stat cards — overlap up into the navy block */}
-      {stats.length > 0 && (
+      {/* Dashboard load error — surfaced, never a silent blank (audit fix) */}
+      {err && (
+        <div style={{ position: 'relative', marginTop: -32, padding: '0 20px' }}>
+          <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '16px', fontSize: 13.5, color: 'var(--danger)' }}>
+            Не удалось загрузить дашборд: {err}
+          </div>
+        </div>
+      )}
+
+      {/* KPI cards — overlap up into the navy block */}
+      {!err && cards.length > 0 && (
         <div style={{ position: 'relative', marginTop: -32 }}>
           <div style={{ display: 'flex', gap: 12, overflowX: 'auto', padding: '0 20px 4px', scrollSnapType: 'x mandatory' }}>
-            {stats.map((s) => (
-              <button
-                key={s.label}
-                onClick={() => onNav({ name: s.go })}
-                style={{ scrollSnapAlign: 'start', flex: '0 0 auto', width: 166, textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '14px 15px', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 9 }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[s.tint], color: TINT_FG[s.tint] }}>
-                    <Icon name={s.ic} size={19} />
-                  </span>
-                  <span style={{ color: 'var(--fg3)' }}>
-                    <Icon name="chev" size={17} sw={2.2} />
-                  </span>
-                </div>
-                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 30, fontWeight: 600, lineHeight: 1, color: 'var(--fg)' }}>{values[s.valueKey]}</div>
-                <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{s.label}</div>
-              </button>
-            ))}
+            {cards.map((c) => {
+              const inner = (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[c.tint], color: TINT_FG[c.tint] }}>
+                      <Icon name={c.ic} size={19} />
+                    </span>
+                    {c.onClick && <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={17} sw={2.2} /></span>}
+                  </div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 30, fontWeight: 600, lineHeight: 1, color: 'var(--fg)' }}>{c.value ?? '—'}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{c.label}</div>
+                </>
+              );
+              const base: CSSProperties = { scrollSnapAlign: 'start', flex: '0 0 auto', width: 166, textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '14px 15px', display: 'flex', flexDirection: 'column', gap: 9 };
+              return c.onClick
+                ? <button key={c.key} onClick={c.onClick} style={{ ...base, cursor: 'pointer' }}>{inner}</button>
+                : <div key={c.key} style={base}>{inner}</div>;
+            })}
           </div>
         </div>
       )}
 
-      {/* Quick actions */}
-      {actions.length > 0 && (
+      {/* Loading skeleton for KPI cards while the dashboard loads */}
+      {!err && !dash && (
+        <div style={{ position: 'relative', marginTop: -32, padding: '0 20px' }}>
+          <div className="animate-pulse" style={{ height: 118, borderRadius: 14, background: 'var(--skel)' }} />
+        </div>
+      )}
+
+      {/* Quick actions (New request / All requests / Admin) — role-gated */}
+      {!err && (() => {
+        const actions: { label: string; tint: string; ic: string; onClick: () => void }[] = [];
+        for (const a of DASHBOARD_ACTIONS) if (can(a.perm)) actions.push({ label: a.label, tint: a.tint, ic: a.ic, onClick: () => onNav({ name: a.go }) });
+        if (ADMIN_PERMS.some(can)) actions.push({ label: 'Администрирование', tint: 'accent', ic: 'gear', onClick: () => onNav({ name: 'admin' }) });
+        return actions.length > 0 ? (
+          <div style={{ padding: '24px 20px 0' }}>
+            <div style={SECTION_LABEL}>Быстрые действия</div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              {actions.map((a) => (
+                <button
+                  key={a.label}
+                  onClick={a.onClick}
+                  style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 14, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 15, cursor: 'pointer', textAlign: 'left' }}
+                >
+                  <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[a.tint], color: TINT_FG[a.tint] }}>
+                    <Icon name={a.ic} size={22} sw={a.ic === 'plus' ? 2.4 : 1.9} />
+                  </span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.2 }}>{a.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null;
+      })()}
+
+      {/* requests-by-status breakdown (oversight only) */}
+      {!err && oversight && byStatusEntries.length > 0 && (
         <div style={{ padding: '24px 20px 0' }}>
-          <div style={SECTION_LABEL}>Быстрые действия</div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            {actions.map((a) => (
-              <button
-                key={a.label}
-                onClick={a.onClick}
-                style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 14, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 15, cursor: 'pointer', textAlign: 'left' }}
-              >
-                <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[a.tint], color: TINT_FG[a.tint] }}>
-                  <Icon name={a.ic} size={22} sw={a.ic === 'plus' ? 2.4 : 1.9} />
-                </span>
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.2 }}>{a.label}</span>
-              </button>
-            ))}
+          <div style={SECTION_LABEL}>Заявки по статусам</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {byStatusEntries.map(([st, n]) => {
+              const m = statusMeta(st);
+              return (
+                <button
+                  key={st}
+                  onClick={() => onNav({ name: 'list', status: st })}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '7px 11px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card)', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, color: 'var(--fg2)' }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: m.color }} />
+                  {m.label}
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: 'var(--fg)' }}>{n}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
 
-      {/* Recent activity */}
+      {/* Queue slot 1 — My Approvals (role-aware) */}
+      {!err && can('approvals.approve') && (
+        <QueuePreview
+          title="Ждут моего решения"
+          load={async () => pickItems(await api.inbox())}
+          onOpen={onOpen}
+          onSeeAll={() => onNav({ name: 'approvals' })}
+          emptyText="Нет заявок, ожидающих вашего решения."
+        />
+      )}
+
+      {/* Queue slot 2 — profile queue (procurement / finance) */}
+      {!err && profileQueue && (
+        <QueuePreview title={profileQueue.title} load={profileQueue.load} onOpen={onOpen} onSeeAll={profileQueue.onSeeAll} emptyText={profileQueue.emptyText} />
+      )}
+
+      {/* Queue slot 2 (warehouse) — link to the Warehouse screen (multi-status list not in API) */}
+      {!err && !profileQueue && can('warehouse.view') && (
+        <div style={{ padding: '22px 20px 0' }}>
+          <div style={SECTION_LABEL}>Склад</div>
+          <button
+            onClick={() => onNav({ name: 'warehouse' })}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: '15px', cursor: 'pointer', textAlign: 'left' }}
+          >
+            <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG.accent, color: TINT_FG.accent }}>
+              <Icon name="box" size={21} />
+            </span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>Приёмка и выдача</div>
+              <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>Открыть склад: остатки, приёмка, выдача</div>
+            </div>
+            <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={18} sw={2.2} /></span>
+          </button>
+        </div>
+      )}
+
+      {/* Queue slot 3 — Recent activity (own for requester, holding for oversight) */}
       <div style={{ padding: '24px 20px 24px' }}>
         <div style={SECTION_LABEL}>Последние события</div>
-        {!dash && <div className="animate-pulse" style={{ height: 68, borderRadius: 14, background: 'var(--skel)' }} />}
+        {!dash && !err && <div className="animate-pulse" style={{ height: 68, borderRadius: 14, background: 'var(--skel)' }} />}
         {dash && dash.activity.length === 0 && (
           <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '24px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>
             Пока нет событий — здесь появятся обновления по вашим заявкам.
@@ -562,26 +734,9 @@ function Home({
         )}
         {dash && dash.activity.length > 0 && (
           <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', overflow: 'hidden' }}>
-            {dash.activity.map((e, idx) => {
-              const t = actTint(e.status);
-              return (
-                <button
-                  key={e.id}
-                  onClick={() => onOpen(e.id)}
-                  style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 13, padding: '14px 15px', border: 'none', borderTop: idx === 0 ? 'none' : '1px solid var(--line)', background: 'none', cursor: 'pointer' }}
-                >
-                  <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[t.tint], color: TINT_FG[t.tint] }}>
-                    <Icon name={t.ic} size={19} />
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.title || e.requestNumber}</div>
-                    <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>
-                      {statusOf(e.status).label} · {e.requestNumber}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
+            {dash.activity.map((e, idx) => (
+              <RequestRowButton key={e.id} id={e.id} title={e.title} requestNumber={e.requestNumber} status={e.status} onOpen={onOpen} first={idx === 0} />
+            ))}
           </div>
         )}
       </div>
@@ -657,15 +812,18 @@ function RequestsList({
   me,
   onCreate,
   onOpen,
+  initialStatus,
 }: {
   me: Me;
   onCreate: () => void;
   onOpen: (id: string) => void;
+  initialStatus?: string;
 }) {
   const [rows, setRows] = useState<RequestRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  // Prefilter from a KPI/by-status click on the dashboard (deep-link via state).
+  const [statusFilter, setStatusFilter] = useState(initialStatus ?? '');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
