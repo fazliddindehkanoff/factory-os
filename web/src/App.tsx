@@ -155,6 +155,16 @@ export default function App() {
   }, []);
   useEffect(() => { if (me) refreshUnread(); }, [me, refreshUnread]);
 
+  // Bug #6: silent auto-refresh every 30s so new data appears without a manual
+  // reload. Screens include `tick` in their fetch deps; refreshes are silent (no
+  // skeleton flash) and forms/modals keep their own state, so nothing is lost.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!me) return;
+    const t = setInterval(() => { setTick((x) => x + 1); refreshUnread(); }, 30000);
+    return () => clearInterval(t);
+  }, [me, refreshUnread]);
+
   const loadMe = useCallback(async () => setMe(await api.me()), []);
 
   useEffect(() => {
@@ -276,11 +286,12 @@ export default function App() {
           </div>
         )}
         {screen.name === 'home' && (
-          <Home me={me} onNav={setScreen} onOpen={(id) => setScreen({ name: 'detail', id, from: 'home' })} />
+          <Home me={me} tick={tick} onNav={setScreen} onOpen={(id) => setScreen({ name: 'detail', id, from: 'home' })} />
         )}
         {screen.name === 'list' && (
           <RequestsList
             me={me}
+            tick={tick}
             initialStatus={screen.status}
             onCreate={() => setScreen({ name: 'create' })}
             onOpen={(id) => setScreen({ name: 'detail', id, from: 'list' })}
@@ -288,7 +299,7 @@ export default function App() {
         )}
         {screen.name === 'create' && <CreateRequest onDone={() => setScreen({ name: 'list' })} />}
         {screen.name === 'detail' && (
-          <RequestDetailView id={screen.id} me={me} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
+          <RequestDetailView id={screen.id} me={me} tick={tick} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
         )}
         {screen.name === 'approvals' && <InboxScreen onOpen={(id) => setScreen({ name: 'detail', id, from: 'approvals' })} permissions={me.permissions} />}
         {screen.name === 'warehouse' && <WarehouseScreen permissions={me.permissions} />}
@@ -728,22 +739,24 @@ function Home({
   me,
   onNav,
   onOpen,
+  tick = 0,
 }: {
   me: Me;
   onNav: (s: Screen) => void;
   onOpen: (id: string) => void;
+  tick?: number;
 }) {
   const [dash, setDash] = useState<DashboardData | null>(null);
   const [unread, setUnread] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    setErr(null);
-    api.dashboard().then((d) => { if (alive) setDash(d); }).catch((e) => { if (alive) setErr((e as Error).message); });
-    // Unread count is best-effort — its failure must not blank the dashboard.
-    api.notificationsUnreadCount().then((r: any) => { if (alive) setUnread(r?.unread ?? 0); }).catch(() => { if (alive) setUnread(null); });
+    // Silent refresh on tick: keep old data visible (no skeleton) until new arrives.
+    api.dashboard().then((d) => { if (alive) { setDash(d); setErr(null); } }).catch((e) => { if (alive && !dash) setErr((e as Error).message); });
+    api.notificationsUnreadCount().then((r: any) => { if (alive) setUnread(r?.unread ?? 0); }).catch(() => {});
     return () => { alive = false; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick]);
   const can = (p: string) => me.permissions.includes(p);
   const oversight = can('reports.view') || can('audit.view');
 
@@ -1004,11 +1017,13 @@ function RequestsList({
   onCreate,
   onOpen,
   initialStatus,
+  tick = 0,
 }: {
   me: Me;
   onCreate: () => void;
   onOpen: (id: string) => void;
   initialStatus?: string;
+  tick?: number;
 }) {
   const [rows, setRows] = useState<RequestRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1016,6 +1031,7 @@ function RequestsList({
   // Prefilter from a KPI/by-status click on the dashboard (deep-link via state).
   const [statusFilter, setStatusFilter] = useState(initialStatus ?? '');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [showCalendar, setShowCalendar] = useState(false); // bug #12: calendar collapsed by default
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [total, setTotal] = useState<number | null>(null);
@@ -1026,16 +1042,18 @@ function RequestsList({
   // match requests across the whole holding, not only the current page.
   useEffect(() => {
     let cancelled = false;
+    // Silent refresh (no skeleton wipe) — keep the current list visible until new
+    // data arrives; also fires on the 30s tick (bug #6).
     const t = setTimeout(() => {
-      setRows(null);
       api.listRequests({ limit: PAGE, search: search.trim(), status: statusFilter }).then((res: any) => {
         if (cancelled) return;
+        setError(null);
         if (Array.isArray(res)) { setRows(res); setHasMore(false); setTotal(res.length); }
         else { setRows(res.items); setHasMore(res.hasMore); setTotal(res.total ?? res.items.length); }
       }).catch((e) => { if (!cancelled) setError((e as Error).message); });
     }, 350);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [search, statusFilter]);
+  }, [search, statusFilter, tick]);
 
   const loadMore = async () => {
     if (!rows || loadingMore) return;
@@ -1081,13 +1099,31 @@ function RequestsList({
           <span style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--fg2)' }}>
             Все заявки {selectedDate ? (filtered ? `· ${filtered.length}` : '') : total != null ? `· ${total}` : ''}
           </span>
-          {me.permissions.includes('requests.create') && (
-            <button onClick={onCreate} style={{ padding: '8px 13px', borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-              + Создать
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* bug #12: calendar collapsed into a small toggle next to "+ Создать" */}
+            <button
+              aria-label="Календарь"
+              onClick={() => setShowCalendar((v) => !v)}
+              style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 10, border: '1px solid var(--border)', background: showCalendar || selectedDate ? 'var(--accent-bg)' : 'var(--card)', color: showCalendar || selectedDate ? 'var(--accent)' : 'var(--fg2)', cursor: 'pointer', position: 'relative' }}
+            >
+              <Icon name="clock" size={18} />
+              {selectedDate && <span style={{ position: 'absolute', top: -3, right: -3, width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)' }} />}
             </button>
-          )}
+            {me.permissions.includes('requests.create') && (
+              <button onClick={onCreate} style={{ padding: '8px 13px', borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                + Создать
+              </button>
+            )}
+          </div>
         </div>
-        <MiniCalendar requestDates={requestDates} selectedDate={selectedDate} onSelect={setSelectedDate} />
+        {showCalendar && (
+          <div style={{ marginBottom: 8 }}>
+            <MiniCalendar requestDates={requestDates} selectedDate={selectedDate} onSelect={(d) => { setSelectedDate(d); }} />
+            {selectedDate && (
+              <button onClick={() => setSelectedDate(null)} style={{ marginTop: 6, border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>Сбросить дату</button>
+            )}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             value={search}
@@ -1807,7 +1843,7 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () => void }) {
+function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; onBack: () => void; tick?: number }) {
   const [req, setReq] = useState<RequestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<LifecycleActionBtn | null>(null);
@@ -1816,12 +1852,13 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
 
   useEffect(() => {
     let cancelled = false;
-    setError(null);
+    // Silent refresh (keeps current view; also fires on the 30s tick, bug #6).
     api.getRequest(id)
-      .then(data => { if (!cancelled) setReq(data); })
-      .catch(e => { if (!cancelled) setError((e as Error).message); });
+      .then(data => { if (!cancelled) { setReq(data); setError(null); } })
+      .catch(e => { if (!cancelled && !req) setError((e as Error).message); });
     return () => { cancelled = true; };
-  }, [id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, tick]);
 
   const load = useCallback(() => {
     api.getRequest(id).then(setReq).catch((e) => setError((e as Error).message));
