@@ -94,6 +94,8 @@ export const api = {
   },
   inbox: () => call('/requests/inbox'),
   getRequest: (id: string) => call('/requests/' + id),
+  cancelRequest: (id: string, reason?: string) =>
+    call(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason ?? '' }) }),
   createRequest: (data: CreateRequestData) =>
     call('/requests', { method: 'POST', body: JSON.stringify(data) }),
   approve: (id: string, comment?: string) =>

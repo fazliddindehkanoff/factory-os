@@ -7,6 +7,7 @@ import { issueSession } from '../auth/session.js';
 import { requireAuth, type AuthedRequest } from './auth.middleware.js';
 import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility } from './request-visibility.js';
+import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
 import { performAction, availableActions, statusLabelFor } from '../services/lifecycle.service.js';
@@ -725,6 +726,47 @@ export function buildRouter(deps: RouterDeps): Router {
 
   // Lifecycle transition — guarded by status × permission × scope × PIN/comment,
   // writes status history + DNA audit log atomically.
+  // Bug #5: the AUTHOR may cancel their own request while no one has approved it yet.
+  // Soft cancel (status='cancelled') — the row and full history are kept (who/when/why).
+  r.post('/requests/:id/cancel', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      if (!reqRow || reqRow.holdingId !== u.holdingId) { res.status(404).json({ error: 'Not found' }); return; }
+      if (reqRow.requesterId !== u.id) { res.status(403).json({ error: 'Отменить заявку может только её автор' }); return; }
+      if (isTerminalStatus(reqRow.status)) { res.status(409).json({ error: 'Заявка уже завершена' }); return; }
+      // Only before ANY human approval (auto-skips do not count).
+      const approved = await db
+        .select({ id: schema.approvals.id })
+        .from(schema.approvals)
+        .where(and(eq(schema.approvals.requestId, reqRow.id), eq(schema.approvals.status, 'approved')));
+      if (approved.length) { res.status(409).json({ error: 'Заявку уже начали согласовывать — отменить нельзя' }); return; }
+      const reason = String((req.body ?? {}).reason ?? '').trim();
+      await db.transaction(async (tx: Db) => {
+        await tx.update(schema.requests)
+          .set({ status: 'cancelled', currentStepId: null, closedAt: new Date(), updatedAt: new Date() })
+          .where(eq(schema.requests.id, reqRow.id));
+        await tx.update(schema.approvals)
+          .set({ status: 'cancelled' })
+          .where(and(eq(schema.approvals.requestId, reqRow.id), eq(schema.approvals.status, 'pending')));
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: reqRow.id, oldStatus: reqRow.status, newStatus: 'cancelled',
+          changedBy: u.id, source: 'cancel', comment: reason || 'Отменена автором',
+        });
+        await tx.insert(schema.auditLogs).values({
+          holdingId: reqRow.holdingId, factoryId: reqRow.factoryId, userId: u.id,
+          action: 'request.cancelled', module: 'requests', entityType: 'request', entityId: reqRow.id,
+          oldValue: { status: reqRow.status, requestNumber: reqRow.requestNumber, title: reqRow.title },
+          newValue: { status: 'cancelled', reason: reason || null },
+          source: 'api',
+        });
+      });
+      res.json({ ok: true, status: 'cancelled' });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.post('/requests/:id/action', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;

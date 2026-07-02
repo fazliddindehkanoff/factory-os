@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { api, clearToken, getToken, setToken, type CreateRequestData } from './api';
-import { getTelegram } from './telegram';
+import { getTelegram, confirmDialog } from './telegram';
 import { AdminPanel } from './admin/AdminPanel';
 import { WarehouseScreen } from './screens/Warehouse';
 import { InboxScreen } from './screens/Inbox';
@@ -1903,6 +1903,22 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   const canSeeProcurement = me.permissions.includes('procurement.view') || me.permissions.includes('procurement.quote') || me.permissions.includes('procurement.select_supplier');
   const quotations = canSeeProcurement ? (req.quotations ?? []) : [];
 
+  // Bug #5: the author may cancel their own request while no one has approved yet.
+  const TERMINAL = ['approved', 'closed', 'rejected', 'cancelled', 'archived'];
+  const canCancel =
+    req.requesterId === me.user.id &&
+    !TERMINAL.includes(req.status) &&
+    !(req.approvals ?? []).some((a) => a.status === 'approved');
+  const doCancel = async () => {
+    if (!(await confirmDialog('Удалить заявку? Отменить это действие будет нельзя.'))) return;
+    try {
+      await api.cancelRequest(id);
+      onBack();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
   // Full info (bug #9): show every meaningful field, not just status.
   const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
   const TYPE_LABEL: Record<string, string> = { material_request: 'Материалы / товар', service_request: 'Услуга', other: 'Другое' };
@@ -1925,9 +1941,16 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
   return (
     <div style={{ padding: '16px 16px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <button onClick={onBack} style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: 'var(--fg2)', fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
-        ← Назад
-      </button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--fg2)', fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
+          ← Назад
+        </button>
+        {canCancel && (
+          <button onClick={doCancel} style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
+            Удалить заявку
+          </button>
+        )}
+      </div>
 
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
