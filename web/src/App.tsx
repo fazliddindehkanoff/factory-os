@@ -87,10 +87,11 @@ type Screen =
   | { name: 'list'; status?: string }
   | { name: 'create' }
   // `from` — the screen that opened the detail, so "back" returns to the source.
-  | { name: 'detail'; id: string; from?: 'home' | 'list' | 'approvals' | 'procurement' }
+  | { name: 'detail'; id: string; from?: 'home' | 'list' | 'approvals' | 'procurement' | 'notifications' }
   | { name: 'approvals' }
   | { name: 'warehouse' }
   | { name: 'procurement' }
+  | { name: 'notifications' }
   | { name: 'menu' }
   | { name: 'admin' };
 
@@ -123,9 +124,16 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const [theme, setTheme] = useState<Theme>(getTheme());
+  const [unread, setUnread] = useState<number>(0);
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // Header bell badge — unread notification count (best-effort; failure keeps 0).
+  const refreshUnread = useCallback(() => {
+    api.notificationsUnreadCount().then((r: any) => setUnread(r?.unread ?? 0)).catch(() => {});
+  }, []);
+  useEffect(() => { if (me) refreshUnread(); }, [me, refreshUnread]);
 
   const loadMe = useCallback(async () => setMe(await api.me()), []);
 
@@ -181,12 +189,13 @@ export default function App() {
     approvals: 'Согласования',
     warehouse: 'Склад',
     procurement: 'Закупки',
+    notifications: 'Уведомления',
     menu: 'Меню',
     admin: 'Администрирование',
   };
   const title = TITLES[screen.name];
-  const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse'].includes(screen.name);
-  const showNav = ['home', 'list', 'approvals', 'warehouse', 'procurement', 'menu', 'admin'].includes(screen.name);
+  const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse', 'notifications'].includes(screen.name);
+  const showNav = ['home', 'list', 'approvals', 'warehouse', 'procurement', 'notifications', 'menu', 'admin'].includes(screen.name);
   const iconBtn: CSSProperties = {
     width: 38,
     height: 38,
@@ -216,6 +225,17 @@ export default function App() {
             </div>
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <button aria-label="Уведомления" onClick={() => setScreen({ name: 'notifications' })} style={{ ...iconBtn, position: 'relative' }}>
+              <Icon name="bell" size={20} />
+              {unread > 0 && (
+                <span
+                  aria-label={`${unread} непрочитанных`}
+                  style={{ position: 'absolute', top: -3, right: -3, minWidth: 17, height: 17, padding: '0 4px', borderRadius: 9, background: 'var(--danger)', color: '#fff', fontSize: 10, fontWeight: 700, lineHeight: '17px', textAlign: 'center', boxShadow: '0 0 0 2px var(--header)' }}
+                >
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </button>
             <button aria-label="Сменить тему" onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} style={iconBtn}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
             </button>
@@ -254,6 +274,12 @@ export default function App() {
         {screen.name === 'warehouse' && <WarehouseScreen permissions={me.permissions} />}
         {screen.name === 'procurement' && (
           <ProcurementScreen canManage={me.permissions.includes('suppliers.manage')} onOpen={(id) => setScreen({ name: 'detail', id, from: 'procurement' })} />
+        )}
+        {screen.name === 'notifications' && (
+          <NotificationsScreen
+            onOpenRequest={(id) => setScreen({ name: 'detail', id, from: 'notifications' })}
+            onChanged={refreshUnread}
+          />
         )}
         {screen.name === 'menu' && <Menu me={me} theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onLogout={() => { clearToken(); setMe(null); }} onProfileUpdated={loadMe} />}
         {screen.name === 'admin' && (
@@ -532,6 +558,151 @@ function QueuePreview({ title, load, onOpen, onSeeAll, emptyText }: {
 }
 
 interface KpiCard { key: string; label: string; value: number | null; tint: string; ic: string; onClick?: () => void; }
+
+// ── Notification Center (P1-6 backend) ───────────────────────────────────────
+interface NotifItem {
+  id: string;
+  title: string;
+  message: string;
+  priority: string;
+  status: string; // pending | delivered (=unread) | read | failed
+  errorMessage: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: string | null;
+  deliveredAt: string | null;
+  readAt: string | null;
+}
+
+const NOTIF_STATUS: Record<string, { label: string; tint: string }> = {
+  delivered: { label: 'Непрочитано', tint: 'accent' },
+  read: { label: 'Прочитано', tint: 'success' },
+  failed: { label: 'Не доставлено', tint: 'danger' },
+  pending: { label: 'Отправляется', tint: 'warning' },
+};
+// Priority accent — a coloured left rail for the ones that matter.
+const NOTIF_PRIORITY_TINT: Record<string, string> = { critical: 'danger', urgent: 'danger', high: 'warning' };
+
+function fmtDateTime(v: string | null): string {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id: string) => void; onChanged: () => void }) {
+  const [items, setItems] = useState<NotifItem[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  const [markingAll, setMarkingAll] = useState(false);
+
+  const load = useCallback(() => {
+    setItems(null); setErr(null);
+    api.notifications(filter === 'unread').then((r: any) => setItems(r?.items ?? [])).catch((e) => setErr((e as Error).message));
+  }, [filter]);
+  useEffect(() => { load(); }, [load]);
+
+  // Only a delivered (unread) notification needs marking.
+  const markRead = async (n: NotifItem) => {
+    if (n.status !== 'delivered') return;
+    try { await api.markNotificationRead(n.id); } catch { /* best-effort — must never block navigation */ }
+    setItems((prev) => (prev ? prev.map((x) => (x.id === n.id ? { ...x, status: 'read', readAt: new Date().toISOString() } : x)) : prev));
+    onChanged();
+  };
+
+  const onCardClick = async (n: NotifItem) => {
+    // Auto mark-read, THEN navigate. Navigation happens even if mark-read failed (no fake success).
+    await markRead(n);
+    if (n.entityType === 'request' && n.entityId) onOpenRequest(n.entityId);
+  };
+
+  const markAll = async () => {
+    setMarkingAll(true);
+    try { await api.markAllNotificationsRead(); onChanged(); load(); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setMarkingAll(false); }
+  };
+
+  // In the "unread" tab, drop items just marked read locally.
+  const visible = items ? (filter === 'unread' ? items.filter((n) => n.status === 'delivered') : items) : null;
+  const hasUnread = (items ?? []).some((n) => n.status === 'delivered');
+
+  const pill = (active: boolean): CSSProperties => ({
+    padding: '7px 14px', borderRadius: 10, border: '1px solid var(--border)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+    background: active ? 'var(--accent)' : 'var(--card)', color: active ? '#fff' : 'var(--fg2)',
+  });
+
+  return (
+    <div>
+      <div style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg)', padding: '14px 16px 8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--fg2)' }}>Уведомления</span>
+          <button
+            onClick={markAll}
+            disabled={markingAll || !hasUnread}
+            style={{ padding: '7px 12px', borderRadius: 10, border: 'none', background: hasUnread ? 'var(--accent-bg)' : 'transparent', color: hasUnread ? 'var(--accent)' : 'var(--fg3)', fontSize: 12.5, fontWeight: 600, cursor: hasUnread ? 'pointer' : 'default' }}
+          >
+            Прочитать все
+          </button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setFilter('all')} style={pill(filter === 'all')}>Все</button>
+          <button onClick={() => setFilter('unread')} style={pill(filter === 'unread')}>Непрочитанные</button>
+        </div>
+      </div>
+
+      <div style={{ padding: '10px 16px 24px' }}>
+        {!visible && !err && <div className="animate-pulse" style={{ height: 76, borderRadius: 14, background: 'var(--skel)' }} />}
+        {err && (
+          <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, padding: '16px', fontSize: 13.5, color: 'var(--danger)' }}>
+            Не удалось загрузить уведомления: {err}
+          </div>
+        )}
+        {visible && !err && visible.length === 0 && (
+          <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '32px 16px', textAlign: 'center', fontSize: 13.5, color: 'var(--fg3)' }}>
+            {filter === 'unread' ? 'Непрочитанных уведомлений нет.' : 'Уведомлений пока нет.'}
+          </div>
+        )}
+        {visible && visible.map((n) => {
+          const st = NOTIF_STATUS[n.status] ?? { label: n.status, tint: 'accent' };
+          const unreadRow = n.status === 'delivered';
+          const railTint = NOTIF_PRIORITY_TINT[n.priority];
+          return (
+            <button
+              key={n.id}
+              onClick={() => onCardClick(n)}
+              style={{
+                width: '100%', textAlign: 'left', display: 'block', marginBottom: 10, cursor: 'pointer',
+                background: 'var(--card)', border: '1px solid var(--border)',
+                borderLeft: railTint ? `3px solid ${TINT_FG[railTint]}` : '1px solid var(--border)',
+                borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: '13px 15px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                {unreadRow && <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', flex: 'none' }} />}
+                <span style={{ flex: 1, fontSize: 14, fontWeight: unreadRow ? 700 : 600, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.title}</span>
+                <span style={{ flex: 'none', fontSize: 10.5, fontWeight: 700, padding: '3px 8px', borderRadius: 8, background: TINT_BG[st.tint], color: TINT_FG[st.tint] }}>{st.label}</span>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--fg2)', lineHeight: 1.4 }}>{n.message}</div>
+              {n.status === 'failed' && n.errorMessage && (
+                <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>Причина: {n.errorMessage}</div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, fontSize: 11.5, color: 'var(--fg3)' }}>
+                <span>{fmtDateTime(n.createdAt)}</span>
+                {n.readAt && <span>· прочитано {fmtDateTime(n.readAt)}</span>}
+                {n.entityType === 'request' && n.entityId && (
+                  <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                    К заявке <Icon name="chev" size={14} sw={2.2} />
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function Home({
   me,
