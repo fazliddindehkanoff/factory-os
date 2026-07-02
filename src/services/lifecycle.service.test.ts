@@ -150,6 +150,9 @@ describe('data-driven lifecycle', () => {
     // requester also holds dept_head + a PIN.
     const both = await mkUser(db, h.id, 'requester', 'both', true);
     await db.insert(schema.userRoles).values({ userId: both, roleId: await roleId(db, 'dept_head'), holdingId: h.id });
+    // A SECOND dept_head must exist, else the step is auto-skipped (bug #1). Here we
+    // specifically test that self-approval stays blocked when the step IS live.
+    await mkUser(db, h.id, 'dept_head', 'other_dh', false);
 
     const req = await newRequest(db, h, f, both);
     expect(acts(await availableActions(db, req, both))).not.toContain('approve');

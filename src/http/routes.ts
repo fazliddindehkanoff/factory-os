@@ -6,6 +6,7 @@ import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
 import { requireAuth, type AuthedRequest } from './auth.middleware.js';
 import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
+import { getRequestVisibility } from './request-visibility.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
 import { performAction, availableActions, statusLabelFor } from '../services/lifecycle.service.js';
@@ -27,15 +28,15 @@ import { buildAdminRouter } from './admin.routes.js';
 type Db = any;
 
 /** Oversight permissions that let a user see requests beyond their own. */
-// NB: reports.view is intentionally NOT here — an existing contract (request-
-// visibility test) keeps a pure observer scoped to their own requests. Whether the
-// observer role should see the whole holding read-only is a product decision (R8).
-const OVERSIGHT_PERMS = ['requests.edit', 'approvals.view', 'warehouse.view', 'procurement.view', 'finance.view', 'audit.view'];
-/** A user may see a request if they own it or hold any oversight permission (H3/H4). */
-async function userCanSeeRequest(db: Db, userId: string, reqRow: { requesterId: string }): Promise<boolean> {
-  if (reqRow.requesterId === userId) return true;
-  const codes = await getUserPermissionCodes(db, userId);
-  return OVERSIGHT_PERMS.some((p) => codes.includes(p));
+/** A user may see a request per the visibility model (bug #2): own + involved +
+ *  role-in-workflow; top roles (audit.view) see all. */
+async function userCanSeeRequest(
+  db: Db,
+  userId: string,
+  reqRow: { id: string; requesterId: string; workflowId: string | null },
+): Promise<boolean> {
+  const vis = await getRequestVisibility(db, userId);
+  return vis.canSee({ id: reqRow.id, requesterId: reqRow.requesterId, workflowId: reqRow.workflowId ?? null });
 }
 
 export interface RouterDeps {
@@ -385,15 +386,14 @@ export function buildRouter(deps: RouterDeps): Router {
           ? Math.max((Number(q.page) || 1) - 1, 0) * limit
           : Math.max(Number(q.offset) || 0, 0);
 
-      // Visibility: a pure requester/observer (no oversight permission) sees only
-      // their OWN requests; oversight roles see the whole holding.
-      const codes = await getUserPermissionCodes(db, u.id);
-      const seeAll = OVERSIGHT_PERMS.some((p) => codes.includes(p));
+      // Visibility (bug #2): own + involved + role-is-a-step-in-the-workflow; top
+      // roles (audit.view) see the whole holding.
+      const vis = await getRequestVisibility(db, u.id);
 
       // P1-7: all filtering happens in the DB, not on the current page, so search
       // finds matching requests anywhere in the holding and totals are accurate.
       const conds: (SQL | undefined)[] = [eq(schema.requests.holdingId, u.holdingId)];
-      if (!seeAll) conds.push(eq(schema.requests.requesterId, u.id));
+      if (vis.scope) conds.push(vis.scope);
 
       const search = String(q.search ?? '').trim();
       if (search) {
@@ -558,8 +558,10 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      // Visibility: own-or-oversight; 404 (not 403) so a foreign id doesn't reveal existence. (H3)
-      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+      // Visibility (bug #2): own + involved + role-in-workflow; top roles see all.
+      // 404 (not 403) so a foreign id doesn't reveal existence. (H3)
+      const detailVis = await getRequestVisibility(db, u.id);
+      if (!detailVis.canSee(reqRow)) {
         res.status(404).json({ error: 'Not found' });
         return;
       }

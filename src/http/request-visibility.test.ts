@@ -31,7 +31,10 @@ async function make() {
     const [r] = await db.select().from(schema.roles).where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, code)));
     return r.id;
   };
+  // Workflow has a director approval step AND a warehouse check step, so both
+  // director and warehouse are legitimate "role-in-workflow" viewers (bug #2).
   await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 1, stepName: 'A', stepKind: 'approval', approverRoleId: await roleId('director') });
+  await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 2, stepName: 'WH', stepKind: 'warehouse_check', approverRoleId: await roleId('warehouse') });
   const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
   const user = async (codes: string[], tg: string): Promise<string> => {
     const [u] = await db.insert(schema.users).values({ holdingId: holding.id, fullName: tg, telegramId: tg, status: 'active' }).returning();
@@ -72,12 +75,34 @@ describe('H3 — request detail visibility', () => {
     await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(404);
   });
 
-  it('an oversight role (director) can read any request in the holding', async () => {
+  it('a top role (director, audit.view) can read any request in the holding', async () => {
     const { app, user, mkReq, login } = await make();
     const alice = await user(['requester'], 'alice');
     await user(['director'], 'dir');
     const reqA = await mkReq(alice);
     const tk = await login('dir');
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
+  });
+
+  // bug #2: a former "oversight" permission alone no longer grants visibility —
+  // finance.view without a finance step in the workflow → cannot see the request.
+  it('a role with finance.view but NO step in the workflow cannot see the request (404)', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['finance'], 'fin'); // finance.view, but workflow has only director + warehouse steps
+    const reqA = await mkReq(alice);
+    const tk = await login('fin');
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(404);
+  });
+
+  // bug #2: warehouse is an approver step in this workflow → it sees the request
+  // even though it did not create it (role-in-workflow).
+  it('warehouse (a step in the workflow) can see a request it did not create (200)', async () => {
+    const { app, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['warehouse'], 'wh2');
+    const reqA = await mkReq(alice);
+    const tk = await login('wh2');
     await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
   });
 

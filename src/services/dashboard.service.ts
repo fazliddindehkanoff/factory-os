@@ -8,6 +8,7 @@
 import { and, count, desc, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
+import { getRequestVisibility } from '../http/request-visibility.js';
 import { TERMINAL_STATUSES } from '../workflow/step-kinds.js';
 
 type Db = any;
@@ -92,10 +93,12 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   // holding; a pure requester/observer sees only their own requests. (H3 fix)
   const codes = await getUserPermissionCodes(db, userId);
   const has = (p: string) => codes.includes(p);
-  const seeAll = ['requests.edit', 'approvals.view', 'warehouse.view', 'procurement.view', 'finance.view', 'audit.view'].some(has);
-  const activityWhere = seeAll
-    ? eq(schema.requests.holdingId, holdingId)
-    : and(eq(schema.requests.holdingId, holdingId), eq(schema.requests.requesterId, userId));
+  // Activity feed follows the request-visibility model (bug #2): own + involved +
+  // role-in-workflow; top roles see the whole holding.
+  const vis = await getRequestVisibility(db, userId);
+  const activityWhere = vis.scope
+    ? and(eq(schema.requests.holdingId, holdingId), vis.scope)
+    : eq(schema.requests.holdingId, holdingId);
 
   // Run count queries and activity in parallel — each touches only the rows it needs.
   const [myActiveRows, totalActiveRows, activity] = await Promise.all([

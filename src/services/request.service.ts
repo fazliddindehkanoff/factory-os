@@ -6,7 +6,7 @@
  */
 import { and, eq, like } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
-import { firstStepForRequest } from './lifecycle.service.js';
+import { initialPlacement } from './lifecycle.service.js';
 import { statusForStep } from '../workflow/step-kinds.js';
 import { ValidationError, ConflictError } from './errors.js';
 
@@ -141,16 +141,23 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
     const requestNumber = await generateRequestNumber(tx, input.holdingId, year);
     const workflow = await selectWorkflow(tx, input.holdingId, input.requestType);
 
-    // Place the request on the FIRST applicable step of its workflow (data-driven).
+    // Place the request on the FIRST applicable step of its workflow (data-driven),
+    // auto-skipping approval steps whose only approver would be the author (bug #1).
     // With no workflow / no applicable step there is nothing to process — hold it as a
     // DRAFT (fail-safe) rather than silently auto-approving with zero controls. (M12)
-    const first = workflow
-      ? await firstStepForRequest(tx, workflow.id, {
-          amount: estimatedAmount,
-          requestType: input.requestType ?? 'material_request',
-        })
-      : null;
-    const status = first ? statusForStep(first) : 'draft';
+    const placement = workflow
+      ? await initialPlacement(
+          tx,
+          workflow.id,
+          { amount: estimatedAmount, requestType: input.requestType ?? 'material_request' },
+          input.requesterId,
+          input.holdingId,
+        )
+      : { step: null, skipped: [] as any[] };
+    const first = placement.step;
+    // If every approval step was the author's own and nothing else follows, the chain
+    // is effectively approved; otherwise land on `first`, else stay a draft.
+    const status = first ? statusForStep(first) : placement.skipped.length ? 'approved' : 'draft';
 
     const [req] = await tx
       .insert(schema.requests)
@@ -201,6 +208,18 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
       changedBy: input.requesterId,
       source: 'api',
     });
+    // Bug #1: record every approval step auto-skipped because the author was the
+    // only eligible approver (accountability trail).
+    for (const s of placement.skipped) {
+      await tx.insert(schema.requestStatusHistory).values({
+        requestId: req.id,
+        oldStatus: null,
+        newStatus: statusForStep(s),
+        changedBy: null,
+        source: 'auto_skip',
+        comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+      });
+    }
     await tx.insert(schema.auditLogs).values({
       holdingId: input.holdingId,
       factoryId: input.factoryId ?? null,

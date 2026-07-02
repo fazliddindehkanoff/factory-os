@@ -97,6 +97,72 @@ export async function firstStepForRequest(
   return firstStep(steps, ctx);
 }
 
+/**
+ * Bug #1: an approval step is auto-skipped ONLY when the request's author HOLDS that
+ * step's role AND is its sole holder in the holding. If the author doesn't hold the
+ * role, or someone else also holds it, the step is NOT skipped (preserves normal
+ * behaviour, incl. steps whose role currently has no holder). Non-approval steps are
+ * never auto-skipped — they are real work.
+ */
+async function shouldAutoSkipStep(
+  db: Db,
+  step: KindStep,
+  requesterId: string,
+  holdingId: string,
+): Promise<boolean> {
+  if (step.stepKind !== 'approval' || !step.approverRoleId) return false;
+  const holders = await db
+    .select({ uid: schema.userRoles.userId })
+    .from(schema.userRoles)
+    .where(
+      and(
+        eq(schema.userRoles.roleId, step.approverRoleId),
+        eq(schema.userRoles.status, 'active'),
+        eq(schema.userRoles.holdingId, holdingId),
+      ),
+    );
+  const uids = new Set(holders.map((h: { uid: string }) => h.uid));
+  return uids.has(requesterId) && uids.size === 1;
+}
+
+/**
+ * Walk forward from `start`, skipping approval steps whose only eligible approver is
+ * the requester (bug #1). Pure — records nothing; returns the landing step (or null)
+ * plus the list of steps that were skipped so the caller can log them.
+ */
+async function resolveSkippingSelfApprovals(
+  db: Db,
+  steps: KindStep[],
+  ctx: WorkflowContext,
+  requesterId: string,
+  holdingId: string,
+  start: KindStep | null,
+): Promise<{ step: KindStep | null; skipped: KindStep[] }> {
+  const skipped: KindStep[] = [];
+  let cur = start;
+  while (cur && (await shouldAutoSkipStep(db, cur, requesterId, holdingId))) {
+    skipped.push(cur);
+    cur = nextStep(steps, ctx, cur.stepOrder) as KindStep | null;
+  }
+  return { step: cur, skipped };
+}
+
+/** Landing step for a fresh request AFTER auto-skipping the requester's own approval
+ *  steps (bug #1), plus the skipped steps for the audit trail. */
+export async function initialPlacement(
+  db: Db,
+  workflowId: string,
+  ctx: WorkflowContext,
+  requesterId: string,
+  holdingId: string,
+): Promise<{ step: KindStep | null; skipped: KindStep[] }> {
+  const steps = await loadKindSteps(db, workflowId);
+  const first = firstStep(steps, ctx) as KindStep | null;
+  return resolveSkippingSelfApprovals(db, steps, ctx, requesterId, holdingId, first);
+}
+
+export { resolveSkippingSelfApprovals };
+
 async function loadStep(db: Db, stepId: string): Promise<KindStep | null> {
   const [s] = await db.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.id, stepId));
   if (!s) return null;
@@ -435,7 +501,20 @@ export async function performAction(db: Db, input: PerformInput) {
       newCurrentStepId = step.id;
     } else {
       const steps = await loadKindSteps(tx, req.workflowId!);
-      const next = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
+      let next = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
+      // Bug #1: auto-skip the next approval step(s) if the author is their only approver.
+      const selfSkip = await resolveSkippingSelfApprovals(tx, steps, ctx, req.requesterId, req.holdingId, next);
+      next = selfSkip.step;
+      for (const s of selfSkip.skipped) {
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: req.id,
+          oldStatus: from,
+          newStatus: statusForStep(s),
+          changedBy: null,
+          source: 'auto_skip',
+          comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+        });
+      }
       if (next) {
         to = statusForStep(next);
         newCurrentStepId = next.id;
