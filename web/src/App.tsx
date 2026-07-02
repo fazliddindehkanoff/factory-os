@@ -2113,6 +2113,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
       {pending && (
         <ActionModal
           action={pending}
+          requestId={id}
           busy={busy}
           error={error}
           quotations={quotations}
@@ -2126,6 +2127,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
 function ActionModal({
   action,
+  requestId,
   busy,
   error,
   quotations,
@@ -2133,6 +2135,7 @@ function ActionModal({
   onConfirm,
 }: {
   action: LifecycleActionBtn;
+  requestId: string;
   busy: boolean;
   error: string | null;
   quotations: QuotationRow[];
@@ -2141,6 +2144,14 @@ function ActionModal({
 }) {
   const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
+  // Bug #3: role-based rejection reasons + «Другое» → free text.
+  const isReject = action.action === 'reject';
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [reasonChoice, setReasonChoice] = useState('');
+  useEffect(() => {
+    if (isReject) api.rejectReasons(requestId).then((r: any) => setReasons(r?.reasons ?? [])).catch(() => setReasons([]));
+  }, [isReject, requestId]);
+  const OTHER = '__other__';
   const [amount, setAmount] = useState('');
   const [supplier, setSupplier] = useState('');
   const [supplierId, setSupplierId] = useState('');
@@ -2154,9 +2165,13 @@ function ActionModal({
   }, [isAdd]);
   const inputStyle: CSSProperties = { width: '100%', padding: '13px 15px', fontSize: 15, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
   const lbl: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 8 };
+  // Effective reject comment: chosen preset, or free text when «Другое».
+  const effectiveComment = isReject && reasons.length > 0
+    ? (reasonChoice === OTHER ? comment.trim() : reasonChoice)
+    : comment.trim();
   const ok =
     (!action.pin || pin.length >= 4) &&
-    (!action.comment || comment.trim().length > 0) &&
+    (!action.comment || effectiveComment.length > 0) &&
     (!action.amount || (amount !== '' && Number(amount) > 0)) &&
     (!isAdd || ((supplierId !== '' || supplier.trim().length > 0) && amount !== '' && Number(amount) > 0)) &&
     (!isSelect || quotationId !== '');
@@ -2234,7 +2249,20 @@ function ActionModal({
             <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
           </div>
         )}
-        {action.comment && (
+        {action.comment && isReject && reasons.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={lbl}>Причина отклонения</div>
+            <select value={reasonChoice} onChange={(e) => setReasonChoice(e.target.value)} style={inputStyle}>
+              <option value="" disabled>Выберите причину…</option>
+              {reasons.map((r) => <option key={r} value={r}>{r}</option>)}
+              <option value={OTHER}>Другое…</option>
+            </select>
+            {reasonChoice === OTHER && (
+              <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Укажите причину" style={{ ...inputStyle, resize: 'none', lineHeight: 1.45, marginTop: 8 }} />
+            )}
+          </div>
+        )}
+        {action.comment && !(isReject && reasons.length > 0) && (
           <div style={{ marginBottom: 12 }}>
             <div style={lbl}>Комментарий</div>
             <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Причина / комментарий" style={{ ...inputStyle, resize: 'none', lineHeight: 1.45 }} />
@@ -2253,7 +2281,7 @@ function ActionModal({
             onClick={() =>
               onConfirm({
                 pin: action.pin ? pin : undefined,
-                comment: action.comment ? comment : undefined,
+                comment: action.comment ? effectiveComment : undefined,
                 amount: action.amount || isAdd ? Number(amount) : undefined,
                 supplierId: isAdd && supplierId ? supplierId : undefined,
                 supplierName: isAdd ? supplier.trim() || undefined : undefined,

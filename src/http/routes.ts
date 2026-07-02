@@ -1,6 +1,6 @@
 /** REST routes. Auth on every /api route except login; RBAC checked per action. */
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { and, desc, eq, inArray, notInArray, or, ilike, gte, lte, count, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, notInArray, or, ilike, gte, lte, count, isNull, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
@@ -762,6 +762,41 @@ export function buildRouter(deps: RouterDeps): Router {
         });
       });
       res.json({ ok: true, status: 'cancelled' });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Bug #3: configurable rejection-reason presets for the current step's role.
+  r.get('/requests/:id/reject-reasons', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      if (!reqRow || reqRow.holdingId !== u.holdingId) { res.json({ reasons: [] }); return; }
+      let roleCode: string | null = null;
+      if (reqRow.currentStepId) {
+        const [step] = await db.select({ rid: schema.workflowSteps.approverRoleId }).from(schema.workflowSteps).where(eq(schema.workflowSteps.id, reqRow.currentStepId));
+        if (step?.rid) {
+          const [role] = await db.select({ code: schema.roles.code }).from(schema.roles).where(eq(schema.roles.id, step.rid));
+          roleCode = role?.code ?? null;
+        }
+      }
+      const rows = await db
+        .select()
+        .from(schema.rejectionReasons)
+        .where(
+          and(
+            eq(schema.rejectionReasons.isActive, true),
+            or(isNull(schema.rejectionReasons.holdingId), eq(schema.rejectionReasons.holdingId, u.holdingId as string)),
+            or(isNull(schema.rejectionReasons.roleCode), roleCode ? eq(schema.rejectionReasons.roleCode, roleCode) : isNull(schema.rejectionReasons.roleCode)),
+          ),
+        )
+        .orderBy(schema.rejectionReasons.sortOrder);
+      const seen = new Set<string>();
+      const reasons = rows
+        .map((r: { text: string }) => r.text)
+        .filter((t: string) => (seen.has(t) ? false : (seen.add(t), true)));
+      res.json({ reasons });
     } catch (e) {
       next(e);
     }

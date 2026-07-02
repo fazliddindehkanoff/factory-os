@@ -713,3 +713,20 @@ export const notifications = pgTable(
     statusIdx: index('notifications_status_idx').on(t.status),
   }),
 );
+
+// ── Rejection reasons (bug #3) ───────────────────────────────────────────────
+// Configurable presets shown in the reject dialog. holding_id NULL = system
+// default; role_code NULL = applies to any role. "Другое" is added by the UI.
+export const rejectionReasons = pgTable(
+  'rejection_reasons',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    holdingId: uuid('holding_id').references(() => holdings.id),
+    roleCode: text('role_code'),
+    text: text('text').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ roleIdx: index('rejection_reasons_role_idx').on(t.roleCode) }),
+);
