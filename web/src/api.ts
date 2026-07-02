@@ -78,6 +78,9 @@ export const api = {
   form: (screen: string) => call('/form/' + screen),
   dashboard: () => call('/dashboard'),
   notificationsUnreadCount: () => call('/me/notifications/unread-count'),
+  notifications: (unreadOnly?: boolean) => call('/me/notifications' + (unreadOnly ? '?unread=1' : '')),
+  markNotificationRead: (id: string) => call(`/me/notifications/${id}/read`, { method: 'POST' }),
+  markAllNotificationsRead: () => call('/me/notifications/read-all', { method: 'POST' }),
   listRequests: (opts?: { limit?: number; offset?: number; search?: string; status?: string }) => {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));
