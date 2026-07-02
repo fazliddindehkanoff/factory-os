@@ -669,21 +669,30 @@ function RequestsList({
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState<number | null>(null);
   const PAGE = 30;
   const canSeeProcurement = me.permissions.includes('procurement.view') || me.permissions.includes('procurement.quote') || me.permissions.includes('procurement.select_supplier');
 
+  // P1-7: search + status filter run on the SERVER (debounced 350ms), so they
+  // match requests across the whole holding, not only the current page.
   useEffect(() => {
-    api.listRequests({ limit: PAGE }).then((res: any) => {
-      if (Array.isArray(res)) { setRows(res); setHasMore(false); }
-      else { setRows(res.items); setHasMore(res.hasMore); }
-    }).catch((e) => setError((e as Error).message));
-  }, []);
+    let cancelled = false;
+    const t = setTimeout(() => {
+      setRows(null);
+      api.listRequests({ limit: PAGE, search: search.trim(), status: statusFilter }).then((res: any) => {
+        if (cancelled) return;
+        if (Array.isArray(res)) { setRows(res); setHasMore(false); setTotal(res.length); }
+        else { setRows(res.items); setHasMore(res.hasMore); setTotal(res.total ?? res.items.length); }
+      }).catch((e) => { if (!cancelled) setError((e as Error).message); });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [search, statusFilter]);
 
   const loadMore = async () => {
     if (!rows || loadingMore) return;
     setLoadingMore(true);
     try {
-      const res = await api.listRequests({ limit: PAGE, offset: rows.length }) as any;
+      const res = await api.listRequests({ limit: PAGE, offset: rows.length, search: search.trim(), status: statusFilter }) as any;
       const next = Array.isArray(res) ? res : res.items;
       setRows([...rows, ...next]);
       setHasMore(Array.isArray(res) ? false : res.hasMore);
@@ -705,13 +714,9 @@ function RequestsList({
     }
   }
 
+  // Search + status are already applied server-side; only the calendar-day filter
+  // is refined client-side over the loaded page.
   const filtered = rows?.filter((r) => {
-    if (statusFilter && r.status !== statusFilter) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      const match = r.requestNumber.toLowerCase().includes(q) || (r.title ?? '').toLowerCase().includes(q);
-      if (!match) return false;
-    }
     if (selectedDate && r.createdAt) {
       const d = new Date(r.createdAt);
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -725,7 +730,7 @@ function RequestsList({
       <div style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg)', padding: '14px 16px 8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--fg2)' }}>
-            Все заявки {filtered ? `· ${filtered.length}` : ''}
+            Все заявки {selectedDate ? (filtered ? `· ${filtered.length}` : '') : total != null ? `· ${total}` : ''}
           </span>
           {me.permissions.includes('requests.create') && (
             <button onClick={onCreate} style={{ padding: '8px 13px', borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>

@@ -121,6 +121,27 @@ export const STEP_KIND_LABELS: Record<StepKind, string> = {
 export const TERMINAL_APPROVED = 'approved';
 export const TERMINAL_CLOSED = 'closed';
 export const TERMINAL_REJECTED = 'rejected';
+export const TERMINAL_CANCELLED = 'cancelled';
+export const TERMINAL_ARCHIVED = 'archived';
+
+/**
+ * Every status in which a request is finished / no longer in-flight. Single
+ * source of truth — dashboards, workflow in-flight checks and override guards
+ * all consult this so `closed`/`cancelled`/`archived` can never be forgotten in
+ * one place and treated as "still active" in another. (P2-1)
+ */
+export const TERMINAL_STATUSES: readonly string[] = [
+  TERMINAL_APPROVED,
+  TERMINAL_CLOSED,
+  TERMINAL_REJECTED,
+  TERMINAL_CANCELLED,
+  TERMINAL_ARCHIVED,
+];
+
+/** True if `status` is a finished/terminal request state. */
+export function isTerminalStatus(status: string): boolean {
+  return TERMINAL_STATUSES.includes(status);
+}
 
 /** In-flight status name for an approval step (kept for compat with approval.service). */
 export const STATUS_PENDING_APPROVAL = 'pending_approval';

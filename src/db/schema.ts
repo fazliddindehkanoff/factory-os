@@ -439,7 +439,10 @@ export const requestItems = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     requestId: uuid('request_id')
       .notNull()
-      .references(() => requests.id, { onDelete: 'cascade' }),
+      // P1-8: RESTRICT, not cascade — business history (items, status history,
+      // approvals, reservations, quotations, attachments) must never vanish when
+      // a request row is deleted. Requests are archived, not hard-deleted.
+      .references(() => requests.id, { onDelete: 'restrict' }),
     materialId: uuid('material_id').references(() => materials.id),
     name: text('name').notNull(),
     description: text('description'),
@@ -458,7 +461,10 @@ export const requestStatusHistory = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     requestId: uuid('request_id')
       .notNull()
-      .references(() => requests.id, { onDelete: 'cascade' }),
+      // P1-8: RESTRICT, not cascade — business history (items, status history,
+      // approvals, reservations, quotations, attachments) must never vanish when
+      // a request row is deleted. Requests are archived, not hard-deleted.
+      .references(() => requests.id, { onDelete: 'restrict' }),
     oldStatus: text('old_status'),
     newStatus: text('new_status').notNull(),
     changedBy: uuid('changed_by').references(() => users.id),
@@ -476,7 +482,10 @@ export const approvals = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     requestId: uuid('request_id')
       .notNull()
-      .references(() => requests.id, { onDelete: 'cascade' }),
+      // P1-8: RESTRICT, not cascade — business history (items, status history,
+      // approvals, reservations, quotations, attachments) must never vanish when
+      // a request row is deleted. Requests are archived, not hard-deleted.
+      .references(() => requests.id, { onDelete: 'restrict' }),
     workflowStepId: uuid('workflow_step_id').references(() => workflowSteps.id),
     approverUserId: uuid('approver_user_id').references(() => users.id),
     status: approvalStatus('status').notNull().default('pending'),
@@ -496,7 +505,8 @@ export const approvals = pgTable(
 
 export const signatures = pgTable('signatures', {
   id: uuid('id').primaryKey().defaultRandom(),
-  approvalId: uuid('approval_id').references(() => approvals.id, { onDelete: 'cascade' }),
+  // P1-8: RESTRICT — a signature is legal evidence and must survive approval deletion.
+  approvalId: uuid('approval_id').references(() => approvals.id, { onDelete: 'restrict' }),
   requestId: uuid('request_id').references(() => requests.id),
   userId: uuid('user_id')
     .notNull()
@@ -585,7 +595,7 @@ export const reservations = pgTable('reservations', {
   holdingId: uuid('holding_id')
     .notNull()
     .references(() => holdings.id),
-  requestId: uuid('request_id').references(() => requests.id, { onDelete: 'cascade' }),
+  requestId: uuid('request_id').references(() => requests.id, { onDelete: 'restrict' }),
   materialId: uuid('material_id')
     .notNull()
     .references(() => materials.id),
@@ -606,7 +616,10 @@ export const quotations = pgTable(
       .references(() => holdings.id),
     requestId: uuid('request_id')
       .notNull()
-      .references(() => requests.id, { onDelete: 'cascade' }),
+      // P1-8: RESTRICT, not cascade — business history (items, status history,
+      // approvals, reservations, quotations, attachments) must never vanish when
+      // a request row is deleted. Requests are archived, not hard-deleted.
+      .references(() => requests.id, { onDelete: 'restrict' }),
     supplierName: text('supplier_name').notNull(),
     supplierId: uuid('supplier_id').references(() => suppliers.id),
     amount: bigint('amount', { mode: 'number' }).notNull().default(0),
@@ -652,7 +665,10 @@ export const attachments = pgTable(
       .references(() => holdings.id),
     requestId: uuid('request_id')
       .notNull()
-      .references(() => requests.id, { onDelete: 'cascade' }),
+      // P1-8: RESTRICT, not cascade — business history (items, status history,
+      // approvals, reservations, quotations, attachments) must never vanish when
+      // a request row is deleted. Requests are archived, not hard-deleted.
+      .references(() => requests.id, { onDelete: 'restrict' }),
     uploaderId: uuid('uploader_id').references(() => users.id),
     filename: text('filename').notNull(),
     mime: text('mime'),
@@ -661,4 +677,39 @@ export const attachments = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ reqIdx: index('attachments_request_idx').on(t.requestId) }),
+);
+
+// ── Notifications (P1-6) ─────────────────────────────────────────────────────
+// Every critical notification is persisted BEFORE delivery, so a failed Telegram
+// send is recorded (status='failed') and can be retried, never lost silently.
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    holdingId: uuid('holding_id').references(() => holdings.id),
+    recipientUserId: uuid('recipient_user_id')
+      .notNull()
+      .references(() => users.id),
+    title: text('title').notNull(),
+    message: text('message').notNull(),
+    // low | normal | high | urgent | critical
+    priority: text('priority').notNull().default('normal'),
+    // dashboard | telegram | email | sms
+    channel: text('channel').notNull().default('telegram'),
+    entityType: text('entity_type'),
+    entityId: uuid('entity_id'),
+    actionUrl: text('action_url'),
+    actionButtons: jsonb('action_buttons'),
+    // pending | delivered | failed | read
+    status: text('status').notNull().default('pending'),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (t) => ({
+    recipientIdx: index('notifications_recipient_idx').on(t.recipientUserId),
+    statusIdx: index('notifications_status_idx').on(t.status),
+  }),
 );

@@ -5,15 +5,24 @@
  */
 import 'dotenv/config';
 import { Pool } from 'pg';
+import { assertWipeAllowed } from './_wipe-guard.js';
 
 async function main() {
+  assertWipeAllowed('clear-requests.ts');
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
   const before = (await pool.query('SELECT count(*)::int AS n FROM requests')).rows[0].n;
 
-  // Non-cascade FKs to requests must be cleared first.
+  // P1-8: request→history FKs are now RESTRICT (no cascade), so this dev-only
+  // cleanup must delete children explicitly, in dependency order. This is the
+  // deliberate, guarded escape hatch — the app never hard-deletes requests.
   await pool.query('DELETE FROM signatures');
+  await pool.query('DELETE FROM approvals');
+  await pool.query('DELETE FROM reservations');
+  await pool.query('DELETE FROM quotations');
+  await pool.query('DELETE FROM request_status_history');
+  await pool.query('DELETE FROM request_items');
+  await pool.query('DELETE FROM attachments');
   await pool.query('UPDATE stock_movements SET request_id = NULL WHERE request_id IS NOT NULL');
-  // Cascade removes request_items / status_history / approvals / quotations / reservations.
   await pool.query('DELETE FROM requests');
 
   const after = (await pool.query('SELECT count(*)::int AS n FROM requests')).rows[0].n;

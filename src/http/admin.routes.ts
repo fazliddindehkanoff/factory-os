@@ -12,8 +12,9 @@ import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, type Scope } from '../rbac/rbac.js';
 import { PERMISSIONS } from '../rbac/permissions.js';
-import { STEP_KINDS } from '../workflow/step-kinds.js';
+import { STEP_KINDS, TERMINAL_STATUSES } from '../workflow/step-kinds.js';
 import { ValidationError, NotFoundError, ConflictError, ForbiddenError } from '../services/errors.js';
+import { notifyUser } from '../services/notification.service.js';
 import type { AuthedRequest, AuthedUser } from './auth.middleware.js';
 
 // db handle is intentionally loose so the same code runs over node-postgres and pglite.
@@ -21,11 +22,13 @@ import type { AuthedRequest, AuthedUser } from './auth.middleware.js';
 type Db = any;
 
 /**
- * Statuses that are NOT live: terminal (approved/rejected/cancelled) plus draft
- * (no approval row yet). Used for BOTH the dashboard "active" count and the workflow
- * in-flight guard, so the two notions of "live" never disagree.
+ * Statuses that are NOT live: every terminal state (approved/closed/rejected/
+ * cancelled/archived) plus draft (no approval row yet). Used for BOTH the dashboard
+ * "active" count and the workflow in-flight guard, so the two notions of "live"
+ * never disagree. (P2-1: 'closed'/'archived' were previously missing, which pinned
+ * workflowHasInFlight() to true forever after the first closed request.)
  */
-const INACTIVE_REQUEST_STATUSES = ['approved', 'rejected', 'cancelled', 'draft'];
+const INACTIVE_REQUEST_STATUSES = [...TERMINAL_STATUSES, 'draft'];
 
 function actor(req: Request): AuthedUser {
   return (req as AuthedRequest).user!;
@@ -196,6 +199,53 @@ async function assertThresholdsAfterProcurement(tx: Db, workflowId: string): Pro
     throw new ValidationError(
       `Шаг согласования с порогом суммы («${bad.stepName}») должен стоять ПОСЛЕ шага закупки — иначе рост суммы при выборе КП обойдёт финконтроль`,
     );
+  }
+}
+
+/**
+ * P1-1: an amount-gated approval step must be preceded by a procurement step that
+ * verifies the amount (via a selected КП). Otherwise the threshold is evaluated
+ * against the requester's self-declared amount (which the create form sends as 0),
+ * so a high-value approval can be skipped entirely. Enforced at ACTIVATION so a
+ * workflow can still be built step-by-step, but cannot go live while broken.
+ */
+async function assertThresholdsHaveProcurement(tx: Db, workflowId: string): Promise<void> {
+  const steps: {
+    stepName: string;
+    stepKind: string;
+    stepOrder: number;
+    enabled: boolean;
+    thresholdAmount: number | null;
+    conditionRule: Record<string, unknown> | null;
+  }[] = await tx.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.workflowId, workflowId));
+  const enabled = steps.filter((s) => s.enabled !== false);
+  const procurementOrders = enabled.filter((s) => s.stepKind === 'procurement').map((s) => s.stepOrder);
+  const amountGated = enabled.filter(
+    (s) =>
+      s.stepKind === 'approval' &&
+      (s.thresholdAmount != null || (s.conditionRule as { amountGte?: unknown } | null)?.amountGte != null),
+  );
+  const orphan = amountGated.find((s) => !procurementOrders.some((o) => o < s.stepOrder));
+  if (orphan) {
+    throw new ValidationError(
+      `Нельзя активировать: шаг согласования с порогом суммы («${orphan.stepName}») требует шага закупки ПЕРЕД ним — ` +
+        `иначе порог проверяется по самодекларированной сумме и высокобюджетное согласование можно обойти`,
+    );
+  }
+}
+
+/**
+ * NEW-2: invariants to run after ANY step mutation. The ordering rule always
+ * applies. The stronger existence rule (a threshold approval must have procurement
+ * before it) is enforced whenever the workflow is ALREADY ACTIVE — otherwise a
+ * step add/reorder/delete on a live workflow could reintroduce the P1-1 bypass
+ * (threshold-without-procurement) without going through activation.
+ */
+async function assertStepMutationInvariants(tx: Db, workflowId: string): Promise<void> {
+  await assertThresholdsAfterProcurement(tx, workflowId);
+  const [wf] = await tx.select().from(schema.workflows).where(eq(schema.workflows.id, workflowId));
+  if (wf?.isActive) {
+    await assertThresholdsHaveProcurement(tx, workflowId);
   }
 }
 
@@ -735,6 +785,50 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
     }
   });
 
+  /** P2-2: admin PIN reset. Requires users.manage + a reason, outranks the target,
+   *  CLEARS the PIN (forcing the user to set a fresh one), writes an audit event and
+   *  a persisted notification to the affected user. Never sets a PIN on their behalf. */
+  r.post('/users/:id/reset-pin', requirePerm('users.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const id = req.params.id as string;
+      const reason = String((req.body ?? {}).reason ?? '').trim();
+      if (!reason) throw new ValidationError('Требуется причина сброса PIN');
+      const target = await loadHoldingRow(db, schema.users, id, u.holdingId as string);
+      await assertActorOutranks(u.id, u.holdingId as string, id);
+
+      await db.transaction(async (tx: Db) => {
+        await tx.update(schema.users).set({ pinHash: null, updatedAt: new Date() }).where(eq(schema.users.id, id));
+        await writeAudit(tx, {
+          holdingId: u.holdingId as string,
+          userId: u.id,
+          action: 'pin.reset_by_admin',
+          module: 'admin',
+          entityType: 'user',
+          entityId: id,
+          // Never store the PIN — only the reason and who did it.
+          newValue: { reason },
+        });
+      });
+
+      // Persisted notification (delivery best-effort; admin router has no bot channel).
+      await notifyUser(db, undefined, {
+        holdingId: u.holdingId as string,
+        recipientUserId: id,
+        title: 'PIN сброшен администратором',
+        message: `Ваш PIN был сброшен. Причина: ${reason}. Установите новый PIN в профиле.`,
+        priority: 'high',
+        entityType: 'user',
+        entityId: id,
+      });
+
+      res.json({ ok: true, reset: true });
+      void target;
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.get('/users/:id/roles', requirePerm('users.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
@@ -1142,6 +1236,9 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         if (wantActive === true) {
           const stepCount = await tx.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.workflowId, id));
           if (stepCount.length === 0) throw new ValidationError('Cannot activate workflow with no steps');
+          // P1-1: refuse to activate a workflow where a threshold approval has no
+          // procurement step before it to verify the amount.
+          await assertThresholdsHaveProcurement(tx, id);
           // Find the currently active workflow(s) for this module and check for in-flight requests
           const currentlyActive: { id: string }[] = await tx
             .select({ id: schema.workflows.id })
@@ -1225,7 +1322,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
             .set({ stepOrder: Math.round(it.orderIndex) })
             .where(eq(schema.workflowSteps.id, it.id));
         }
-        await assertThresholdsAfterProcurement(tx, id); // H1
+        await assertStepMutationInvariants(tx, id); // H1 + NEW-2
       });
       await writeAudit(db, {
         holdingId: u.holdingId!,
@@ -1282,7 +1379,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
             thresholdAmount,
           })
           .returning();
-        await assertThresholdsAfterProcurement(tx, id); // H1
+        await assertStepMutationInvariants(tx, id); // H1 + NEW-2
         return row;
       });
       res.status(201).json(step);
@@ -1343,7 +1440,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
           .set(patch)
           .where(eq(schema.workflowSteps.id, stepId))
           .returning();
-        await assertThresholdsAfterProcurement(tx, id); // H1
+        await assertStepMutationInvariants(tx, id); // H1 + NEW-2
         return row;
       });
       res.json(updated);
@@ -1363,7 +1460,12 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       if (await workflowHasInFlight(db, id)) {
         throw new ConflictError('Нельзя удалять шаги: есть незакрытые заявки на этой цепочке');
       }
-      await db.delete(schema.workflowSteps).where(eq(schema.workflowSteps.id, stepId));
+      // NEW-2: deleting a step (e.g. the procurement step) must not leave an active
+      // workflow with a threshold approval that has no procurement before it.
+      await db.transaction(async (tx: Db) => {
+        await tx.delete(schema.workflowSteps).where(eq(schema.workflowSteps.id, stepId));
+        await assertStepMutationInvariants(tx, id);
+      });
       res.json({ ok: true });
     } catch (e) {
       next(e);

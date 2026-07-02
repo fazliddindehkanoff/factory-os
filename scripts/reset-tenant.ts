@@ -6,10 +6,16 @@ import 'dotenv/config';
 import { eq, ne, isNotNull, inArray, and } from 'drizzle-orm';
 import { createDb } from '../src/db/client.js';
 import * as schema from '../src/db/schema.js';
+import { assertWipeAllowed } from './_wipe-guard.js';
 
-const OWNER_TG_ID = process.env.OWNER_TG_ID ?? '8236045489';
+// No hardcoded production owner id: the caller must name the owner explicitly.
+const OWNER_TG_ID = process.env.OWNER_TG_ID;
 
 async function main() {
+  const { allowAuditDelete } = assertWipeAllowed('reset-tenant.ts');
+  if (!OWNER_TG_ID) {
+    throw new Error('OWNER_TG_ID env var is required (telegram id of the owner to keep).');
+  }
   const { db } = createDb(process.env.DATABASE_URL!);
   console.log('🧹 Starting tenant reset...\n');
 
@@ -53,9 +59,13 @@ async function main() {
     const otherIds = otherUsers.map(u => u.id);
     if (otherIds.length) {
       await tx.delete(schema.userRoles).where(inArray(schema.userRoles.userId, otherIds));
-      await tx.delete(schema.auditLogs).where(inArray(schema.auditLogs.userId, otherIds));
+      if (allowAuditDelete) {
+        await tx.delete(schema.auditLogs).where(inArray(schema.auditLogs.userId, otherIds));
+      }
       await tx.delete(schema.users).where(inArray(schema.users.id, otherIds));
-      console.log(`✅ Deleted ${otherIds.length} users (+ role assignments + audit logs)`);
+      console.log(
+        `✅ Deleted ${otherIds.length} users (+ role assignments${allowAuditDelete ? ' + audit logs' : ', audit preserved'})`,
+      );
     } else {
       console.log('✅ No other users to delete');
     }
@@ -84,9 +94,13 @@ async function main() {
 
     console.log(`✅ Owner retains ${ownerRoles.length} role assignment(s)`);
 
-    // 6. Clear remaining audit logs (owner's own logs — fresh start)
-    await tx.delete(schema.auditLogs);
-    console.log('✅ Cleared audit log (fresh start)');
+    // 6. Optionally clear remaining audit logs — only with explicit FORCE_DELETE_AUDIT=1.
+    if (allowAuditDelete) {
+      await tx.delete(schema.auditLogs);
+      console.log('✅ Cleared audit log (FORCE_DELETE_AUDIT=1)');
+    } else {
+      console.log('ℹ️  Audit log preserved (set FORCE_DELETE_AUDIT=1 to erase)');
+    }
 
   });
 
