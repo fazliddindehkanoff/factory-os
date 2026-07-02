@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'fix/**', 'feat/**', 'hotfix/**', 'chore/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      # ── Backend ──────────────────────────────────────────────
+      - name: Install (backend)
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build (backend)
+        run: npm run build
+
+      # ── Web (Telegram Mini App) ──────────────────────────────
+      - name: Install (web)
+        working-directory: web
+        run: npm ci
+
+      - name: Build (web)
+        working-directory: web
+        run: npm run build
