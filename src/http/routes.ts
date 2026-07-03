@@ -814,6 +814,27 @@ export function buildRouter(deps: RouterDeps): Router {
     }
   });
 
+  // Bug #8: procurement people the head can assign a request to (active users with
+  // a procurement permission in the holding).
+  r.get('/procurement/assignees', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId) { res.json({ users: [] }); return; }
+      const users = await db
+        .select({ id: schema.users.id, fullName: schema.users.fullName })
+        .from(schema.users)
+        .where(and(eq(schema.users.holdingId, u.holdingId), eq(schema.users.status, 'active')));
+      const out: { id: string; fullName: string | null }[] = [];
+      for (const usr of users) {
+        const codes = await getUserPermissionCodes(db, usr.id);
+        if (['procurement.quote', 'procurement.select_supplier', 'procurement.view'].some((p) => codes.includes(p))) out.push(usr);
+      }
+      res.json({ users: out });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.post('/requests/:id/action', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
@@ -832,6 +853,7 @@ export function buildRouter(deps: RouterDeps): Router {
         supplierId: body.supplierId,
         leadTime: body.leadTime,
         quotationId: body.quotationId,
+        assigneeId: body.assigneeId,
       });
       // Notify next step's approvers + notify requester about progress
       if (result.currentStepId) {

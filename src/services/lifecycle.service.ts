@@ -13,7 +13,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
-import { hasPermission, scopeCovers, type Scope } from '../rbac/rbac.js';
+import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
 import { verifyPin } from '../auth/pin.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from '../http/rate-limit.js';
@@ -40,6 +40,7 @@ interface RequestRow {
   factoryId: string | null;
   departmentId: string | null;
   requesterId: string;
+  responsibleUserId: string | null;
   requestType: string;
   status: string;
   workflowId: string | null;
@@ -215,6 +216,11 @@ async function actorMayAct(
   if (step.stepKind === 'approval' && !def.reject && step.approverRoleId) {
     if (!(await actorHoldsRoleInScope(db, userId, step.approverRoleId, scope))) return false;
   }
+  // Bug #8: once a specific procurement person is assigned, only THEY work the
+  // procurement step (others with the permission are locked out).
+  if (step.stepKind === 'procurement' && req.responsibleUserId && req.responsibleUserId !== userId) {
+    return false;
+  }
   return true;
 }
 
@@ -225,6 +231,7 @@ export interface UiAction {
   comment: boolean;
   amount: boolean;
   quote: 'add' | 'select' | null;
+  assign?: boolean;
 }
 
 const toUi = (a: StepActionDef): UiAction => ({
@@ -234,6 +241,7 @@ const toUi = (a: StepActionDef): UiAction => ({
   comment: !!a.comment,
   amount: !!a.amount,
   quote: a.quote ?? null,
+  assign: !!a.assign,
 });
 
 /**
@@ -260,11 +268,21 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   if (!req.currentStepId) return [];
   const step = await loadStep(db, req.currentStepId);
   if (!step) return [];
+  // Bug #8: the "assign to procurement" action is offered on an approval step only
+  // when the NEXT step is a procurement step (i.e. the procurement head hands off).
+  let nextIsProcurement = false;
+  if (req.workflowId) {
+    const steps = await loadKindSteps(db, req.workflowId);
+    const ctx = reqContext({ estimatedAmount: req.estimatedAmount, inStock: req.inStock, requestType: req.requestType });
+    const nxt = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
+    nextIsProcurement = nxt?.stepKind === 'procurement';
+  }
   const defs = actionsForKind(step.stepKind);
   const out: UiAction[] = [];
   let isHandler = false;
   for (const a of defs) {
     if (a.reject) continue;
+    if (a.assign && !nextIsProcurement) continue; // assign only before a procurement step
     // Self-service on money/routing decisions is forbidden (separation of duties).
     if (sodBlocked(a, req, userId)) continue;
     if (a.requesterOnly && req.requesterId !== userId) continue;
@@ -300,6 +318,7 @@ export interface PerformInput {
   supplierId?: string;
   leadTime?: string;
   quotationId?: string;
+  assigneeId?: string;
 }
 
 /** Create the pending approval row a step needs when it is an approval step. */
@@ -435,6 +454,34 @@ export async function performAction(db: Db, input: PerformInput) {
     } else if (def.amount) {
       const n = Number(input.amount);
       if (Number.isFinite(n) && n >= 0) patch.estimatedAmount = Math.round(n);
+    }
+
+    // Bug #8: assign a specific procurement person — only they will work the
+    // upcoming procurement step. Validate the assignee is an active procurement user.
+    if (def.assign) {
+      const assigneeId = String(input.assigneeId ?? '');
+      if (!assigneeId) throw new ValidationError('Выберите снабженца');
+      const [assignee] = await tx
+        .select()
+        .from(schema.users)
+        .where(and(eq(schema.users.id, assigneeId), eq(schema.users.holdingId, req.holdingId), eq(schema.users.status, 'active')));
+      if (!assignee) throw new ValidationError('Снабженец не найден в организации');
+      const acodes = await getUserPermissionCodes(tx, assigneeId);
+      if (!['procurement.quote', 'procurement.select_supplier', 'procurement.view'].some((p) => acodes.includes(p))) {
+        throw new ValidationError('У выбранного пользователя нет прав снабжения');
+      }
+      patch.responsibleUserId = assigneeId;
+      await tx.insert(schema.auditLogs).values({
+        holdingId: req.holdingId,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'procurement.assigned',
+        module: 'procurement',
+        entityType: 'request',
+        entityId: req.id,
+        newValue: { assigneeId, assigneeName: assignee.fullName },
+        source: 'lifecycle',
+      });
     }
 
     // Approval bookkeeping: mark this step's pending approval resolved + sign.

@@ -25,7 +25,7 @@ export interface RequestVisibility {
   /** WHERE condition to AND into a requests query (undefined when seeAll). */
   scope: SQL | undefined;
   /** In-memory predicate for a single already-loaded request row. */
-  canSee: (req: { requesterId: string; workflowId: string | null; id: string }) => boolean;
+  canSee: (req: { requesterId: string; workflowId: string | null; id: string; responsibleUserId?: string | null }) => boolean;
 }
 
 export async function getRequestVisibility(db: Db, userId: string): Promise<RequestVisibility> {
@@ -81,9 +81,11 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
   ] as string[];
 
   const conds: SQL[] = [eq(schema.requests.requesterId, userId)];
+  // Bug #8: the assigned procurement person always sees their request.
+  conds.push(eq(schema.requests.responsibleUserId, userId));
   if (roleWorkflowIds.length) conds.push(inArray(schema.requests.workflowId, roleWorkflowIds));
   if (involvedIds.length) conds.push(inArray(schema.requests.id, involvedIds));
-  const scope = conds.length === 1 ? conds[0] : or(...conds)!;
+  const scope = or(...conds)!;
 
   const roleWfSet = new Set(roleWorkflowIds);
   const involvedSet = new Set(involvedIds);
@@ -92,6 +94,7 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
     scope,
     canSee: (req) =>
       req.requesterId === userId ||
+      req.responsibleUserId === userId ||
       (req.workflowId != null && roleWfSet.has(req.workflowId)) ||
       involvedSet.has(req.id),
   };

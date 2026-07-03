@@ -49,6 +49,7 @@ interface LifecycleActionBtn {
   comment: boolean;
   amount: boolean;
   quote?: 'add' | 'select' | null;
+  assign?: boolean;
 }
 interface QuotationRow {
   id: string;
@@ -1864,7 +1865,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
   const run = async (
     action: string,
-    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string } = {},
+    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
   ) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -2138,7 +2139,7 @@ function ActionModal({
   error: string | null;
   quotations: QuotationRow[];
   onCancel: () => void;
-  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string }) => void;
+  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
 }) {
   const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
@@ -2150,6 +2151,14 @@ function ActionModal({
     if (isReject) api.rejectReasons(requestId).then((r: any) => setReasons(r?.reasons ?? [])).catch(() => setReasons([]));
   }, [isReject, requestId]);
   const OTHER = '__other__';
+
+  // Bug #8: procurement head assigns a specific снабженец.
+  const isAssign = !!action.assign;
+  const [assignees, setAssignees] = useState<{ id: string; fullName: string | null }[]>([]);
+  const [assigneeId, setAssigneeId] = useState('');
+  useEffect(() => {
+    if (isAssign) api.procurementAssignees().then((r) => setAssignees(r?.users ?? [])).catch(() => setAssignees([]));
+  }, [isAssign]);
   const [amount, setAmount] = useState('');
   const [supplier, setSupplier] = useState('');
   const [supplierId, setSupplierId] = useState('');
@@ -2172,13 +2181,24 @@ function ActionModal({
     (!action.comment || effectiveComment.length > 0) &&
     (!action.amount || (amount !== '' && Number(amount) > 0)) &&
     (!isAdd || ((supplierId !== '' || supplier.trim().length > 0) && amount !== '' && Number(amount) > 0)) &&
-    (!isSelect || quotationId !== '');
+    (!isSelect || quotationId !== '') &&
+    (!isAssign || assigneeId !== '');
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
       <div onClick={onCancel} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)' }} />
       <div style={{ position: 'relative', width: '100%', maxWidth: 560, background: 'var(--bg)', borderTop: '1px solid var(--edge)', borderRadius: '24px 24px 0 0', padding: '20px 20px 28px' }}>
         <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--fg)', marginBottom: 16 }}>{action.label}</div>
+        {isAssign && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={lbl}>Снабженец</div>
+            <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} style={inputStyle}>
+              <option value="" disabled>Выберите снабженца…</option>
+              {assignees.map((a) => <option key={a.id} value={a.id}>{a.fullName || a.id}</option>)}
+            </select>
+            {assignees.length === 0 && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 6 }}>Нет пользователей с правами снабжения</div>}
+          </div>
+        )}
         {isAdd && (
           <>
             <div style={{ marginBottom: 12 }}>
@@ -2285,6 +2305,7 @@ function ActionModal({
                 supplierName: isAdd ? supplier.trim() || undefined : undefined,
                 leadTime: isAdd && leadTime.trim() ? leadTime.trim() : undefined,
                 quotationId: isSelect ? quotationId : undefined,
+                assigneeId: isAssign ? assigneeId : undefined,
               })
             }
             disabled={busy || !ok}

@@ -97,6 +97,7 @@ export const api = {
   cancelRequest: (id: string, reason?: string) =>
     call(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason ?? '' }) }),
   rejectReasons: (id: string) => call(`/requests/${id}/reject-reasons`),
+  procurementAssignees: (): Promise<{ users: { id: string; fullName: string | null }[] }> => call('/procurement/assignees'),
   createRequest: (data: CreateRequestData) =>
     call('/requests', { method: 'POST', body: JSON.stringify(data) }),
   approve: (id: string, comment?: string) =>

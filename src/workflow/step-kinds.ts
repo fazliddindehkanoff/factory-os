@@ -52,6 +52,11 @@ export interface StepActionDef {
    * on the same step (e.g. recording another quotation before a supplier is picked).
    */
   advance: boolean;
+  /**
+   * Bug #8: assign a specific procurement person. Requires an `assigneeId`; sets
+   * request.responsibleUserId so ONLY that person works the procurement step.
+   */
+  assign?: boolean;
 }
 
 /**
@@ -70,6 +75,8 @@ const REJECT: StepActionDef = {
 export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   approval: [
     { action: 'approve', label: 'Согласовать', perm: 'approvals.approve', pin: true, advance: true },
+    // Bug #8: only surfaced when the NEXT step is procurement (see availableActions).
+    { action: 'assign_procurement', label: 'Передать снабженцу', perm: 'approvals.approve', pin: true, assign: true, advance: true },
     REJECT,
   ],
   warehouse_check: [
