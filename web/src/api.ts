@@ -1,13 +1,27 @@
 const TOKEN_KEY = 'factoryos.token';
+const TEST_USER_KEY = 'factoryos.testUser';
 
+// Test mode (docs/TEST_MODE.md): a window logged in via `?user=<test login>` keeps
+// its token in sessionStorage, so several windows can hold DIFFERENT users at the
+// same time. localStorage stays the normal single-user store (Telegram login).
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
 }
-export function setToken(t: string): void {
-  localStorage.setItem(TOKEN_KEY, t);
+export function setToken(t: string, opts?: { perWindow?: boolean }): void {
+  if (opts?.perWindow || sessionStorage.getItem(TOKEN_KEY) != null) sessionStorage.setItem(TOKEN_KEY, t);
+  else localStorage.setItem(TOKEN_KEY, t);
 }
 export function clearToken(): void {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TEST_USER_KEY);
   localStorage.removeItem(TOKEN_KEY);
+}
+/** The test-user login this WINDOW is pinned to (test mode only). */
+export function getTestUser(): string | null {
+  return sessionStorage.getItem(TEST_USER_KEY);
+}
+export function setTestUser(username: string): void {
+  sessionStorage.setItem(TEST_USER_KEY, username);
 }
 
 async function call(path: string, opts: RequestInit = {}, retried = false): Promise<any> {
@@ -73,6 +87,9 @@ export const api = {
     call('/auth/telegram', { method: 'POST', body: JSON.stringify({ initData }) }),
   loginDev: (telegramId: string) =>
     call('/auth/dev', { method: 'POST', body: JSON.stringify({ telegramId }) }),
+  // Dev/test only — 404 in production (stealth), callers must swallow the error.
+  devUsers: (): Promise<{ users: { username: string; fullName: string; roles: string[] }[]; pin: string }> =>
+    call('/dev/users'),
   me: () => call('/me'),
   config: () => call('/config'),
   form: (screen: string) => call('/form/' + screen),

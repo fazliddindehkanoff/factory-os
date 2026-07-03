@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { api, clearToken, getToken, setToken, type CreateRequestData } from './api';
+import { api, clearToken, getToken, setToken, getTestUser, setTestUser, type CreateRequestData } from './api';
 import { getTelegram, confirmDialog } from './telegram';
 import { AdminPanel } from './admin/AdminPanel';
 import { WarehouseScreen } from './screens/Warehouse';
@@ -146,6 +146,13 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const [theme, setTheme] = useState<Theme>(getTheme());
   const [unread, setUnread] = useState<number>(0);
+  // Test mode: the seeded test users for the DEV role-switcher. Stays null in
+  // production — /api/dev/users answers 404 there, so no panel is ever rendered.
+  const [devUsers, setDevUsers] = useState<DevUser[] | null>(null);
+  const [devPin, setDevPin] = useState('');
+  useEffect(() => {
+    api.devUsers().then((r) => { setDevUsers(r.users); setDevPin(r.pin); }).catch(() => {});
+  }, []);
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
@@ -178,7 +185,17 @@ export default function App() {
         const tg = getTelegram();
         tg?.ready?.();
         tg?.expand?.();
-        if (getToken()) await loadMe();
+        // Test mode (docs/TEST_MODE.md): `?user=sklad_01` pins THIS WINDOW to a test
+        // user — the token lives in sessionStorage, so several windows can run
+        // different roles side by side. Dev auth is stealth-404 in production, so a
+        // stray ?user= there simply falls through to the normal login paths.
+        const urlUser = new URLSearchParams(window.location.search).get('user')?.trim();
+        if (urlUser && urlUser !== getTestUser()) {
+          const r = await api.loginDev(urlUser);
+          setToken(r.token, { perWindow: true });
+          setTestUser(urlUser);
+          await loadMe();
+        } else if (getToken()) await loadMe();
         else if (tg?.initData) {
           const r = await api.loginTelegram(tg.initData);
           setToken(r.token);
@@ -197,6 +214,7 @@ export default function App() {
   if (!me)
     return (
       <DevLogin
+        testUsers={devUsers}
         error={authError}
         onLoggedIn={async () => {
           setBooting(true);
@@ -320,6 +338,7 @@ export default function App() {
       </main>
 
       {showNav && <BottomNav me={me} active={screen.name} onNav={setScreen} />}
+      {devUsers && devUsers.length > 0 && <DevSwitcher users={devUsers} pin={devPin} current={getTestUser()} />}
     </div>
   );
 }
@@ -2320,7 +2339,55 @@ function ActionModal({
 }
 
 // ── Small UI bits ────────────────────────────────────────────────────────────
-function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () => void }) {
+interface DevUser {
+  username: string;
+  fullName: string;
+  roles: string[];
+}
+
+/** Test-mode switch: pin THIS WINDOW to a test user via `?user=` (boot re-logins). */
+function switchTestUser(username: string): void {
+  window.location.href = '/?user=' + encodeURIComponent(username);
+}
+
+/**
+ * DEV MODE panel — per-window test-user switcher (docs/TEST_MODE.md). Rendered
+ * only when /api/dev/users answered, i.e. never in production (stealth 404).
+ */
+function DevSwitcher({ users, pin, current }: { users: DevUser[]; pin: string; current: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-label="DEV: сменить пользователя"
+        style={{ position: 'fixed', right: 12, bottom: 84, zIndex: 60, padding: '8px 12px', borderRadius: 12, border: 'none', background: '#7c3aed', color: '#fff', fontSize: 12, fontWeight: 800, letterSpacing: '.05em', cursor: 'pointer', boxShadow: '0 4px 14px rgba(0,0,0,.35)' }}
+      >
+        DEV{current ? `: ${current}` : ''}
+      </button>
+      {open && (
+        <div style={{ position: 'fixed', right: 12, bottom: 128, zIndex: 60, width: 268, maxHeight: '60vh', overflowY: 'auto', borderRadius: 14, background: 'var(--card)', color: 'var(--fg)', border: '1px solid var(--line)', boxShadow: '0 10px 30px rgba(0,0,0,.45)', padding: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.07em', opacity: 0.7, margin: '2px 4px 8px' }}>
+            DEV MODE — пользователь этого окна · PIN: {pin}
+          </div>
+          {users.map((u) => (
+            <button
+              key={u.username}
+              onClick={() => switchTestUser(u.username)}
+              disabled={u.username === current}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginBottom: 4, borderRadius: 10, border: 'none', cursor: u.username === current ? 'default' : 'pointer', background: u.username === current ? '#7c3aed' : 'rgba(127,127,127,.14)', color: u.username === current ? '#fff' : 'inherit' }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{u.fullName}</div>
+              <div style={{ fontSize: 11, opacity: 0.72 }}>{u.username} · {u.roles.join(', ')}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | null; error: string | null; onLoggedIn: () => void }) {
   const [tgId, setTgId] = useState('');
   const [err, setErr] = useState<string | null>(error);
   const [loading, setLoading] = useState(false);
@@ -2346,6 +2413,21 @@ function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () 
         <p className="mb-5 text-center text-xs leading-relaxed text-fg3">
           Откройте внутри Telegram для обычного входа. Локально — dev-вход по Telegram ID.
         </p>
+        {testUsers && testUsers.length > 0 && (
+          <div className="mb-4">
+            <div className="mb-1.5 text-center text-[11px] font-bold uppercase tracking-wider text-fg3">Тестовые пользователи</div>
+            {testUsers.map((u) => (
+              <button
+                key={u.username}
+                onClick={() => switchTestUser(u.username)}
+                className="mb-1 w-full rounded-xl border border-line bg-card px-3.5 py-2 text-left active:scale-[.98]"
+              >
+                <div className="text-[13px] font-semibold text-fg">{u.fullName}</div>
+                <div className="text-[11px] text-fg3">{u.username} · {u.roles.join(', ')}</div>
+              </button>
+            ))}
+          </div>
+        )}
         <input
           value={tgId}
           onChange={(e) => setTgId(e.target.value)}

@@ -25,6 +25,7 @@ import {
 } from '../services/notification.service.js';
 import { approvedStageMessage, approvedFinalMessage, rejectedMessage, newRequestForApproverMessage } from '../bot/messages.js';
 import { buildAdminRouter } from './admin.routes.js';
+import { TEST_USERNAMES, TEST_PIN } from '../db/seed-test.js';
 
 type Db = any;
 
@@ -193,6 +194,43 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       const token = issueSession(u.id, sessionSecret, 7 * 24 * 3600);
       res.json({ token, user: { id: u.id, fullName: u.fullName, holdingId: u.holdingId } });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Dev-only: seeded test users for the role-switcher (docs/TEST_MODE.md).
+  // Same stealth-404 contract as /auth/dev; lives under /dev (not /auth) so the
+  // panel probe does not eat the tight authLimiter budget. ──
+  r.get('/dev/users', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!devAuth) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      const rows = await db
+        .select({ id: schema.users.id, username: schema.users.telegramId, fullName: schema.users.fullName })
+        .from(schema.users)
+        .where(inArray(schema.users.telegramId, TEST_USERNAMES));
+      const ids = rows.map((u: { id: string }) => u.id);
+      const roleRows = ids.length
+        ? await db
+            .select({ userId: schema.userRoles.userId, name: schema.roles.name })
+            .from(schema.userRoles)
+            .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
+            .where(and(inArray(schema.userRoles.userId, ids), eq(schema.userRoles.status, 'active')))
+        : [];
+      const rolesByUser = new Map<string, string[]>();
+      for (const rr of roleRows as { userId: string; name: string }[]) {
+        rolesByUser.set(rr.userId, [...(rolesByUser.get(rr.userId) ?? []), rr.name]);
+      }
+      // Keep the seed's order (the request path order) — not DB order.
+      const byUsername = new Map(rows.map((u: any) => [u.username, u]));
+      const users = TEST_USERNAMES.flatMap((username) => {
+        const u = byUsername.get(username) as { id: string; username: string; fullName: string } | undefined;
+        return u ? [{ username: u.username, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }] : [];
+      });
+      res.json({ users, pin: TEST_PIN });
     } catch (e) {
       next(e);
     }
