@@ -5,10 +5,11 @@
  *
  * Optimized: uses SQL-level filtering instead of loading all requests into memory.
  */
-import { and, count, desc, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
+import { and, count, desc, eq, isNotNull, notInArray, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility } from '../http/request-visibility.js';
+import { availableActions } from './lifecycle.service.js';
 import { TERMINAL_STATUSES } from '../workflow/step-kinds.js';
 
 type Db = any;
@@ -135,34 +136,20 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
       .limit(5),
   ]);
 
-  // Pending approvals at steps this user's roles can act on.
-  const roleRows = await db
-    .select({ roleId: schema.userRoles.roleId })
-    .from(schema.userRoles)
-    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
-  const roleIds = roleRows.map((r: { roleId: string }) => r.roleId);
+  // "Ожидают меня" must match the inbox ("Ждут моего решения"): count in-flight
+  // requests the user can currently ACT on — approval steps AND action steps
+  // (warehouse/procurement/finance), via availableActions. The old approvals-only
+  // count missed action steps, so the KPI showed 0 while the queue showed 1.
   let pendingForMe = 0;
-  if (roleIds.length) {
-    const stepRows = await db
-      .select({ id: schema.workflowSteps.id })
-      .from(schema.workflowSteps)
-      .where(inArray(schema.workflowSteps.approverRoleId, roleIds));
-    const stepIds = stepRows.map((s: { id: string }) => s.id);
-    if (stepIds.length) {
-      // Join approvals with requests to filter by holdingId at SQL level.
-      const pend = await db
-        .select({ id: schema.approvals.id })
-        .from(schema.approvals)
-        .innerJoin(schema.requests, eq(schema.requests.id, schema.approvals.requestId))
-        .where(
-          and(
-            inArray(schema.approvals.workflowStepId, stepIds),
-            eq(schema.approvals.status, 'pending'),
-            eq(schema.requests.holdingId, holdingId),
-          ),
-        );
-      pendingForMe = pend.length;
-    }
+  const inflight = await db
+    .select()
+    .from(schema.requests)
+    .where(and(eq(schema.requests.holdingId, holdingId), notInArray(schema.requests.status, ['closed', 'rejected', 'draft', 'approved', 'cancelled', 'archived'])))
+    .limit(100);
+  for (const r of inflight) {
+    if (!r.currentStepId) continue;
+    const acts = await availableActions(db, r, userId);
+    if (acts.length > 0) pendingForMe++;
   }
 
   // Additive aggregates — computed ONLY when the caller holds the gating permission,
