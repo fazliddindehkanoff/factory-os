@@ -696,6 +696,18 @@ export function buildRouter(deps: RouterDeps): Router {
         ? await db.select({ name: schema.departments.name }).from(schema.departments).where(eq(schema.departments.id, reqRow.departmentId))
         : [];
 
+      // Progress starts with the REQUESTER (who created it), then the approval steps.
+      workflowTimeline.unshift({
+        stepId: 'created',
+        stepName: 'Заявка создана',
+        stepKind: 'created',
+        state: 'completed',
+        action: 'created',
+        at: reqRow.createdAt,
+        actorName: requesterRow?.name ?? null,
+        actorRole: 'Заявитель',
+      });
+
       // Money is visible to the procurement manager and everyone above (bug #9):
       // same gate as КП. Others get null money fields instead of the values.
       const canSeeMoney = canSeeQuotes;

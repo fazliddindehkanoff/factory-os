@@ -39,12 +39,16 @@ async function mkUserWithRole(db: any, holdingId: string, tg: string, roleCode: 
 
 /** Seed requests parked on given statuses + a low-stock balance, for aggregate tests. */
 async function seedAggregates(db: any, holdingId: string, requesterId: string, factoryId: string) {
+  // Attach the tenant's active workflow so role participants (finance/procurement)
+  // can SEE these requests under the visibility model (real requests always have one).
+  const [wf] = await db.select().from(schema.workflows).where(eq(schema.workflows.holdingId, holdingId)).limit(1);
   const mk = (n: number, status: string) =>
     db.insert(schema.requests).values({
       requestNumber: `A-${status}-${n}`,
       holdingId,
       requesterId,
       status,
+      workflowId: wf?.id ?? null,
     });
   await mk(1, 'finance_payment');
   await mk(2, 'finance_payment');

@@ -37,7 +37,6 @@ export interface Dashboard {
 
 // P2-1: closed/cancelled/archived are terminal too — a finished request must not
 // keep counting as "active" on the dashboard.
-const TERMINAL = [...TERMINAL_STATUSES];
 const INACTIVE = [...TERMINAL_STATUSES, 'draft'];
 
 const EMPTY_DASHBOARD: Dashboard = {
@@ -52,11 +51,11 @@ const EMPTY_DASHBOARD: Dashboard = {
 };
 
 /** Count requests in a holding that currently sit on a given status. */
-async function countByStatusValue(db: Db, holdingId: string, status: string): Promise<number> {
+async function countByStatusValue(db: Db, baseWhere: any, status: string): Promise<number> {
   const [row] = await db
     .select({ n: count() })
     .from(schema.requests)
-    .where(and(eq(schema.requests.holdingId, holdingId), eq(schema.requests.status, status)));
+    .where(and(baseWhere, eq(schema.requests.status, status)));
   return Number(row?.n ?? 0);
 }
 
@@ -75,12 +74,12 @@ async function countLowStock(db: Db, holdingId: string): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
-/** Full status breakdown for a holding (oversight only). */
-async function requestsByStatus(db: Db, holdingId: string): Promise<Record<string, number>> {
+/** Full status breakdown over the visible set (oversight only). */
+async function requestsByStatus(db: Db, baseWhere: any): Promise<Record<string, number>> {
   const rows = await db
     .select({ status: schema.requests.status, n: count() })
     .from(schema.requests)
-    .where(eq(schema.requests.holdingId, holdingId))
+    .where(baseWhere)
     .groupBy(schema.requests.status);
   const out: Record<string, number> = {};
   for (const r of rows as { status: string; n: number }[]) out[r.status] = Number(r.n);
@@ -97,12 +96,14 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   // Activity feed follows the request-visibility model (bug #2): own + involved +
   // role-in-workflow; top roles see the whole holding.
   const vis = await getRequestVisibility(db, userId);
-  const activityWhere = vis.scope
-    ? and(eq(schema.requests.holdingId, holdingId), vis.scope)
-    : eq(schema.requests.holdingId, holdingId);
+  // Every count reflects what the user can SEE (top roles → whole holding), so the
+  // KPIs match the lists they open. `baseWhere` is that visible-scope filter.
+  const baseWhere = vis.scope ? and(eq(schema.requests.holdingId, holdingId), vis.scope) : eq(schema.requests.holdingId, holdingId);
+  const activityWhere = baseWhere;
 
   // Run count queries and activity in parallel — each touches only the rows it needs.
   const [myActiveRows, totalActiveRows, activity] = await Promise.all([
+    // "Мои заявки" = my in-flight requests (own, excluding drafts and terminal).
     db
       .select({ id: schema.requests.id })
       .from(schema.requests)
@@ -110,18 +111,11 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
         and(
           eq(schema.requests.holdingId, holdingId),
           eq(schema.requests.requesterId, userId),
-          notInArray(schema.requests.status, TERMINAL),
-        ),
-      ),
-    db
-      .select({ id: schema.requests.id })
-      .from(schema.requests)
-      .where(
-        and(
-          eq(schema.requests.holdingId, holdingId),
           notInArray(schema.requests.status, INACTIVE),
         ),
       ),
+    // "Активных всего" = visible in-flight requests (holding-wide for top roles).
+    db.select({ id: schema.requests.id }).from(schema.requests).where(and(baseWhere, notInArray(schema.requests.status, INACTIVE))),
     db
       .select({
         id: schema.requests.id,
@@ -152,14 +146,14 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
     if (acts.length > 0) pendingForMe++;
   }
 
-  // Additive aggregates — computed ONLY when the caller holds the gating permission,
-  // otherwise null (card hidden). Role-scoped: all counts are holding-wide, matching
-  // the current visibility model (no dept scope this sprint).
+  // Additive aggregates — computed ONLY when the caller holds the gating permission
+  // (null → card hidden) AND scoped to what the caller can see (top roles → holding),
+  // so each number matches the list it opens.
   const [awaitingPayment, inProcurement, lowStock, byStatus] = await Promise.all([
-    has('finance.view') ? countByStatusValue(db, holdingId, 'finance_payment') : Promise.resolve(null),
-    has('procurement.view') ? countByStatusValue(db, holdingId, 'procurement') : Promise.resolve(null),
+    has('finance.view') ? countByStatusValue(db, baseWhere, 'finance_payment') : Promise.resolve(null),
+    has('procurement.view') ? countByStatusValue(db, baseWhere, 'procurement') : Promise.resolve(null),
     has('warehouse.view') ? countLowStock(db, holdingId) : Promise.resolve(null),
-    has('reports.view') || has('audit.view') ? requestsByStatus(db, holdingId) : Promise.resolve(null),
+    has('reports.view') || has('audit.view') ? requestsByStatus(db, baseWhere) : Promise.resolve(null),
   ]);
 
   return {

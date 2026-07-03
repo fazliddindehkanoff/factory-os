@@ -747,13 +747,11 @@ function Home({
   tick?: number;
 }) {
   const [dash, setDash] = useState<DashboardData | null>(null);
-  const [unread, setUnread] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     // Silent refresh on tick: keep old data visible (no skeleton) until new arrives.
     api.dashboard().then((d) => { if (alive) { setDash(d); setErr(null); } }).catch((e) => { if (alive && !dash) setErr((e as Error).message); });
-    api.notificationsUnreadCount().then((r: any) => { if (alive) setUnread(r?.unread ?? 0); }).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick]);
@@ -769,7 +767,7 @@ function Home({
   if (dash && dash.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
   if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'В закупке', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'procurement' }) });
   if (dash && dash.lowStock != null) cards.push({ key: 'low', label: 'Низкий остаток', value: dash.lowStock, tint: 'danger', ic: 'alert', onClick: () => onNav({ name: 'warehouse' }) });
-  if (unread != null) cards.push({ key: 'unread', label: 'Непрочитанные', value: unread, tint: 'accent', ic: 'bell' }); // no target yet (notification center = next sprint)
+  // Unread is shown via the header bell badge, not a dashboard card (per request).
 
   // by-status breakdown (oversight only) — chips deep-link to the filtered list.
   const byStatus = dash?.byStatus ?? null;
@@ -1990,7 +1988,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                   <div style={{ paddingBottom: 16, flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
                     <div style={{ fontSize: 11.5, marginTop: 2, fontWeight: cur || rej ? 600 : 500, color: rej ? 'var(--danger)' : cur ? 'var(--warning)' : done ? 'var(--success)' : 'var(--fg3)' }}>
-                      {rej ? 'Отклонено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
+                      {step.action === 'created' ? 'Создана' : rej ? 'Отклонено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
                     </div>
                     {(step.actorName || step.at) && (
                       <div style={{ fontSize: 11, color: 'var(--fg3)', marginTop: 3, fontFamily: "'IBM Plex Mono', monospace" }}>
