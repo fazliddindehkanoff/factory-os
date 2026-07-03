@@ -15,6 +15,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { seedSystemRolesAndPermissions } from './seed.js';
+import { seedFormFields } from './seed-form-fields.js';
 import { hashPin } from '../auth/pin.js';
 import { createRequest } from '../services/request.service.js';
 import { performAction } from '../services/lifecycle.service.js';
@@ -108,6 +109,10 @@ export async function seedTest(db: Db) {
     and(eq(schema.warehouses.holdingId, holding.id), eq(schema.warehouses.name, 'Основной склад (тест)')),
     { holdingId: holding.id, factoryId: factory.id, name: 'Основной склад (тест)', type: 'main' },
   );
+
+  // The create-form is admin-configurable; without seeded fields the UI shows
+  // «Форма создания заявки ещё не настроена» and testers can't create via the app.
+  await seedFormFields(db, holding.id);
 
   const users: Record<string, any> = {};
   for (const s of TEST_USERS) {
