@@ -41,18 +41,29 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
     .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
   const myRoleIds = [...new Set(roleRows.map((r: { roleId: string }) => r.roleId))] as string[];
 
-  // Workflows in which one of my roles is an enabled approver step.
+  // Action-step kinds the user can act on BY PERMISSION (not only by role match) —
+  // e.g. a procurement user works the procurement step even if their role code isn't
+  // literally the step's approver role. Mirrors how the inbox surfaces work.
+  const PERM_STEP_KINDS: { perms: string[]; kinds: string[] }[] = [
+    { perms: ['procurement.view', 'procurement.quote', 'procurement.select_supplier'], kinds: ['procurement'] },
+    { perms: ['warehouse.view', 'warehouse.receive', 'warehouse.issue', 'warehouse.check_stock'], kinds: ['warehouse_check', 'receiving', 'issue'] },
+    { perms: ['finance.view', 'finance.mark_paid'], kinds: ['finance_payment'] },
+  ];
+  const myKinds = new Set<string>();
+  for (const g of PERM_STEP_KINDS) if (g.perms.some((p) => codes.includes(p))) g.kinds.forEach((k) => myKinds.add(k));
+  const kindList = [...myKinds];
+
+  // Workflows I participate in: an enabled step is either my role's approval step,
+  // or an action step of a kind I can act on by permission.
   let roleWorkflowIds: string[] = [];
-  if (myRoleIds.length) {
+  const participationConds: SQL[] = [];
+  if (myRoleIds.length) participationConds.push(inArray(schema.workflowSteps.approverRoleId, myRoleIds));
+  if (kindList.length) participationConds.push(inArray(schema.workflowSteps.stepKind, kindList as any));
+  if (participationConds.length) {
     const wf = await db
       .selectDistinct({ wf: schema.workflowSteps.workflowId })
       .from(schema.workflowSteps)
-      .where(
-        and(
-          sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`,
-          inArray(schema.workflowSteps.approverRoleId, myRoleIds),
-        ),
-      );
+      .where(and(sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`, or(...participationConds)!));
     roleWorkflowIds = wf.map((r: { wf: string | null }) => r.wf).filter(Boolean) as string[];
   }
 

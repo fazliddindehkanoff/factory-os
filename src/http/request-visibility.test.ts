@@ -106,6 +106,33 @@ describe('H3 — request detail visibility', () => {
     await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
   });
 
+  // Regression: a procurement user participates in the procurement step BY PERMISSION
+  // even if their role isn't literally the step's approver role — so tapping the
+  // request from their inbox must open it (was 404).
+  it('a procurement user can open a request whose workflow has a procurement step (200)', async () => {
+    const client = new PGlite();
+    const db = drizzle(client, { schema });
+    await migrate(db, { migrationsFolder: './drizzle' });
+    await seedSystemRolesAndPermissions(db);
+    const [holding] = await db.insert(schema.holdings).values({ name: 'H2' }).returning();
+    const [factory] = await db.insert(schema.factories).values({ holdingId: holding.id, name: 'F' }).returning();
+    const rid = async (c: string) => (await db.select().from(schema.roles).where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, c))))[0].id as string;
+    const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'WP', isActive: true }).returning();
+    // procurement step's approver is procurement_manager (a DIFFERENT role than 'procurement')
+    await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 1, stepName: 'Закупка', stepKind: 'procurement', approverRoleId: await rid('procurement_manager') });
+    const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+    const mk = async (codes: string[], tg: string) => {
+      const [u] = await db.insert(schema.users).values({ holdingId: holding.id, fullName: tg, telegramId: tg, status: 'active' }).returning();
+      for (const c of codes) await db.insert(schema.userRoles).values({ userId: u.id, roleId: await rid(c), holdingId: holding.id });
+      return u.id;
+    };
+    const alice = await mk(['requester'], 'a2');
+    await mk(['procurement'], 'proc'); // Снабжение: has procurement perms, role != procurement_manager
+    const reqA = await createRequest(db, { holdingId: holding.id, requesterId: alice, factoryId: factory.id, items: [{ name: 'X', quantity: 1, unitPrice: 100 }] });
+    const tk = (await request(app).post('/api/auth/dev').send({ telegramId: 'proc' }).expect(200)).body.token as string;
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
+  });
+
   it('dashboard activity shows only the user\'s own requests for a pure requester', async () => {
     const { app, user, mkReq, login } = await make();
     const alice = await user(['requester'], 'alice');
