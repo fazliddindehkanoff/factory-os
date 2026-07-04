@@ -33,7 +33,8 @@ export interface TestUserSpec {
   roles: string[];
 }
 
-/** Тестовые пользователи из ТЗ — по одному на роль полного маршрута заявки. */
+/** Тестовые пользователи — по одному на КАЖДУЮ системную роль (см. system-roles.ts).
+ * Первые семь — маршрут заявки из ТЗ, остальные — вспомогательные/наблюдающие роли. */
 export const TEST_USERS: TestUserSpec[] = [
   { username: 'sklad_01', name: 'Склад (кладовщик)', roles: ['requester', 'warehouse_worker'] },
   { username: 'nach_sklad_01', name: 'Начальник склада', roles: ['warehouse'] },
@@ -42,6 +43,16 @@ export const TEST_USERS: TestUserSpec[] = [
   { username: 'gendir_01', name: 'Ген. директор', roles: ['director'] },
   { username: 'founder_01', name: 'Учредитель', roles: ['owner'] },
   { username: 'admin_01', name: 'Администратор', roles: ['admin'] },
+  { username: 'nach_snab_01', name: 'Руководитель снабжения', roles: ['procurement_head'] },
+  { username: 'snab_otdel_01', name: 'Снабжение (отдел)', roles: ['procurement'] },
+  { username: 'fin_01', name: 'Финансист', roles: ['finance'] },
+  { username: 'nach_fin_01', name: 'Руководитель финансов', roles: ['finance_head'] },
+  { username: 'fin_manager_01', name: 'Финансовый менеджер', roles: ['finance_manager'] },
+  { username: 'buhgalter_01', name: 'Бухгалтер', roles: ['accountant'] },
+  { username: 'nach_otdela_01', name: 'Руководитель отдела', roles: ['dept_head'] },
+  { username: 'vnedrenie_01', name: 'Руководитель внедрения', roles: ['operations_lead'] },
+  { username: 'auditor_01', name: 'Аудитор', roles: ['auditor'] },
+  { username: 'nabludatel_01', name: 'Наблюдатель', roles: ['observer'] },
 ];
 
 export const TEST_USERNAMES = TEST_USERS.map((u) => u.username);
