@@ -367,6 +367,11 @@ export const workflowSteps = pgTable(
     // Admin can switch a stage off from the constructor; the engine then skips it.
     enabled: boolean('enabled').notNull().default(true),
     timeoutHours: integer('timeout_hours'),
+    // Ветка «если отклонил»: cancel (заявка отклонена, как раньше) |
+    // return_requester (на доработку автору, статус needs_revision + resubmit) |
+    // return_step (вернуть на более ранний шаг onRejectStepOrder).
+    onReject: text('on_reject').notNull().default('cancel'),
+    onRejectStepOrder: integer('on_reject_step_order'),
   },
   (t) => ({ wfIdx: index('workflow_steps_wf_idx').on(t.workflowId) }),
 );

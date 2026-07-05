@@ -154,6 +154,17 @@ export function isTerminalStatus(status: string): boolean {
 export const STATUS_PENDING_APPROVAL = 'pending_approval';
 
 /**
+ * Не-терминальный статус «на доработке»: шаг с политикой return_requester
+ * вернул заявку автору; автор правит и выполняет действие `resubmit`, которое
+ * заново прокладывает маршрут с первого применимого шага.
+ */
+export const STATUS_NEEDS_REVISION = 'needs_revision';
+
+/** Политика «Если отклонил» шага (workflow_steps.on_reject). */
+export type OnRejectPolicy = 'cancel' | 'return_requester' | 'return_step';
+export const ON_REJECT_POLICIES: readonly OnRejectPolicy[] = ['cancel', 'return_requester', 'return_step'];
+
+/**
  * The request.status text while it sits on a given step. Approval steps use the
  * historical 'pending_approval' value (so both the lifecycle and the legacy
  * approval.service agree); every other kind uses its own kind as the status.
@@ -178,4 +189,6 @@ export interface KindStep extends StepLike {
   stepKind: string;
   stepName?: string | null;
   approverRoleId?: string | null;
+  onReject?: OnRejectPolicy | string | null;
+  onRejectStepOrder?: number | null;
 }

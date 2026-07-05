@@ -12,7 +12,7 @@ import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, type Scope } from '../rbac/rbac.js';
 import { PERMISSIONS } from '../rbac/permissions.js';
-import { STEP_KINDS, TERMINAL_STATUSES } from '../workflow/step-kinds.js';
+import { STEP_KINDS, TERMINAL_STATUSES, ON_REJECT_POLICIES, type OnRejectPolicy } from '../workflow/step-kinds.js';
 import { ValidationError, NotFoundError, ConflictError, ForbiddenError } from '../services/errors.js';
 import { notifyUser } from '../services/notification.service.js';
 import type { AuthedRequest, AuthedUser } from './auth.middleware.js';
@@ -1339,6 +1339,63 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
     }
   });
 
+  /**
+   * Условие включения шага (engine.ConditionRule). Пустые значения выбрасываются;
+   * неизвестные ключи — ошибка, чтобы опечатка не превратилась в «условие,
+   * которое всегда истинно».
+   */
+  function parseConditionRule(raw: unknown): Record<string, unknown> | null {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw !== 'object' || Array.isArray(raw)) throw new ValidationError('condition_rule должен быть объектом');
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (v === null || v === undefined || v === '') continue;
+      if (k === 'amountGte' || k === 'amountLt') {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) throw new ValidationError(`${k} должен быть неотрицательным числом`);
+        out[k] = Math.round(n);
+      } else if (k === 'inStock') {
+        if (typeof v !== 'boolean') throw new ValidationError('inStock должен быть true/false');
+        out[k] = v;
+      } else if (k === 'requestType') {
+        out[k] = String(v).trim();
+        if (!out[k]) delete out[k];
+      } else {
+        throw new ValidationError(`Неизвестное условие: ${k}`);
+      }
+    }
+    if (out.amountGte != null && out.amountLt != null && (out.amountGte as number) >= (out.amountLt as number)) {
+      throw new ValidationError('«Сумма от» должна быть меньше «суммы до»');
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
+  /** Ветка «Если отклонил»: политика + целевой шаг (для return_step — обязателен и раньше текущего). */
+  async function parseOnReject(
+    body: Record<string, unknown>,
+    workflowId: string,
+    ownOrder: number,
+  ): Promise<{ onReject: OnRejectPolicy; onRejectStepOrder: number | null }> {
+    const policy = str(body.on_reject) || 'cancel';
+    if (!ON_REJECT_POLICIES.includes(policy as OnRejectPolicy)) {
+      throw new ValidationError('on_reject: допустимо cancel | return_requester | return_step');
+    }
+    if (policy !== 'return_step') return { onReject: policy as OnRejectPolicy, onRejectStepOrder: null };
+    const target = Number(body.on_reject_step_order);
+    if (!Number.isFinite(target)) throw new ValidationError('Для «вернуть на шаг» укажите on_reject_step_order');
+    if (Math.round(target) >= ownOrder) {
+      throw new ValidationError('Возврат возможен только на более ранний шаг (иначе петля)');
+    }
+    const rows = await db
+      .select({ stepOrder: schema.workflowSteps.stepOrder })
+      .from(schema.workflowSteps)
+      .where(eq(schema.workflowSteps.workflowId, workflowId));
+    if (!rows.some((s: { stepOrder: number }) => s.stepOrder === Math.round(target))) {
+      throw new ValidationError('Шаг с таким порядковым номером не найден в цепочке');
+    }
+    return { onReject: 'return_step', onRejectStepOrder: Math.round(target) };
+  }
+
   r.post('/workflows/:id/steps', requirePerm('workflows.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
@@ -1366,6 +1423,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       if (thresholdAmount !== null && (!Number.isFinite(thresholdAmount) || thresholdAmount < 0)) {
         throw new ValidationError('threshold_amount должен быть неотрицательным числом');
       }
+      const conditionRule = parseConditionRule(body.condition_rule);
+      const rejectBranch = await parseOnReject(body, id, Math.round(orderIndex));
       const step = await db.transaction(async (tx: Db) => {
         const [row] = await tx
           .insert(schema.workflowSteps)
@@ -1375,8 +1434,10 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
             stepName,
             stepKind,
             approverRoleId,
-            conditionRule: (body.condition_rule as Record<string, unknown>) ?? null,
+            conditionRule,
             thresholdAmount,
+            onReject: rejectBranch.onReject,
+            onRejectStepOrder: rejectBranch.onRejectStepOrder,
           })
           .returning();
         await assertStepMutationInvariants(tx, id); // H1 + NEW-2
@@ -1424,7 +1485,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         patch.thresholdAmount = t;
       }
       if (body.condition_rule !== undefined) {
-        patch.conditionRule = (body.condition_rule as Record<string, unknown>) ?? null;
+        patch.conditionRule = parseConditionRule(body.condition_rule);
       }
       if (body.step_kind !== undefined) {
         const k = str(body.step_kind);
@@ -1434,6 +1495,16 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         patch.stepKind = k;
       }
       if (body.enabled !== undefined) patch.enabled = Boolean(body.enabled);
+      if (body.on_reject !== undefined || body.on_reject_step_order !== undefined) {
+        const ownOrder = (patch.stepOrder as number | undefined) ?? step.stepOrder;
+        const rejectBranch = await parseOnReject(
+          { on_reject: body.on_reject ?? step.onReject, on_reject_step_order: body.on_reject_step_order ?? step.onRejectStepOrder },
+          id,
+          ownOrder,
+        );
+        patch.onReject = rejectBranch.onReject;
+        patch.onRejectStepOrder = rejectBranch.onRejectStepOrder;
+      }
       const updated = await db.transaction(async (tx: Db) => {
         const [row] = await tx
           .update(schema.workflowSteps)

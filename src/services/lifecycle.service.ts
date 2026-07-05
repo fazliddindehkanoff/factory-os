@@ -18,16 +18,18 @@ import { verifyPin } from '../auth/pin.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from '../http/rate-limit.js';
 import { applyStockOp } from './warehouse.service.js';
-import { nextStep, firstStep, type WorkflowContext } from '../workflow/engine.js';
+import { nextStep, firstStep, applicableSteps, type WorkflowContext } from '../workflow/engine.js';
 import {
   actionsForKind,
   findKindAction,
   statusForStep,
   STEP_KIND_LABELS,
+  STATUS_NEEDS_REVISION,
   TERMINAL_APPROVED,
   TERMINAL_CLOSED,
   TERMINAL_REJECTED,
   type KindStep,
+  type OnRejectPolicy,
   type StepActionDef,
 } from '../workflow/step-kinds.js';
 
@@ -66,6 +68,7 @@ const TERMINAL_LABELS: Record<string, string> = {
   [TERMINAL_APPROVED]: 'Согласована',
   [TERMINAL_CLOSED]: 'Закрыта',
   [TERMINAL_REJECTED]: 'Отклонена',
+  [STATUS_NEEDS_REVISION]: 'На доработке',
   draft: 'Черновик',
 };
 
@@ -85,6 +88,8 @@ export async function loadKindSteps(db: Db, workflowId: string): Promise<KindSte
     thresholdAmount: s.thresholdAmount,
     isRequired: s.isRequired,
     enabled: s.enabled,
+    onReject: s.onReject,
+    onRejectStepOrder: s.onRejectStepOrder,
   }));
 }
 
@@ -177,6 +182,8 @@ async function loadStep(db: Db, stepId: string): Promise<KindStep | null> {
     thresholdAmount: s.thresholdAmount,
     isRequired: s.isRequired,
     enabled: s.enabled,
+    onReject: s.onReject,
+    onRejectStepOrder: s.onRejectStepOrder,
   };
 }
 
@@ -265,7 +272,17 @@ async function canHandleStep(db: Db, userId: string, req: RequestRow, step: Kind
 
 /** Actions the user may take on this request right now (step kind × permission × scope × role). */
 export async function availableActions(db: Db, req: RequestRow, userId: string): Promise<UiAction[]> {
-  if (!req.currentStepId) return [];
+  if (!req.currentStepId) {
+    // «На доработке»: автор (и только он) отправляет заявку повторно.
+    if (
+      req.status === STATUS_NEEDS_REVISION &&
+      req.requesterId === userId &&
+      (await hasPermission(db, userId, 'requests.create', reqScope(req)))
+    ) {
+      return [{ action: 'resubmit', label: 'Отправить повторно', pin: false, comment: false, amount: false, quote: null }];
+    }
+    return [];
+  }
   const step = await loadStep(db, req.currentStepId);
   if (!step) return [];
   // Bug #8: the "assign to procurement" action is offered on an approval step only
@@ -335,6 +352,65 @@ export async function performAction(db: Db, input: PerformInput) {
     // Then use Drizzle select (returns camelCase fields)
     const [req] = (await tx.select().from(schema.requests).where(eq(schema.requests.id, input.requestId))) as RequestRow[];
     if (!req || req.holdingId !== input.actor.holdingId) throw new NotFoundError('Заявка не найдена');
+
+    // «На доработке» → повторная отправка автором: маршрут прокладывается заново
+    // с первого применимого шага (как при создании), с теми же авто-скипами.
+    if (input.action === 'resubmit') {
+      if (req.status !== STATUS_NEEDS_REVISION) throw new ConflictError('Заявка не на доработке');
+      if (req.requesterId !== input.actor.id) throw new ForbiddenError('Отправить повторно может только автор заявки');
+      if (!(await hasPermission(tx, input.actor.id, 'requests.create', reqScope(req)))) {
+        throw new ForbiddenError('Недостаточно прав для этого действия');
+      }
+      if (!req.workflowId) throw new ConflictError('Заявка не привязана к workflow');
+      const placement = await initialPlacement(tx, req.workflowId, reqContext(req), req.requesterId, req.holdingId);
+      for (const s of placement.skipped) {
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: req.id,
+          oldStatus: req.status,
+          newStatus: statusForStep(s),
+          changedBy: null,
+          source: 'auto_skip',
+          comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+        });
+      }
+      const landed = placement.step;
+      const rePatch: Record<string, unknown> = { updatedAt: new Date() };
+      let reTo: string;
+      if (landed) {
+        reTo = statusForStep(landed);
+        rePatch.currentStepId = landed.id;
+        await enterApprovalIfNeeded(tx, req.id, landed);
+      } else {
+        reTo = TERMINAL_APPROVED;
+        rePatch.currentStepId = null;
+        rePatch.closedAt = new Date();
+      }
+      rePatch.status = reTo;
+      await tx.update(schema.requests).set(rePatch).where(eq(schema.requests.id, req.id));
+      await tx.insert(schema.requestStatusHistory).values({
+        requestId: req.id,
+        oldStatus: req.status,
+        newStatus: reTo,
+        changedBy: input.actor.id,
+        comment: input.comment ?? null,
+        source: 'lifecycle',
+      });
+      await tx.insert(schema.auditLogs).values({
+        holdingId: req.holdingId,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'request.resubmit',
+        module: 'lifecycle',
+        entityType: 'request',
+        entityId: req.id,
+        oldValue: { status: req.status, stepId: null },
+        newValue: { status: reTo, stepId: (rePatch.currentStepId as string | null) ?? null },
+        source: 'lifecycle',
+      });
+      const [resubmitted] = await tx.select().from(schema.requests).where(eq(schema.requests.id, req.id));
+      return { ...resubmitted, warnings: [] };
+    }
+
     if (!req.currentStepId) {
       // Distinguish a never-started draft (no workflow matched at creation) from a
       // finished request — the old message misled users about drafts. (B10)
@@ -539,9 +615,32 @@ export async function performAction(db: Db, input: PerformInput) {
     let newCurrentStepId: string | null;
 
     if (def.reject) {
-      to = TERMINAL_REJECTED;
-      newCurrentStepId = null;
-      patch.closedAt = new Date();
+      // Ветка «Если отклонил» шага: отменить / вернуть автору / вернуть на шаг N.
+      const policy = (step.onReject ?? 'cancel') as OnRejectPolicy;
+      if (policy === 'return_requester') {
+        to = STATUS_NEEDS_REVISION;
+        newCurrentStepId = null;
+      } else if (policy === 'return_step' && req.workflowId && step.onRejectStepOrder != null) {
+        // Возврат допустим только на БОЛЕЕ РАННИЙ применимый шаг — вперёд и на
+        // самого себя нельзя (петля). Некорректная настройка → как cancel.
+        const steps = await loadKindSteps(tx, req.workflowId);
+        const target = (applicableSteps(steps, ctx) as KindStep[]).find(
+          (s) => s.stepOrder === step.onRejectStepOrder && s.stepOrder < step.stepOrder,
+        );
+        if (target) {
+          to = statusForStep(target);
+          newCurrentStepId = target.id;
+          await enterApprovalIfNeeded(tx, req.id, target);
+        } else {
+          to = TERMINAL_REJECTED;
+          newCurrentStepId = null;
+          patch.closedAt = new Date();
+        }
+      } else {
+        to = TERMINAL_REJECTED;
+        newCurrentStepId = null;
+        patch.closedAt = new Date();
+      }
     } else if (!def.advance) {
       // Stays on the same step (e.g. recording another quotation).
       to = from;

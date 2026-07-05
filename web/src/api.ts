@@ -246,12 +246,30 @@ export const api = {
       call('/admin/workflows/' + id, { method: 'PUT', body: JSON.stringify(patch) }),
     addStep: (
       wfId: string,
-      data: { name: string; step_kind?: string; approver_role_id: string | null; order_index: number; threshold_amount: number | null },
+      data: {
+        name: string;
+        step_kind?: string;
+        approver_role_id: string | null;
+        order_index: number;
+        threshold_amount: number | null;
+        condition_rule?: Record<string, unknown> | null;
+        on_reject?: string;
+        on_reject_step_order?: number | null;
+      },
     ) => call(`/admin/workflows/${wfId}/steps`, { method: 'POST', body: JSON.stringify(data) }),
     updateStep: (
       wfId: string,
       stepId: string,
-      patch: Partial<{ name: string; step_kind: string; approver_role_id: string | null; order_index: number; threshold_amount: number | null }>,
+      patch: Partial<{
+        name: string;
+        step_kind: string;
+        approver_role_id: string | null;
+        order_index: number;
+        threshold_amount: number | null;
+        condition_rule: Record<string, unknown> | null;
+        on_reject: string;
+        on_reject_step_order: number | null;
+      }>,
     ) => call(`/admin/workflows/${wfId}/steps/${stepId}`, { method: 'PUT', body: JSON.stringify(patch) }),
     deleteStep: (wfId: string, stepId: string) =>
       call(`/admin/workflows/${wfId}/steps/${stepId}`, { method: 'DELETE' }),

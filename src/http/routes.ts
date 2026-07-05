@@ -341,6 +341,7 @@ export function buildRouter(deps: RouterDeps): Router {
         statuses: {
           draft: 'Черновик',
           pending_approval: 'На согласовании',
+          needs_revision: 'На доработке',
           approved: 'Согласована',
           rejected: 'Отклонена',
         },
@@ -1099,8 +1100,9 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      // Only editable in early stages
-      const EDITABLE = ['draft', 'pending_approval'];
+      // Only editable in early stages — плюс «на доработке»: возврат автору
+      // затем и существует, чтобы он поправил заявку перед повторной отправкой.
+      const EDITABLE = ['draft', 'pending_approval', 'needs_revision'];
       if (!EDITABLE.includes(reqRow.status)) {
         res.status(409).json({ error: 'Заявку нельзя редактировать на этом этапе' });
         return;

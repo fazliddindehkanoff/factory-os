@@ -96,6 +96,7 @@ export function statusMeta(status: string): { label: string; color: string; bg: 
     case 'procurement': return { label: 'В закупке', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'quotation_received': return { label: 'Получены КП', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'approval_pending': case 'pending_approval': return { label: 'На согласовании', color: 'var(--warning)', bg: 'var(--warning-bg)' };
+    case 'needs_revision': return { label: 'На доработке', color: 'var(--warning)', bg: 'var(--warning-bg)' };
     case 'approved': return { label: 'Согласована', color: 'var(--success)', bg: 'var(--success-bg)' };
     case 'rejected': return { label: 'Отклонена', color: 'var(--danger)', bg: 'var(--danger-bg)' };
     case 'paid': return { label: 'Оплачена', color: 'var(--accent)', bg: 'var(--accent-bg)' };
@@ -115,7 +116,7 @@ export function statusMeta(status: string): { label: string; color: string; bg: 
 
 export function progressOf(status: string): string {
   switch (status) {
-    case 'draft': return '8%';
+    case 'draft': case 'needs_revision': return '8%';
     case 'warehouse_check': return '20%';
     case 'in_stock': case 'partially_available': case 'out_of_stock': return '40%';
     case 'procurement': case 'quotation_received': return '60%';
@@ -222,6 +223,7 @@ export function actTint(status: string): { tint: string; ic: string } {
 export const STATUS: Record<string, { label: string; cls: string }> = {
   draft: { label: 'Черновик', cls: 'bg-fg3/20 text-fg2' },
   pending_approval: { label: 'На согласовании', cls: 'bg-warning/15 text-warning' },
+  needs_revision: { label: 'На доработке', cls: 'bg-warning/15 text-warning' },
   approved: { label: 'Согласована', cls: 'bg-success/15 text-success' },
   rejected: { label: 'Отклонена', cls: 'bg-danger/15 text-danger' },
 };
