@@ -49,18 +49,36 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     orderIndex: 2,
   },
   {
+    // №7: заявка адресуется отделу — его руководитель увидит её на своём шаге.
+    // options пустые → мастер подставляет отделы холдинга (value = id отдела).
+    fieldKey: 'department',
+    label: 'Отдел',
+    fieldType: 'select',
+    system: true,
+    options: [],
+    stepGroup: 1,
+    orderIndex: 3,
+  },
+  {
     fieldKey: 'purpose',
     label: 'Назначение / цель',
     fieldType: 'select',
     system: false,
+    // №3: >4 вариантов — первые 4 кнопками, остальные в выпадашке «Другое…».
     options: [
       { value: 'repair', label: 'Ремонт оборудования' },
       { value: 'production', label: 'Производство' },
       { value: 'household', label: 'Хоз. нужды' },
+      { value: 'office', label: 'Офис / канцелярия' },
+      { value: 'equipment', label: 'Новое оборудование' },
+      { value: 'safety', label: 'Охрана труда / безопасность' },
+      { value: 'packaging', label: 'Упаковка' },
+      { value: 'logistics', label: 'Логистика / транспорт' },
+      { value: 'it', label: 'IT / связь' },
       { value: 'other', label: 'Прочее' },
     ],
     stepGroup: 1,
-    orderIndex: 3,
+    orderIndex: 4,
   },
   {
     fieldKey: 'priority',
@@ -74,7 +92,7 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
       { value: 'urgent', label: 'Аварийная', meta: 'Немедленно' },
     ],
     stepGroup: 1,
-    orderIndex: 4,
+    orderIndex: 5,
   },
   // ── Step 2: Позиция ──
   {

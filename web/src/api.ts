@@ -76,6 +76,7 @@ export interface CreateRequestData {
   requestType?: string;
   priority?: string;
   warehouseName?: string;
+  departmentId?: string;
   description?: string;
   neededDate?: string | null;
   customFields?: Record<string, unknown>;
@@ -98,7 +99,7 @@ export const api = {
   notifications: (unreadOnly?: boolean) => call('/me/notifications' + (unreadOnly ? '?unread=1' : '')),
   markNotificationRead: (id: string) => call(`/me/notifications/${id}/read`, { method: 'POST' }),
   markAllNotificationsRead: () => call('/me/notifications/read-all', { method: 'POST' }),
-  listRequests: (opts?: { limit?: number; offset?: number; search?: string; status?: string }) => {
+  listRequests: (opts?: { limit?: number; offset?: number; search?: string; status?: string; mine?: string }) => {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));
     if (opts?.offset) params.set('offset', String(opts.offset));
@@ -106,6 +107,7 @@ export const api = {
     // not just the current page.
     if (opts?.search) params.set('search', opts.search);
     if (opts?.status) params.set('status', opts.status);
+    if (opts?.mine) params.set('mine', opts.mine); // №13
     const qs = params.toString();
     return call('/requests' + (qs ? '?' + qs : ''));
   },

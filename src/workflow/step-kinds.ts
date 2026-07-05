@@ -35,6 +35,13 @@ export interface StepActionDef {
   /** A reject action: ends the request as 'rejected' instead of advancing. */
   reject?: boolean;
   /**
+   * №11: return the request to its author for revision (status needs_revision)
+   * with a MANDATORY comment saying what to fix — independent of the step's
+   * on_reject policy. The author edits and resubmits; the route re-runs from
+   * the first applicable step.
+   */
+  revision?: boolean;
+  /**
    * Separation of duties: the requester may not perform this action on their own
    * request (money/routing decisions: payment, supplier choice, stock verdict).
    * 'approve' is always SoD-protected regardless of this flag.
@@ -72,25 +79,42 @@ const REJECT: StepActionDef = {
   advance: true,
 };
 
+/**
+ * №11: offered on decision steps alongside REJECT, to the same step handler.
+ * Unlike reject it never kills the request — it hands it back to the author.
+ */
+const REVISE: StepActionDef = {
+  action: 'return_revision',
+  label: 'Вернуть на доработку',
+  perm: 'approvals.reject',
+  comment: true,
+  revision: true,
+  advance: true,
+};
+
 export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   approval: [
     { action: 'approve', label: 'Согласовать', perm: 'approvals.approve', pin: true, advance: true },
     // Bug #8: only surfaced when the NEXT step is procurement (see availableActions).
     { action: 'assign_procurement', label: 'Передать снабженцу', perm: 'approvals.approve', pin: true, assign: true, advance: true },
+    REVISE,
     REJECT,
   ],
   warehouse_check: [
     { action: 'wh_in_stock', label: 'В наличии', perm: 'warehouse.check_stock', setInStock: true, sod: true, advance: true },
     { action: 'wh_out_of_stock', label: 'Нет в наличии', perm: 'warehouse.check_stock', setInStock: false, sod: true, advance: true },
+    REVISE,
     REJECT,
   ],
   procurement: [
     { action: 'add_quotation', label: 'Добавить КП', perm: 'procurement.quote', amount: true, quote: 'add', advance: false },
     { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: true },
+    REVISE,
     REJECT,
   ],
   finance_payment: [
     { action: 'mark_paid', label: 'Отметить оплату', perm: 'finance.mark_paid', pin: true, sod: true, advance: true },
+    REVISE,
     REJECT,
   ],
   delivery: [

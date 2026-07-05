@@ -134,7 +134,7 @@ describe('getDashboard — Sprint 1 aggregates (role-scoped, permission-gated)',
     expect(d.byStatus).toMatchObject({ finance_payment: 2, procurement: 1 });
   });
 
-  it('finance role: only awaitingPayment; procurement/lowStock/byStatus stay null', async () => {
+  it('finance role: awaitingPayment; procurement/lowStock null; byStatus по новому праву (№14)', async () => {
     const { db, holding, factory, requester } = await setup();
     await seedAggregates(db, holding.id, requester.id, factory.id);
     const uid = await mkUserWithRole(db, holding.id, 'fin', 'finance');
@@ -142,10 +142,10 @@ describe('getDashboard — Sprint 1 aggregates (role-scoped, permission-gated)',
     expect(d.awaitingPayment).toBe(2);
     expect(d.inProcurement).toBeNull();
     expect(d.lowStock).toBeNull();
-    expect(d.byStatus).toBeNull();
+    expect(d.byStatus).not.toBeNull(); // №14: reports.status_summary у системных ролей
   });
 
-  it('procurement role: only inProcurement', async () => {
+  it('procurement role: only inProcurement (+byStatus по №14)', async () => {
     const { db, holding, factory, requester } = await setup();
     await seedAggregates(db, holding.id, requester.id, factory.id);
     const uid = await mkUserWithRole(db, holding.id, 'proc', 'procurement');
@@ -153,10 +153,10 @@ describe('getDashboard — Sprint 1 aggregates (role-scoped, permission-gated)',
     expect(d.inProcurement).toBe(1);
     expect(d.awaitingPayment).toBeNull();
     expect(d.lowStock).toBeNull();
-    expect(d.byStatus).toBeNull();
+    expect(d.byStatus).not.toBeNull(); // №14
   });
 
-  it('warehouse role: only lowStock', async () => {
+  it('warehouse role: only lowStock (+byStatus по №14)', async () => {
     const { db, holding, factory, requester } = await setup();
     await seedAggregates(db, holding.id, requester.id, factory.id);
     const uid = await mkUserWithRole(db, holding.id, 'warehouse', 'warehouse');
@@ -164,7 +164,7 @@ describe('getDashboard — Sprint 1 aggregates (role-scoped, permission-gated)',
     expect(d.lowStock).toBe(1);
     expect(d.awaitingPayment).toBeNull();
     expect(d.inProcurement).toBeNull();
-    expect(d.byStatus).toBeNull();
+    expect(d.byStatus).not.toBeNull(); // №14
   });
 
   it('plain requester: no aggregates leak (all null)', async () => {

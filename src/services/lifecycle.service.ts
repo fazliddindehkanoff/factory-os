@@ -222,7 +222,9 @@ async function actorMayAct(
 ): Promise<boolean> {
   const scope = reqScope(req);
   if (!(await hasPermission(db, userId, def.perm, scope))) return false;
-  if (step.stepKind === 'approval' && !def.reject && step.approverRoleId) {
+  // Reject/revision гейтятся отдельно через canHandleStep (ответственный за шаг),
+  // поэтому требование «держит роль шага» к ним не применяется здесь.
+  if (step.stepKind === 'approval' && !def.reject && !def.revision && step.approverRoleId) {
     if (!(await actorHoldsRoleInScope(db, userId, step.approverRoleId, scope))) return false;
   }
   // Bug #8: once a specific procurement person is assigned, only THEY work the
@@ -243,15 +245,28 @@ export interface UiAction {
   assign?: boolean;
 }
 
-const toUi = (a: StepActionDef): UiAction => ({
+const toUi = (a: StepActionDef, requirePin = true): UiAction => ({
   action: a.action,
   label: a.label,
-  pin: !!a.pin,
+  pin: !!a.pin && requirePin,
   comment: !!a.comment,
   amount: !!a.amount,
   quote: a.quote ?? null,
   assign: !!a.assign,
 });
+
+/**
+ * №15: подпись действий настраивается на холдинг — settings key `require_pin`.
+ * '0' → вместо PIN обычное подтверждение; отсутствие ключа или любое другое
+ * значение → PIN требуется (как раньше).
+ */
+export async function holdingRequiresPin(db: Db, holdingId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ value: schema.settings.value })
+    .from(schema.settings)
+    .where(and(eq(schema.settings.holdingId, holdingId), eq(schema.settings.key, 'require_pin')));
+  return row ? String(row.value) !== '0' : true;
+}
 
 /**
  * Can the actor perform a PRIMARY (non-reject) action of this step — i.e. are
@@ -264,7 +279,9 @@ const sodBlocked = (def: StepActionDef, req: RequestRow, userId: string): boolea
 
 async function canHandleStep(db: Db, userId: string, req: RequestRow, step: KindStep): Promise<boolean> {
   for (const a of actionsForKind(step.stepKind)) {
-    if (a.reject) continue;
+    // Гейт строится по ОСНОВНЫМ действиям шага: reject/revision сами защищаются
+    // этим предикатом, иначе проверка зациклилась бы на них самих.
+    if (a.reject || a.revision) continue;
     if (sodBlocked(a, req, userId)) continue; // separation of duties
     if (a.requesterOnly && req.requesterId !== userId) continue;
     if (await actorMayAct(db, userId, req, step, a)) return true;
@@ -374,23 +391,29 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     const nxt = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
     nextIsProcurement = nxt?.stepKind === 'procurement';
   }
+  const requirePin = await holdingRequiresPin(db, req.holdingId);
   const defs = actionsForKind(step.stepKind);
   const out: UiAction[] = [];
   let isHandler = false;
   for (const a of defs) {
-    if (a.reject) continue;
+    if (a.reject || a.revision) continue;
     if (a.assign && !nextIsProcurement) continue; // assign only before a procurement step
+    // №16б: перед шагом закупки простое «Согласовать» скрыто — начальник обязан
+    // передать заявку конкретному снабженцу (assign_procurement).
+    if (a.action === 'approve' && step.stepKind === 'approval' && nextIsProcurement) continue;
     // Self-service on money/routing decisions is forbidden (separation of duties).
     if (sodBlocked(a, req, userId)) continue;
     if (a.requesterOnly && req.requesterId !== userId) continue;
     if (!(await actorMayAct(db, userId, req, step, a))) continue;
-    out.push(toUi(a));
+    out.push(toUi(a, requirePin));
     isHandler = true;
   }
-  // Reject is shown ONLY to whoever is responsible for the current step.
+  // Reject/return-for-revision are shown ONLY to whoever handles the current step.
   if (isHandler) {
+    const rev = defs.find((d) => d.revision);
+    if (rev && (await hasPermission(db, userId, rev.perm, reqScope(req)))) out.push(toUi(rev, requirePin));
     const rej = defs.find((d) => d.reject);
-    if (rej && (await hasPermission(db, userId, rej.perm, reqScope(req)))) out.push(toUi(rej));
+    if (rej && (await hasPermission(db, userId, rej.perm, reqScope(req)))) out.push(toUi(rej, requirePin));
   }
   return out;
 }
@@ -520,11 +543,23 @@ export async function performAction(db: Db, input: PerformInput) {
     if (!(await actorMayAct(tx, input.actor.id, req, step, def))) {
       throw new ForbiddenError('Недостаточно прав для этого действия');
     }
-    // Reject is reserved for the person responsible for the current step.
-    if (def.reject && !(await canHandleStep(tx, input.actor.id, req, step))) {
-      throw new ForbiddenError('Отклонить может только ответственный за текущий шаг');
+    // Reject / return-for-revision are reserved for the current step's handler.
+    if ((def.reject || def.revision) && !(await canHandleStep(tx, input.actor.id, req, step))) {
+      throw new ForbiddenError(
+        def.revision ? 'Вернуть на доработку может только ответственный за текущий шаг' : 'Отклонить может только ответственный за текущий шаг',
+      );
     }
-    if (def.pin) {
+    // №16б: серверное зеркало правила «перед закупкой — только передача снабженцу»:
+    // approve на approval-шаге, за которым идёт procurement, отклоняется и через API.
+    if (def.action === 'approve' && step.stepKind === 'approval' && req.workflowId) {
+      const steps = await loadKindSteps(tx, req.workflowId);
+      const ctx0 = reqContext(req);
+      const nxt = nextStep(steps, ctx0, step.stepOrder) as KindStep | null;
+      if (nxt?.stepKind === 'procurement') {
+        throw new ConflictError('Перед закупкой заявку передают конкретному снабженцу — используйте «Передать снабженцу»');
+      }
+    }
+    if (def.pin && (await holdingRequiresPin(tx, req.holdingId))) {
       const lockMs = pinLockoutRemaining(input.actor.id);
       if (lockMs > 0) {
         const mins = Math.ceil(lockMs / 60_000);
@@ -646,13 +681,15 @@ export async function performAction(db: Db, input: PerformInput) {
         .select()
         .from(schema.approvals)
         .where(and(eq(schema.approvals.requestId, req.id), eq(schema.approvals.workflowStepId, step.id), eq(schema.approvals.status, 'pending')));
-      const resolveTo = def.reject ? 'rejected' : 'approved';
+      // №11: возврат на доработку не решает согласование — pending снимается как
+      // 'cancelled' (без подписи) и будет создан заново при resubmit.
+      const resolveTo = def.reject ? 'rejected' : def.revision ? 'cancelled' : 'approved';
       if (pending) {
         await tx
           .update(schema.approvals)
           .set({ status: resolveTo, approverUserId: input.actor.id, comment: input.comment ?? null, approvedAt: new Date() })
           .where(eq(schema.approvals.id, pending.id));
-        if (!def.reject) {
+        if (!def.reject && !def.revision) {
           await tx.insert(schema.signatures).values({
             approvalId: pending.id,
             requestId: req.id,
@@ -660,7 +697,7 @@ export async function performAction(db: Db, input: PerformInput) {
             signatureType: 'telegram_pin',
           });
         }
-      } else if (!def.reject) {
+      } else if (!def.reject && !def.revision) {
         // No pending row (workflow edited after creation, legacy data): an approval
         // must still leave a resolved record + signature in the DNA — never a silent
         // "approved without a trace". (L2)
@@ -694,7 +731,11 @@ export async function performAction(db: Db, input: PerformInput) {
     let to: string;
     let newCurrentStepId: string | null;
 
-    if (def.reject) {
+    if (def.revision) {
+      // №11: назад к автору на доработку — независимо от политики on_reject шага.
+      to = STATUS_NEEDS_REVISION;
+      newCurrentStepId = null;
+    } else if (def.reject) {
       // Ветка «Если отклонил» шага: отменить / вернуть автору / вернуть на шаг N.
       const policy = (step.onReject ?? 'cancel') as OnRejectPolicy;
       if (policy === 'return_requester') {

@@ -244,11 +244,13 @@ export async function seedTest(db: Db) {
     { name: 'Подшипник 6205', quantity: 20, unitPrice: 15000, unit: 'шт' },
   ]);
   if (inProc.created) {
+    // №16б: следующий шаг — закупка, поэтому согласование = передача снабженцу.
     await performAction(db, {
       requestId: inProc.req.id,
-      action: 'approve',
+      action: 'assign_procurement',
       actor: { id: nachSklad.id, holdingId: holding.id },
       pin: TEST_PIN,
+      assigneeId: users['snab_01'].id,
     });
   }
   requestsSeeded.inProcurement = inProc.req;

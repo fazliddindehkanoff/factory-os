@@ -1,6 +1,6 @@
 /** REST routes. Auth on every /api route except login; RBAC checked per action. */
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { and, desc, eq, inArray, or, ilike, gte, lte, count, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, ilike, like, gte, lte, count, isNull, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
@@ -10,7 +10,7 @@ import { getRequestVisibility } from './request-visibility.js';
 import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
-import { performAction, availableActions, statusLabelFor, inboxCandidates } from '../services/lifecycle.service.js';
+import { performAction, availableActions, statusLabelFor, inboxCandidates, holdingRequiresPin } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
@@ -208,10 +208,12 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(404).json({ error: 'Not found' });
         return;
       }
+      // Системные тест-логины + логины кастомных ролей холдинга (<code>_01 из
+      // seed:test-logins) — иначе assistant_01 и прочих нет в DEV-панели (№1).
       const rows = await db
         .select({ id: schema.users.id, username: schema.users.telegramId, fullName: schema.users.fullName })
         .from(schema.users)
-        .where(inArray(schema.users.telegramId, TEST_USERNAMES));
+        .where(or(inArray(schema.users.telegramId, TEST_USERNAMES), like(schema.users.telegramId, '%\\_01')));
       const ids = rows.map((u: { id: string }) => u.id);
       const roleRows = ids.length
         ? await db
@@ -224,13 +226,18 @@ export function buildRouter(deps: RouterDeps): Router {
       for (const rr of roleRows as { userId: string; name: string }[]) {
         rolesByUser.set(rr.userId, [...(rolesByUser.get(rr.userId) ?? []), rr.name]);
       }
-      // Keep the seed's order (the request path order) — not DB order.
+      // Keep the seed's order (the request path order) — not DB order; custom-role
+      // logins (assistant_01 и т.п.) follow after, alphabetically.
       const byUsername = new Map(rows.map((u: any) => [u.username, u]));
       const users = TEST_USERNAMES.flatMap((username) => {
         const u = byUsername.get(username) as { id: string; username: string; fullName: string } | undefined;
         return u ? [{ username: u.username, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }] : [];
       });
-      res.json({ users, pin: TEST_PIN });
+      const extras = (rows as { id: string; username: string; fullName: string }[])
+        .filter((u) => !TEST_USERNAMES.includes(u.username))
+        .sort((a, b) => a.username.localeCompare(b.username))
+        .map((u) => ({ username: u.username, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }));
+      res.json({ users: [...users, ...extras], pin: TEST_PIN });
     } catch (e) {
       next(e);
     }
@@ -447,6 +454,8 @@ export function buildRouter(deps: RouterDeps): Router {
       if (q.factory_id) conds.push(eq(schema.requests.factoryId, String(q.factory_id)));
       if (q.department_id) conds.push(eq(schema.requests.departmentId, String(q.department_id)));
       if (q.requester_id) conds.push(eq(schema.requests.requesterId, String(q.requester_id)));
+      // №13: «Только мои» — заявки, созданные текущим пользователем.
+      if (String(q.mine ?? '') === '1') conds.push(eq(schema.requests.requesterId, u.id));
       if (q.responsible_user_id) conds.push(eq(schema.requests.responsibleUserId, String(q.responsible_user_id)));
       const dateFrom = q.date_from ? new Date(String(q.date_from)) : null;
       if (dateFrom && !isNaN(dateFrom.getTime())) conds.push(gte(schema.requests.createdAt, dateFrom));
@@ -499,6 +508,14 @@ export function buildRouter(deps: RouterDeps): Router {
       if (body.neededDate) {
         const d = new Date(body.neededDate);
         if (isNaN(d.getTime())) { res.status(400).json({ error: 'Invalid neededDate' }); return; }
+        // №5: «нужно к дате» не бывает в прошлом — минимум сегодня (по началу дня,
+        // чтобы «сегодня» в любом часовом поясе клиента проходило).
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        if (d.getTime() < today.getTime()) {
+          res.status(400).json({ error: 'Дата «необходимо к» не может быть в прошлом' });
+          return;
+        }
         neededDate = d;
       }
       const customFields = await sanitizeCustomFields(db, u.holdingId, 'request_create', body.customFields);
@@ -549,23 +566,53 @@ export function buildRouter(deps: RouterDeps): Router {
       const offset = Math.max(0, Number(req.query.offset) || 0);
 
       // availableActions — финальная проверка прав на каждом кандидате.
-      const inbox: unknown[] = [];
+      // №10: элемент инбокса несёт основные теги решения — автор, отдел,
+      // срочность, возраст, число позиций; сумма только тем, кому можно (bug #9).
+      const inboxCodes = await getUserPermissionCodes(db, u.id);
+      const inboxSeesMoney = ['procurement.view', 'finance.view', 'audit.view'].some((p) => inboxCodes.includes(p));
+      const inbox: any[] = [];
       let matched = 0;
       for (const r0 of all) {
         const actions = await availableActions(db, r0, u.id);
         if (actions.length === 0) continue;
         matched++;
         if (matched <= offset) continue;
+        const raw = r0 as any;
         inbox.push({
           id: r0.id,
           requestNumber: r0.requestNumber,
           title: r0.title,
           status: r0.status,
           statusLabel: await statusLabelFor(db, r0),
-          estimatedAmount: r0.estimatedAmount,
+          estimatedAmount: inboxSeesMoney ? r0.estimatedAmount : null,
+          priority: raw.priority ?? null,
+          createdAt: raw.createdAt ?? null,
+          requesterId: r0.requesterId,
+          departmentId: r0.departmentId,
           actions,
         });
         if (inbox.length >= limit) break;
+      }
+      // Обогащение страницы (не всего множества): имена авторов, отделы, позиции.
+      if (inbox.length) {
+        const reqIds = inbox.map((i) => i.id);
+        const userIds = [...new Set(inbox.map((i) => i.requesterId).filter(Boolean))] as string[];
+        const deptIds = [...new Set(inbox.map((i) => i.departmentId).filter(Boolean))] as string[];
+        const [userRows, deptRows, itemRows] = await Promise.all([
+          userIds.length ? db.select({ id: schema.users.id, fullName: schema.users.fullName }).from(schema.users).where(inArray(schema.users.id, userIds)) : [],
+          deptIds.length ? db.select({ id: schema.departments.id, name: schema.departments.name }).from(schema.departments).where(inArray(schema.departments.id, deptIds)) : [],
+          db.select({ requestId: schema.requestItems.requestId, n: count() }).from(schema.requestItems).where(inArray(schema.requestItems.requestId, reqIds)).groupBy(schema.requestItems.requestId),
+        ]);
+        const userBy = new Map((userRows as any[]).map((x) => [x.id, x.fullName]));
+        const deptBy = new Map((deptRows as any[]).map((x) => [x.id, x.name]));
+        const itemsBy = new Map((itemRows as any[]).map((x) => [x.requestId, Number(x.n)]));
+        for (const i of inbox) {
+          i.requesterName = userBy.get(i.requesterId) ?? null;
+          i.departmentName = deptBy.get(i.departmentId) ?? null;
+          i.itemsCount = itemsBy.get(i.id) ?? 0;
+          delete i.requesterId;
+          delete i.departmentId;
+        }
       }
       res.json(inbox);
     } catch (e) {
@@ -740,6 +787,35 @@ export function buildRouter(deps: RouterDeps): Router {
         canSeeMoney ? it : { ...it, estimatedPrice: null, totalAmount: null },
       );
 
+      // №12в: «История действий» — только ролям с audit.view, зато МАКСИМАЛЬНО
+      // подробная: история статусов + полный аудит-трейл заявки. Остальным ходом
+      // заявки служит workflowTimeline.
+      const canSeeHistory = viewerCodes.includes('audit.view');
+      let auditTrail: unknown[] = [];
+      if (canSeeHistory) {
+        const trail = await db
+          .select()
+          .from(schema.auditLogs)
+          .where(and(eq(schema.auditLogs.entityType, 'request'), eq(schema.auditLogs.entityId, reqRow.id)))
+          .orderBy(schema.auditLogs.createdAt);
+        const trailUserIds = [...new Set(trail.map((t: { userId: string | null }) => t.userId).filter(Boolean))] as string[];
+        const trailUsers = trailUserIds.length
+          ? await db.select({ id: schema.users.id, fullName: schema.users.fullName }).from(schema.users).where(inArray(schema.users.id, trailUserIds))
+          : [];
+        const trailNameBy = new Map((trailUsers as { id: string; fullName: string }[]).map((x) => [x.id, x.fullName]));
+        auditTrail = trail.map((t: any) => ({
+          id: t.id,
+          action: t.action,
+          module: t.module,
+          userId: t.userId,
+          userName: t.userId ? trailNameBy.get(t.userId) ?? null : null,
+          oldValue: t.oldValue,
+          newValue: t.newValue,
+          source: t.source,
+          createdAt: t.createdAt,
+        }));
+      }
+
       res.json({
         ...reqRow,
         estimatedAmount: canSeeMoney ? reqRow.estimatedAmount : null,
@@ -750,7 +826,9 @@ export function buildRouter(deps: RouterDeps): Router {
         statusLabel: await statusLabelFor(db, reqRow),
         items: itemsOut,
         approvals,
-        statusHistory: statusHistoryOut,
+        statusHistory: canSeeHistory ? statusHistoryOut : [],
+        auditTrail,
+        canSeeHistory,
         quotations,
         canSeeMoney,
         actions,
@@ -1016,21 +1094,25 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Недостаточно прав для согласования' });
         return;
       }
-      if (pinLockoutRemaining(u.id) > 0) {
-        res.status(429).json({ error: 'Слишком много попыток PIN — попробуйте позже' });
-        return;
+      // №15: PIN как подпись — только если холдинг не переключился на простое
+      // подтверждение (settings.require_pin = '0').
+      if (await holdingRequiresPin(db, u.holdingId)) {
+        if (pinLockoutRemaining(u.id) > 0) {
+          res.status(429).json({ error: 'Слишком много попыток PIN — попробуйте позже' });
+          return;
+        }
+        const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+        if (!full?.pinHash) {
+          res.status(403).json({ error: 'PIN не задан — установите его в профиле' });
+          return;
+        }
+        if (!verifyPin(String(body.pin ?? ''), full.pinHash)) {
+          recordPinFailure(u.id);
+          res.status(403).json({ error: 'Неверный PIN' });
+          return;
+        }
+        clearPinFailures(u.id);
       }
-      const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
-      if (!full?.pinHash) {
-        res.status(403).json({ error: 'PIN не задан — установите его в профиле' });
-        return;
-      }
-      if (!verifyPin(String(body.pin ?? ''), full.pinHash)) {
-        recordPinFailure(u.id);
-        res.status(403).json({ error: 'Неверный PIN' });
-        return;
-      }
-      clearPinFailures(u.id);
       const result = await approveApproval(db, {
         approvalId: (req.params.id as string),
         actorUserId: u.id,

@@ -38,7 +38,7 @@ describe('constructor / admin API', () => {
     const token = await login(app, '999');
 
     const perms = await request(app).get('/api/admin/permissions').set('Authorization', `Bearer ${token}`).expect(200);
-    expect(perms.body.length).toBe(26); // 2026-07-02: 7 dead permissions removed (M5)
+    expect(perms.body.length).toBe(27); // M5 −7 dead; 2026-07-06 +reports.status_summary (№14)
 
     const roles = await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(200);
     expect(roles.body.some((r: any) => r.code === 'owner')).toBe(true);

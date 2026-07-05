@@ -50,8 +50,9 @@ describe('seedTest', () => {
       });
 
     // Fresh request sits with the warehouse head; then follows the ТЗ path.
+    // №16б: перед шагом закупки согласование = «Передать снабженцу».
     const id = requests.fresh.id;
-    await act('nach_sklad_01', id, 'approve');
+    await act('nach_sklad_01', id, 'assign_procurement', { assigneeId: users['snab_01'].id });
     await act('snab_01', id, 'add_quotation', { amount: 100000, supplierName: 'ООО Тест-Снаб' });
     const [quote] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, id));
     await act('snab_01', id, 'select_supplier', { quotationId: quote.id });
@@ -71,9 +72,12 @@ describe('seedTest', () => {
     const { users, requests } = await seedTest(db);
     const [req] = await db.select().from(schema.requests).where(eq(schema.requests.id, requests.fresh.id));
     // Step 1 belongs to the warehouse head: he can act, the procurement user cannot.
+    // №16б: перед закупкой вместо approve — assign_procurement.
     const forNach = await availableActions(db, req, users['nach_sklad_01'].id);
-    expect(forNach.map((a: any) => a.action)).toContain('approve');
+    expect(forNach.map((a: any) => a.action)).toContain('assign_procurement');
+    expect(forNach.map((a: any) => a.action)).not.toContain('approve');
     const forSnab = await availableActions(db, req, users['snab_01'].id);
     expect(forSnab.map((a: any) => a.action)).not.toContain('approve');
+    expect(forSnab.map((a: any) => a.action)).not.toContain('assign_procurement');
   });
 });

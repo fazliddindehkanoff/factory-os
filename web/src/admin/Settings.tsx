@@ -27,6 +27,17 @@ const KEYS: { key: string; label: string; placeholder: string; type?: 'select'; 
       { value: 'light', label: 'Светлая' },
     ],
   },
+  {
+    // №15: подпись действий — PIN-код или обычное подтверждение «Вы уверены?».
+    key: 'require_pin',
+    label: 'Подтверждение действий (согласование, оплата)',
+    placeholder: '1',
+    type: 'select',
+    options: [
+      { value: '1', label: 'PIN-код (подпись)' },
+      { value: '0', label: 'Обычное подтверждение «Вы уверены?»' },
+    ],
+  },
 ];
 
 export function Settings() {

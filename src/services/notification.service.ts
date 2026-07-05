@@ -9,7 +9,7 @@
  * `deliver` is injected (a promise-returning Telegram send) so this layer is
  * fully testable without a real bot.
  */
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, ne } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 
 type Db = any;
@@ -92,7 +92,7 @@ export async function listUserNotifications(
 ) {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const where = opts.unreadOnly
-    ? and(eq(schema.notifications.recipientUserId, userId), eq(schema.notifications.status, 'delivered'))
+    ? and(eq(schema.notifications.recipientUserId, userId), ne(schema.notifications.status, 'read'))
     : eq(schema.notifications.recipientUserId, userId);
   return db
     .select()
@@ -102,12 +102,16 @@ export async function listUserNotifications(
     .limit(limit);
 }
 
-/** Count a user's unread (delivered but not read) notifications. */
+/**
+ * Count a user's unread notifications. In-app a notification exists regardless
+ * of whether the Telegram push made it out, so `pending`/`failed` are unread
+ * too — otherwise a stand without BOT_TOKEN always shows a zero badge.
+ */
 export async function unreadCount(db: Db, userId: string): Promise<number> {
   const rows = await db
     .select({ id: schema.notifications.id })
     .from(schema.notifications)
-    .where(and(eq(schema.notifications.recipientUserId, userId), eq(schema.notifications.status, 'delivered')));
+    .where(and(eq(schema.notifications.recipientUserId, userId), ne(schema.notifications.status, 'read')));
   return rows.length;
 }
 
@@ -121,12 +125,12 @@ export async function markRead(db: Db, userId: string, id: string): Promise<bool
   return res.length > 0;
 }
 
-/** Mark all of the user's delivered notifications as read. */
+/** Mark all of the user's unread notifications as read. */
 export async function markAllRead(db: Db, userId: string): Promise<number> {
   const res = await db
     .update(schema.notifications)
     .set({ status: 'read', readAt: new Date() })
-    .where(and(eq(schema.notifications.recipientUserId, userId), eq(schema.notifications.status, 'delivered')))
+    .where(and(eq(schema.notifications.recipientUserId, userId), ne(schema.notifications.status, 'read')))
     .returning();
   return res.length;
 }

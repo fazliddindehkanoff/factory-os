@@ -149,7 +149,8 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
     has('finance.view') ? countByStatusValue(db, baseWhere, 'finance_payment') : Promise.resolve(null),
     has('procurement.view') ? countByStatusValue(db, baseWhere, 'procurement') : Promise.resolve(null),
     has('warehouse.view') ? countLowStock(db, holdingId) : Promise.resolve(null),
-    has('reports.view') || has('audit.view') ? requestsByStatus(db, baseWhere) : Promise.resolve(null),
+    // №14: сводка по статусам — по отдельному праву (или старшим reports/audit).
+    has('reports.view') || has('audit.view') || has('reports.status_summary') ? requestsByStatus(db, baseWhere) : Promise.resolve(null),
   ]);
 
   return {

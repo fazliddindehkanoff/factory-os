@@ -244,7 +244,8 @@ export default function App() {
   };
   const title = TITLES[screen.name];
   const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse', 'notifications'].includes(screen.name);
-  const showNav = ['home', 'list', 'approvals', 'warehouse', 'procurement', 'notifications', 'menu', 'admin'].includes(screen.name);
+  // Нижняя навигация видна всегда (№2): и в карточке заявки, и в мастере создания.
+  const showNav = true;
   const iconBtn: CSSProperties = {
     width: 38,
     height: 38,
@@ -781,11 +782,12 @@ function Home({
   // KPI cards — permission-gated; the new aggregates are hidden unless the backend
   // returned a non-null value (permission-hiding driven by GET /dashboard).
   const cards: KpiCard[] = [];
-  if (can('requests.view')) cards.push({ key: 'myActive', label: 'Мои заявки', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
+  // №8: «Мои заявки» → «Созданные мной», чтобы плитка не читалась как «ждут меня».
+  if (can('requests.view')) cards.push({ key: 'myActive', label: 'Созданные мной', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
   if (can('approvals.approve')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
   if (oversight) cards.push({ key: 'total', label: 'Активных всего', value: dash?.totalActive ?? null, tint: 'success', ic: 'box', onClick: () => onNav({ name: 'list' }) });
   if (dash && dash.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
-  if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'В закупке', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'procurement' }) });
+  if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'Для закупа', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'procurement' }) });
   if (dash && dash.lowStock != null) cards.push({ key: 'low', label: 'Низкий остаток', value: dash.lowStock, tint: 'danger', ic: 'alert', onClick: () => onNav({ name: 'warehouse' }) });
   // Unread is shown via the header bell badge, not a dashboard card (per request).
 
@@ -1048,6 +1050,7 @@ function RequestsList({
   const [search, setSearch] = useState('');
   // Prefilter from a KPI/by-status click on the dashboard (deep-link via state).
   const [statusFilter, setStatusFilter] = useState(initialStatus ?? '');
+  const [mineOnly, setMineOnly] = useState(false); // №13: «Только мои»
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [showCalendar, setShowCalendar] = useState(false); // bug #12: calendar collapsed by default
   const [hasMore, setHasMore] = useState(false);
@@ -1063,7 +1066,7 @@ function RequestsList({
     // Silent refresh (no skeleton wipe) — keep the current list visible until new
     // data arrives; also fires on the 30s tick (bug #6).
     const t = setTimeout(() => {
-      api.listRequests({ limit: PAGE, search: search.trim(), status: statusFilter }).then((res: any) => {
+      api.listRequests({ limit: PAGE, search: search.trim(), status: statusFilter, mine: mineOnly ? '1' : undefined }).then((res: any) => {
         if (cancelled) return;
         setError(null);
         if (Array.isArray(res)) { setRows(res); setHasMore(false); setTotal(res.length); }
@@ -1071,13 +1074,13 @@ function RequestsList({
       }).catch((e) => { if (!cancelled) setError((e as Error).message); });
     }, 350);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [search, statusFilter, tick]);
+  }, [search, statusFilter, mineOnly, tick]);
 
   const loadMore = async () => {
     if (!rows || loadingMore) return;
     setLoadingMore(true);
     try {
-      const res = await api.listRequests({ limit: PAGE, offset: rows.length, search: search.trim(), status: statusFilter }) as any;
+      const res = await api.listRequests({ limit: PAGE, offset: rows.length, search: search.trim(), status: statusFilter, mine: mineOnly ? '1' : undefined }) as any;
       const next = Array.isArray(res) ? res : res.items;
       setRows([...rows, ...next]);
       setHasMore(Array.isArray(res) ? false : res.hasMore);
@@ -1149,6 +1152,13 @@ function RequestsList({
             placeholder="Поиск по номеру или названию..."
             style={{ flex: 1, padding: '9px 13px', fontSize: 13, border: '1.5px solid var(--border)', borderRadius: 10, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}
           />
+          {/* №13: «Только мои» — сразу после «Все» */}
+          <button
+            onClick={() => setMineOnly((v) => !v)}
+            style={{ padding: '9px 12px', fontSize: 12, fontWeight: 700, border: `1.5px solid ${mineOnly ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, background: mineOnly ? 'var(--accent-bg)' : 'var(--card)', color: mineOnly ? 'var(--accent)' : 'var(--fg2)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Только мои
+          </button>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -1303,6 +1313,8 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
   const optionsFor = (f: FormField): { value: string; label: string; meta?: string }[] =>
     f.key === 'cf_department'
       ? departments.map((d) => ({ value: d.name, label: d.name }))
+      : f.key === 'department'
+        ? departments.map((d) => ({ value: d.id, label: d.name }))
       : f.key === 'cf_dept_head'
         ? configUsers.map((u) => ({ value: u.fullName, label: u.fullName }))
         : f.key === 'warehouse'
@@ -1360,6 +1372,9 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
         if (f.system) {
           switch (f.key) {
             case 'requestType': if (v) payload.requestType = String(v); break;
+            // №7: заявка адресуется отделу — по departmentId её увидит нужный
+            // руководитель отдела (роль с зоной ответственности этого отдела).
+            case 'department': if (v) payload.departmentId = String(v); break;
             case 'warehouse': if (v) payload.warehouseName = String(v); break;
             case 'priority': if (v) payload.priority = String(v); break;
             case 'itemName': itemName = sval; break;
@@ -1570,22 +1585,50 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
         </div>
       );
     }
+    if (f.type === 'number') {
+      // №4: быстрый ввод количества — степпер −/+ и чипы популярных значений,
+      // ручной ввод остаётся (колесо-пикер сознательно не делаем: для произвольных
+      // количеств оно медленнее клавиатуры).
+      const cur = Number(values[f.key]) || 0;
+      const setNum = (n: number) => set(f.key, n > 0 ? String(Math.round(n)) : '');
+      const stepBtn: CSSProperties = { flex: 'none', width: 52, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg)', fontSize: 22, fontWeight: 700, cursor: 'pointer' };
+      return (
+        <div>
+          <label style={fieldLabel}>{f.label}{optional}</label>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
+            <button aria-label="Минус" onClick={() => setNum(cur - 1)} style={stepBtn}>−</button>
+            <input
+              value={String(values[f.key] ?? '')}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/[^\d]/g, '');
+                set(f.key, raw);
+              }}
+              type="text"
+              inputMode="numeric"
+              placeholder={f.placeholder ?? '0'}
+              style={{ ...input, flex: 1, textAlign: 'center', fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 600 }}
+            />
+            <button aria-label="Плюс" onClick={() => setNum(cur + 1)} style={stepBtn}>+</button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+            {[1, 5, 10, 50, 100, 500].map((n) => (
+              <button key={n} onClick={() => setNum(n)} style={{ ...chip(cur === n), flex: 'none', fontFamily: "'IBM Plex Mono', monospace" }}>{n}</button>
+            ))}
+          </div>
+        </div>
+      );
+    }
     return (
       <div>
         <label style={fieldLabel}>{f.label}{optional}</label>
         <input
           value={String(values[f.key] ?? '')}
-          onChange={(e) => {
-            if (f.type === 'number') {
-              const n = Number(e.target.value);
-              if (n < 0) return;
-            }
-            set(f.key, e.target.value);
-          }}
-          type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
-          min={f.type === 'number' ? 0 : undefined}
+          onChange={(e) => set(f.key, e.target.value)}
+          type={f.type === 'date' ? 'date' : 'text'}
+          // №5: прошлые даты выбрать нельзя — минимум сегодня (сервер дублирует проверку).
+          min={f.type === 'date' ? new Date().toISOString().slice(0, 10) : undefined}
           placeholder={f.placeholder ?? ''}
-          style={f.type === 'number' ? { ...input, fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 600 } : input}
+          style={input}
         />
       </div>
     );
@@ -1907,8 +1950,9 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
     }
   };
   const onAction = (a: LifecycleActionBtn) => {
-    if (a.pin || a.comment || a.amount || a.quote) setPending(a);
-    else run(a.action).catch(() => {});
+    if (a.pin || a.comment || a.amount || a.quote || a.assign) setPending(a);
+    // №15: без PIN действие всё равно подтверждается явно — «Вы уверены?».
+    else confirmDialog(`${a.label} — вы уверены?`).then((yes) => { if (yes) run(a.action).catch(() => {}); });
   };
 
   if (error && !req) return <div style={{ padding: 16 }}><Err>{error}</Err></div>;
@@ -2083,9 +2127,11 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
       <AttachmentsSection requestId={id} />
 
+      {/* №12в: история — только ролям с audit.view (сервер отдаёт её лишь им),
+          зато подробная: переходы статусов, источник, плюс полный аудит-лог. */}
       {history.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>История действий</div>
+          <div style={SECTION_LABEL}>История действий (аудит)</div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {history.map((h, idx) => {
               const m = statusMeta(h.newStatus);
@@ -2097,7 +2143,9 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                     {!last && <span style={{ width: 2, flex: 1, minHeight: 18, background: 'var(--line)' }} />}
                   </div>
                   <div style={{ paddingBottom: 14, paddingTop: 1 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)' }}>{m.label}</div>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)' }}>
+                      {h.oldStatus ? `${statusMeta(h.oldStatus).label} → ` : ''}{m.label}
+                    </div>
                     {h.changedByName && (
                       <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>
                         {h.changedByName}
@@ -2105,12 +2153,34 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                       </div>
                     )}
                     {h.comment && <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{h.comment}</div>}
-                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{fmtDateTime(h.createdAt)}</div>
+                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>
+                      {fmtDateTime(h.createdAt)}{(h as any).source ? ` · ${(h as any).source}` : ''}
+                    </div>
                   </div>
                 </div>
               );
             })}
           </div>
+          {((req as any).auditTrail ?? []).length > 0 && (
+            <>
+              <div style={{ ...SECTION_LABEL, marginTop: 14 }}>Аудит-лог</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {((req as any).auditTrail as any[]).map((t) => (
+                  <div key={t.id} style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{t.action}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--fg2)', marginTop: 2 }}>
+                      {t.userName ?? 'система'} · {t.module}{t.source ? ` · ${t.source}` : ''} · {fmtDateTime(t.createdAt)}
+                    </div>
+                    {(t.oldValue || t.newValue) && (
+                      <div style={{ fontSize: 10.5, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 3, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {t.oldValue ? `− ${JSON.stringify(t.oldValue)}\n` : ''}{t.newValue ? `+ ${JSON.stringify(t.newValue)}` : ''}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 
