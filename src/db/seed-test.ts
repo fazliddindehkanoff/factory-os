@@ -36,6 +36,7 @@ export interface TestUserSpec {
 /** Тестовые пользователи — по одному на КАЖДУЮ системную роль (см. system-roles.ts).
  * Первые семь — маршрут заявки из ТЗ, остальные — вспомогательные/наблюдающие роли. */
 export const TEST_USERS: TestUserSpec[] = [
+  { username: 'zayavitel_01', name: 'Заявитель (сотрудник отдела)', roles: ['requester'] },
   { username: 'sklad_01', name: 'Склад (кладовщик)', roles: ['requester', 'warehouse_worker'] },
   { username: 'nach_sklad_01', name: 'Начальник склада', roles: ['warehouse'] },
   { username: 'snab_01', name: 'Снабженец', roles: ['procurement_manager'] },
