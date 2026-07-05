@@ -1,34 +1,44 @@
 /** REST routes. Auth on every /api route except login; RBAC checked per action. */
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, ilike, gte, lte, count, isNull, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
 import { requireAuth, type AuthedRequest } from './auth.middleware.js';
 import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
+import { getRequestVisibility } from './request-visibility.js';
+import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
-import { performAction, availableActions, statusLabelFor } from '../services/lifecycle.service.js';
+import { performAction, availableActions, statusLabelFor, inboxCandidates } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
 import { getDashboard } from '../services/dashboard.service.js';
 import type { Notifier } from '../bot/bot.js';
-import { approvedStageMessage, approvedFinalMessage, rejectedMessage, newRequestForApproverMessage } from '../bot/messages.js';
+import {
+  notifyUser,
+  listUserNotifications,
+  unreadCount,
+  markRead,
+  markAllRead,
+} from '../services/notification.service.js';
+import { approvedStageMessage, approvedFinalMessage, rejectedMessage, needsRevisionMessage, newRequestForApproverMessage } from '../bot/messages.js';
 import { buildAdminRouter } from './admin.routes.js';
+import { TEST_USERNAMES, TEST_PIN } from '../db/seed-test.js';
 
 type Db = any;
 
 /** Oversight permissions that let a user see requests beyond their own. */
-// NB: reports.view is intentionally NOT here — an existing contract (request-
-// visibility test) keeps a pure observer scoped to their own requests. Whether the
-// observer role should see the whole holding read-only is a product decision (R8).
-const OVERSIGHT_PERMS = ['requests.edit', 'approvals.view', 'warehouse.view', 'procurement.view', 'finance.view', 'audit.view'];
-/** A user may see a request if they own it or hold any oversight permission (H3/H4). */
-async function userCanSeeRequest(db: Db, userId: string, reqRow: { requesterId: string }): Promise<boolean> {
-  if (reqRow.requesterId === userId) return true;
-  const codes = await getUserPermissionCodes(db, userId);
-  return OVERSIGHT_PERMS.some((p) => codes.includes(p));
+/** A user may see a request per the visibility model (bug #2): own + involved +
+ *  role-in-workflow; top roles (audit.view) see all. */
+async function userCanSeeRequest(
+  db: Db,
+  userId: string,
+  reqRow: { id: string; requesterId: string; workflowId: string | null },
+): Promise<boolean> {
+  const vis = await getRequestVisibility(db, userId);
+  return vis.canSee({ id: reqRow.id, requesterId: reqRow.requesterId, workflowId: reqRow.workflowId ?? null });
 }
 
 export interface RouterDeps {
@@ -45,13 +55,48 @@ export interface RouterDeps {
   rateLimit?: boolean;
 }
 
+/**
+ * P2-3: a warehouse operation may only reference a warehouse and request that
+ * belong to the actor's holding. Returns the validated ids, or an error string.
+ */
+async function validateWarehouseScope(
+  db: Db, holdingId: string, warehouseIdRaw: unknown, requestIdRaw: unknown,
+): Promise<{ warehouseId: string | null; requestId: string | null; error?: string }> {
+  let warehouseId: string | null = null;
+  let requestId: string | null = null;
+  if (warehouseIdRaw != null && String(warehouseIdRaw) !== '') {
+    warehouseId = String(warehouseIdRaw);
+    const [wh] = await db
+      .select({ id: schema.warehouses.id })
+      .from(schema.warehouses)
+      .where(and(eq(schema.warehouses.id, warehouseId), eq(schema.warehouses.holdingId, holdingId)));
+    if (!wh) return { warehouseId, requestId, error: 'Warehouse not found in your holding' };
+  }
+  if (requestIdRaw != null && String(requestIdRaw) !== '') {
+    requestId = String(requestIdRaw);
+    const [rq] = await db
+      .select({ id: schema.requests.id })
+      .from(schema.requests)
+      .where(and(eq(schema.requests.id, requestId), eq(schema.requests.holdingId, holdingId)));
+    if (!rq) return { warehouseId, requestId, error: 'Request not found in your holding' };
+  }
+  return { warehouseId, requestId };
+}
+
+// P1-6: notifications are PERSISTED first (notification.service), then delivered.
+// A failed Telegram send is recorded, not lost. `notify` is the delivery channel.
 async function notifyRequester(db: Db, notify: Notifier | undefined, requestId: string, text: (reqNumber: string) => string): Promise<void> {
-  if (!notify) return;
   try {
     const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
     if (!reqRow) return;
-    const [u] = await db.select().from(schema.users).where(eq(schema.users.id, reqRow.requesterId));
-    if (u?.telegramId) notify(u.telegramId, text(reqRow.requestNumber));
+    await notifyUser(db, notify, {
+      holdingId: reqRow.holdingId,
+      recipientUserId: reqRow.requesterId,
+      title: `Заявка ${reqRow.requestNumber}`,
+      message: text(reqRow.requestNumber),
+      entityType: 'request',
+      entityId: reqRow.id,
+    });
   } catch {
     /* notifications are best-effort */
   }
@@ -62,7 +107,7 @@ async function notifyStepApprovers(
   db: Db, notify: Notifier | undefined,
   requestId: string, currentStepId: string | null,
 ): Promise<void> {
-  if (!notify || !currentStepId) return;
+  if (!currentStepId) return;
   try {
     const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
     if (!reqRow) return;
@@ -79,10 +124,18 @@ async function notifyStepApprovers(
       ));
     const userIds = [...new Set(assigns.map((a: { userId: string }) => a.userId))] as string[];
     if (!userIds.length) return;
-    const users = await db.select().from(schema.users).where(inArray(schema.users.id, userIds));
     const msg = newRequestForApproverMessage(reqRow.requestNumber, reqRow.title ?? '', step.stepName);
-    for (const u of users) {
-      if (u.telegramId && u.id !== reqRow.requesterId) notify(u.telegramId, msg);
+    for (const uId of userIds) {
+      if (uId === reqRow.requesterId) continue;
+      await notifyUser(db, notify, {
+        holdingId: reqRow.holdingId,
+        recipientUserId: uId,
+        title: `Требуется согласование — ${reqRow.requestNumber}`,
+        message: msg,
+        priority: 'high',
+        entityType: 'request',
+        entityId: reqRow.id,
+      });
     }
   } catch {
     /* best-effort */
@@ -141,6 +194,43 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       const token = issueSession(u.id, sessionSecret, 7 * 24 * 3600);
       res.json({ token, user: { id: u.id, fullName: u.fullName, holdingId: u.holdingId } });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Dev-only: seeded test users for the role-switcher (docs/TEST_MODE.md).
+  // Same stealth-404 contract as /auth/dev; lives under /dev (not /auth) so the
+  // panel probe does not eat the tight authLimiter budget. ──
+  r.get('/dev/users', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!devAuth) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      const rows = await db
+        .select({ id: schema.users.id, username: schema.users.telegramId, fullName: schema.users.fullName })
+        .from(schema.users)
+        .where(inArray(schema.users.telegramId, TEST_USERNAMES));
+      const ids = rows.map((u: { id: string }) => u.id);
+      const roleRows = ids.length
+        ? await db
+            .select({ userId: schema.userRoles.userId, name: schema.roles.name })
+            .from(schema.userRoles)
+            .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
+            .where(and(inArray(schema.userRoles.userId, ids), eq(schema.userRoles.status, 'active')))
+        : [];
+      const rolesByUser = new Map<string, string[]>();
+      for (const rr of roleRows as { userId: string; name: string }[]) {
+        rolesByUser.set(rr.userId, [...(rolesByUser.get(rr.userId) ?? []), rr.name]);
+      }
+      // Keep the seed's order (the request path order) — not DB order.
+      const byUsername = new Map(rows.map((u: any) => [u.username, u]));
+      const users = TEST_USERNAMES.flatMap((username) => {
+        const u = byUsername.get(username) as { id: string; username: string; fullName: string } | undefined;
+        return u ? [{ username: u.username, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }] : [];
+      });
+      res.json({ users, pin: TEST_PIN });
     } catch (e) {
       next(e);
     }
@@ -251,6 +341,7 @@ export function buildRouter(deps: RouterDeps): Router {
         statuses: {
           draft: 'Черновик',
           pending_approval: 'На согласовании',
+          needs_revision: 'На доработке',
           approved: 'Согласована',
           rejected: 'Отклонена',
         },
@@ -327,25 +418,57 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
-      const offset = Math.max(Number(req.query.offset) || 0, 0);
-      // Visibility: a pure requester/observer (no oversight permission) sees only
-      // their OWN requests; oversight roles see the whole holding.
-      const codes = await getUserPermissionCodes(db, u.id);
-      const seeAll = OVERSIGHT_PERMS.some((p) => codes.includes(p));
-      const visScope = seeAll
-        ? eq(schema.requests.holdingId, u.holdingId)
-        : and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.requesterId, u.id));
+      // Pagination: accept both limit/offset and page/page_size (page is 1-based).
+      const q = req.query;
+      const limit = Math.min(Math.max(Number(q.page_size ?? q.limit) || 30, 1), 100);
+      const offset =
+        q.page !== undefined
+          ? Math.max((Number(q.page) || 1) - 1, 0) * limit
+          : Math.max(Number(q.offset) || 0, 0);
+
+      // Visibility (bug #2): own + involved + role-is-a-step-in-the-workflow; top
+      // roles (audit.view) see the whole holding.
+      const vis = await getRequestVisibility(db, u.id);
+
+      // P1-7: all filtering happens in the DB, not on the current page, so search
+      // finds matching requests anywhere in the holding and totals are accurate.
+      const conds: (SQL | undefined)[] = [eq(schema.requests.holdingId, u.holdingId)];
+      if (vis.scope) conds.push(vis.scope);
+
+      const search = String(q.search ?? '').trim();
+      if (search) {
+        const like = `%${search.replace(/[%_]/g, (m) => '\\' + m)}%`;
+        conds.push(or(ilike(schema.requests.requestNumber, like), ilike(schema.requests.title, like)));
+      }
+      const status = String(q.status ?? '').trim();
+      if (status) conds.push(eq(schema.requests.status, status));
+      const priority = String(q.priority ?? '').trim();
+      if (priority) conds.push(eq(schema.requests.priority, priority as any));
+      if (q.factory_id) conds.push(eq(schema.requests.factoryId, String(q.factory_id)));
+      if (q.department_id) conds.push(eq(schema.requests.departmentId, String(q.department_id)));
+      if (q.requester_id) conds.push(eq(schema.requests.requesterId, String(q.requester_id)));
+      if (q.responsible_user_id) conds.push(eq(schema.requests.responsibleUserId, String(q.responsible_user_id)));
+      const dateFrom = q.date_from ? new Date(String(q.date_from)) : null;
+      if (dateFrom && !isNaN(dateFrom.getTime())) conds.push(gte(schema.requests.createdAt, dateFrom));
+      const dateTo = q.date_to ? new Date(String(q.date_to)) : null;
+      if (dateTo && !isNaN(dateTo.getTime())) conds.push(lte(schema.requests.createdAt, dateTo));
+
+      const where = and(...conds.filter(Boolean) as SQL[]);
       const rows = await db
         .select()
         .from(schema.requests)
-        .where(visScope)
+        .where(where)
         .orderBy(desc(schema.requests.createdAt))
         .limit(limit + 1) // fetch one extra to detect "has more"
         .offset(offset);
       const hasMore = rows.length > limit;
       if (hasMore) rows.pop();
-      res.json({ items: rows, hasMore, offset, limit });
+      const [{ total }] = await db.select({ total: count() }).from(schema.requests).where(where);
+      // Money gate (bug #9): hide estimatedAmount from roles below the procurement manager.
+      const listCodes = await getUserPermissionCodes(db, u.id);
+      const canSeeMoney = ['procurement.view', 'finance.view', 'audit.view'].some((p) => listCodes.includes(p));
+      const items = canSeeMoney ? rows : rows.map((r: any) => ({ ...r, estimatedAmount: null }));
+      res.json({ items, hasMore, offset, limit, total });
     } catch (e) {
       next(e);
     }
@@ -415,48 +538,34 @@ export function buildRouter(deps: RouterDeps): Router {
         return;
       }
 
-      // 1. Find user's active role IDs
-      const roleRows = await db
-        .select({ roleId: schema.userRoles.roleId })
-        .from(schema.userRoles)
-        .where(and(eq(schema.userRoles.userId, u.id), eq(schema.userRoles.status, 'active')));
-      const roleIds = roleRows.map((r0: { roleId: string }) => r0.roleId);
-      if (!roleIds.length) {
-        res.json([]);
-        return;
-      }
+      // Кандидаты отбираются В SQL до какого-либо лимита (фикс LIMIT-100: раньше
+      // грузились 100 новейших открытых заявок и фильтровались после — при >100
+      // заявок в работе инбокс согласующего пустел). Общий с KPI дашборда хелпер.
+      const all = await inboxCandidates(db, u.id, u.holdingId);
 
-      // 2. Find workflow steps these roles can act on
-      // 3. Load only in-flight requests in this holding with a currentStepId
-      const rows = await db
-        .select()
-        .from(schema.requests)
-        .where(
-          and(
-            eq(schema.requests.holdingId, u.holdingId),
-            notInArray(schema.requests.status, ['closed', 'rejected', 'draft', 'approved']),
-          ),
-        )
-        .orderBy(desc(schema.requests.createdAt))
-        .limit(100);
+      // Пагинация: ?limit (1..200, по умолчанию 100) и ?offset — применяются к
+      // УЖЕ отфильтрованному списку, поэтому «дальние» заявки не теряются.
+      const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
+      const offset = Math.max(0, Number(req.query.offset) || 0);
 
-      // 4. Only check availableActions for requests on a step this user might handle
+      // availableActions — финальная проверка прав на каждом кандидате.
       const inbox: unknown[] = [];
-      for (const r0 of rows) {
-        if (!r0.currentStepId) continue;
-        // Quick pre-check: the step must exist (role-based or permission-based)
+      let matched = 0;
+      for (const r0 of all) {
         const actions = await availableActions(db, r0, u.id);
-        if (actions.length > 0) {
-          inbox.push({
-            id: r0.id,
-            requestNumber: r0.requestNumber,
-            title: r0.title,
-            status: r0.status,
-            statusLabel: await statusLabelFor(db, r0),
-            estimatedAmount: r0.estimatedAmount,
-            actions,
-          });
-        }
+        if (actions.length === 0) continue;
+        matched++;
+        if (matched <= offset) continue;
+        inbox.push({
+          id: r0.id,
+          requestNumber: r0.requestNumber,
+          title: r0.title,
+          status: r0.status,
+          statusLabel: await statusLabelFor(db, r0),
+          estimatedAmount: r0.estimatedAmount,
+          actions,
+        });
+        if (inbox.length >= limit) break;
       }
       res.json(inbox);
     } catch (e) {
@@ -479,8 +588,10 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      // Visibility: own-or-oversight; 404 (not 403) so a foreign id doesn't reveal existence. (H3)
-      if (!(await userCanSeeRequest(db, u.id, reqRow))) {
+      // Visibility (bug #2): own + involved + role-in-workflow; top roles see all.
+      // 404 (not 403) so a foreign id doesn't reveal existence. (H3)
+      const detailVis = await getRequestVisibility(db, u.id);
+      if (!detailVis.canSee(reqRow)) {
         res.status(404).json({ error: 'Not found' });
         return;
       }
@@ -498,7 +609,11 @@ export function buildRouter(deps: RouterDeps): Router {
         .where(eq(schema.requestStatusHistory.requestId, reqRow.id))
         .orderBy(schema.requestStatusHistory.createdAt);
       // Enrich each history row with WHO acted (name + their role) for the timeline.
-      const actorIds = [...new Set(statusHistory.map((h: { changedBy: string | null }) => h.changedBy).filter(Boolean))] as string[];
+      // Covers both status-history changers and approval actors (for per-step who/when).
+      const actorIds = [...new Set([
+        ...statusHistory.map((h: { changedBy: string | null }) => h.changedBy),
+        ...approvals.map((a: { approverUserId: string | null }) => a.approverUserId),
+      ].filter(Boolean))] as string[];
       const actorMap = new Map<string, { name: string; role: string | null }>();
       if (actorIds.length) {
         const us = await db
@@ -532,8 +647,12 @@ export function buildRouter(deps: RouterDeps): Router {
             .orderBy(schema.quotations.createdAt)
         : [];
       const actions = await availableActions(db, reqRow, u.id);
-      // Build workflow timeline: all steps with completed/current/future state
-      let workflowTimeline: { stepName: string; stepKind: string; state: 'completed' | 'current' | 'future' }[] = [];
+      // Build workflow timeline with per-step state + WHO/WHEN acted (bugs #4, #7, #10).
+      type TLState = 'completed' | 'current' | 'future' | 'rejected';
+      let workflowTimeline: {
+        stepId: string; stepName: string; stepKind: string; state: TLState;
+        actorName: string | null; actorRole: string | null; at: unknown; action: string | null;
+      }[] = [];
       if (reqRow.workflowId) {
         const allSteps = await db
           .select()
@@ -542,30 +661,98 @@ export function buildRouter(deps: RouterDeps): Router {
         const sorted = allSteps
           .filter((s: { enabled: boolean }) => s.enabled !== false)
           .sort((a: { stepOrder: number }, b: { stepOrder: number }) => a.stepOrder - b.stepOrder);
+
+        // Resolved action per step (approved / rejected) from the approvals rows.
+        const stepAction = new Map<string, { action: string; at: unknown; actorId: string | null }>();
+        for (const a of approvals as { workflowStepId: string | null; status: string; approvedAt: unknown; approverUserId: string | null }[]) {
+          if (a.workflowStepId && (a.status === 'approved' || a.status === 'rejected')) {
+            stepAction.set(a.workflowStepId, { action: a.status, at: a.approvedAt, actorId: a.approverUserId });
+          }
+        }
+        // Rejected request → the step where it was rejected splits the timeline. (#4)
+        const rejectedStep = sorted.find((s: { id: string }) => stepAction.get(s.id)?.action === 'rejected');
+        const rejectedOrder = rejectedStep ? (rejectedStep as { stepOrder: number }).stepOrder : null;
+
         let foundCurrent = false;
         for (const s of sorted) {
-          let state: 'completed' | 'current' | 'future';
-          if (reqRow.currentStepId === s.id) {
+          let state: TLState;
+          if (rejectedOrder != null) {
+            // A rejected chain: steps before are done, the rejection step is red,
+            // everything after was never reached.
+            if ((s as { stepOrder: number }).stepOrder < rejectedOrder) state = 'completed';
+            else if ((s as { stepOrder: number }).stepOrder === rejectedOrder) state = 'rejected';
+            else state = 'future';
+          } else if (reqRow.currentStepId === s.id) {
             state = 'current';
             foundCurrent = true;
-          } else if (!foundCurrent && reqRow.currentStepId) {
+          } else if (reqRow.currentStepId && !foundCurrent) {
             state = 'completed';
           } else if (!reqRow.currentStepId) {
-            // Terminal state (approved/rejected/closed) — all steps are completed
-            state = 'completed';
+            state = 'completed'; // approved/closed terminal — all done
           } else {
             state = 'future';
           }
-          workflowTimeline.push({ stepName: s.stepName, stepKind: s.stepKind, state });
+          const act = stepAction.get(s.id);
+          const actor = act?.actorId ? actorMap.get(act.actorId) : undefined;
+          workflowTimeline.push({
+            stepId: s.id,
+            stepName: s.stepName,
+            stepKind: s.stepKind,
+            state,
+            action: act?.action ?? null,
+            at: act?.at ?? null,
+            actorName: actor?.name ?? null,
+            actorRole: actor?.role ?? null,
+          });
         }
       }
+
+      // Resolve human names for the full info card (bug #9).
+      const [requesterRow] = reqRow.requesterId
+        ? await db.select({ name: schema.users.fullName }).from(schema.users).where(eq(schema.users.id, reqRow.requesterId))
+        : [];
+      const [respRow] = reqRow.responsibleUserId
+        ? await db.select({ name: schema.users.fullName }).from(schema.users).where(eq(schema.users.id, reqRow.responsibleUserId))
+        : [];
+      const [facRow] = reqRow.factoryId
+        ? await db.select({ name: schema.factories.name }).from(schema.factories).where(eq(schema.factories.id, reqRow.factoryId))
+        : [];
+      const [depRow] = reqRow.departmentId
+        ? await db.select({ name: schema.departments.name }).from(schema.departments).where(eq(schema.departments.id, reqRow.departmentId))
+        : [];
+
+      // Progress starts with the REQUESTER (who created it), then the approval steps.
+      workflowTimeline.unshift({
+        stepId: 'created',
+        stepName: 'Заявка создана',
+        stepKind: 'created',
+        state: 'completed',
+        action: 'created',
+        at: reqRow.createdAt,
+        actorName: requesterRow?.name ?? null,
+        actorRole: 'Заявитель',
+      });
+
+      // Money is visible to the procurement manager and everyone above (bug #9):
+      // same gate as КП. Others get null money fields instead of the values.
+      const canSeeMoney = canSeeQuotes;
+      const itemsOut = items.map((it: any) =>
+        canSeeMoney ? it : { ...it, estimatedPrice: null, totalAmount: null },
+      );
+
       res.json({
         ...reqRow,
+        estimatedAmount: canSeeMoney ? reqRow.estimatedAmount : null,
+        requesterName: requesterRow?.name ?? null,
+        responsibleName: respRow?.name ?? null,
+        factoryName: facRow?.name ?? null,
+        departmentNameResolved: depRow?.name ?? reqRow.departmentName ?? null,
         statusLabel: await statusLabelFor(db, reqRow),
-        items,
+        items: itemsOut,
         approvals,
         statusHistory: statusHistoryOut,
         quotations,
+        canSeeMoney,
         actions,
         workflowTimeline,
       });
@@ -576,6 +763,103 @@ export function buildRouter(deps: RouterDeps): Router {
 
   // Lifecycle transition — guarded by status × permission × scope × PIN/comment,
   // writes status history + DNA audit log atomically.
+  // Bug #5: the AUTHOR may cancel their own request while no one has approved it yet.
+  // Soft cancel (status='cancelled') — the row and full history are kept (who/when/why).
+  r.post('/requests/:id/cancel', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      if (!reqRow || reqRow.holdingId !== u.holdingId) { res.status(404).json({ error: 'Not found' }); return; }
+      if (reqRow.requesterId !== u.id) { res.status(403).json({ error: 'Отменить заявку может только её автор' }); return; }
+      if (isTerminalStatus(reqRow.status)) { res.status(409).json({ error: 'Заявка уже завершена' }); return; }
+      // Only before ANY human approval (auto-skips do not count).
+      const approved = await db
+        .select({ id: schema.approvals.id })
+        .from(schema.approvals)
+        .where(and(eq(schema.approvals.requestId, reqRow.id), eq(schema.approvals.status, 'approved')));
+      if (approved.length) { res.status(409).json({ error: 'Заявку уже начали согласовывать — отменить нельзя' }); return; }
+      const reason = String((req.body ?? {}).reason ?? '').trim();
+      await db.transaction(async (tx: Db) => {
+        await tx.update(schema.requests)
+          .set({ status: 'cancelled', currentStepId: null, closedAt: new Date(), updatedAt: new Date() })
+          .where(eq(schema.requests.id, reqRow.id));
+        await tx.update(schema.approvals)
+          .set({ status: 'cancelled' })
+          .where(and(eq(schema.approvals.requestId, reqRow.id), eq(schema.approvals.status, 'pending')));
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: reqRow.id, oldStatus: reqRow.status, newStatus: 'cancelled',
+          changedBy: u.id, source: 'cancel', comment: reason || 'Отменена автором',
+        });
+        await tx.insert(schema.auditLogs).values({
+          holdingId: reqRow.holdingId, factoryId: reqRow.factoryId, userId: u.id,
+          action: 'request.cancelled', module: 'requests', entityType: 'request', entityId: reqRow.id,
+          oldValue: { status: reqRow.status, requestNumber: reqRow.requestNumber, title: reqRow.title },
+          newValue: { status: 'cancelled', reason: reason || null },
+          source: 'api',
+        });
+      });
+      res.json({ ok: true, status: 'cancelled' });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Bug #3: configurable rejection-reason presets for the current step's role.
+  r.get('/requests/:id/reject-reasons', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      if (!reqRow || reqRow.holdingId !== u.holdingId) { res.json({ reasons: [] }); return; }
+      let roleCode: string | null = null;
+      if (reqRow.currentStepId) {
+        const [step] = await db.select({ rid: schema.workflowSteps.approverRoleId }).from(schema.workflowSteps).where(eq(schema.workflowSteps.id, reqRow.currentStepId));
+        if (step?.rid) {
+          const [role] = await db.select({ code: schema.roles.code }).from(schema.roles).where(eq(schema.roles.id, step.rid));
+          roleCode = role?.code ?? null;
+        }
+      }
+      const rows = await db
+        .select()
+        .from(schema.rejectionReasons)
+        .where(
+          and(
+            eq(schema.rejectionReasons.isActive, true),
+            or(isNull(schema.rejectionReasons.holdingId), eq(schema.rejectionReasons.holdingId, u.holdingId as string)),
+            or(isNull(schema.rejectionReasons.roleCode), roleCode ? eq(schema.rejectionReasons.roleCode, roleCode) : isNull(schema.rejectionReasons.roleCode)),
+          ),
+        )
+        .orderBy(schema.rejectionReasons.sortOrder);
+      const seen = new Set<string>();
+      const reasons = rows
+        .map((r: { text: string }) => r.text)
+        .filter((t: string) => (seen.has(t) ? false : (seen.add(t), true)));
+      res.json({ reasons });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Bug #8: procurement people the head can assign a request to (active users with
+  // a procurement permission in the holding).
+  r.get('/procurement/assignees', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId) { res.json({ users: [] }); return; }
+      const users = await db
+        .select({ id: schema.users.id, fullName: schema.users.fullName })
+        .from(schema.users)
+        .where(and(eq(schema.users.holdingId, u.holdingId), eq(schema.users.status, 'active')));
+      const out: { id: string; fullName: string | null }[] = [];
+      for (const usr of users) {
+        const codes = await getUserPermissionCodes(db, usr.id);
+        if (['procurement.quote', 'procurement.select_supplier', 'procurement.view'].some((p) => codes.includes(p))) out.push(usr);
+      }
+      res.json({ users: out });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.post('/requests/:id/action', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
@@ -594,6 +878,7 @@ export function buildRouter(deps: RouterDeps): Router {
         supplierId: body.supplierId,
         leadTime: body.leadTime,
         quotationId: body.quotationId,
+        assigneeId: body.assigneeId,
       });
       // Notify next step's approvers + notify requester about progress
       if (result.currentStepId) {
@@ -603,6 +888,9 @@ export function buildRouter(deps: RouterDeps): Router {
         notifyRequester(db, notify, result.id, (rn) => approvedFinalMessage(rn));
       } else if (result.status === 'rejected') {
         notifyRequester(db, notify, result.id, (rn) => rejectedMessage(rn, String(body.comment ?? '').trim()));
+      } else if (result.status === 'needs_revision' && result.status !== fromStatus) {
+        // Ветка «вернуть на доработку»: автор должен узнать сразу, не заходя в приложение.
+        notifyRequester(db, notify, result.id, (rn) => needsRevisionMessage(rn, String(body.comment ?? '').trim()));
       } else if (result.currentStepId && result.status !== fromStatus) {
         // Only notify about stage progression when status actually changed
         notifyRequester(db, notify, result.id, (rn) => approvedStageMessage(rn));
@@ -637,13 +925,82 @@ export function buildRouter(deps: RouterDeps): Router {
   r.post('/me/pin', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
-      const pin = String((req.body ?? {}).pin ?? '').trim();
+      const body = req.body ?? {};
+      const pin = String(body.pin ?? '').trim();
       if (!/^\d{4,8}$/.test(pin)) {
         res.status(400).json({ error: 'PIN — 4–8 цифр' });
         return;
       }
+      const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+      // P2-2: changing an EXISTING PIN requires the current PIN (with lockout).
+      // A stolen 7-day session must not be enough to reset the signing PIN.
+      if (full?.pinHash) {
+        if (pinLockoutRemaining(u.id) > 0) {
+          res.status(429).json({ error: 'Слишком много попыток PIN — попробуйте позже' });
+          return;
+        }
+        const oldPin = String(body.oldPin ?? '');
+        if (!verifyPin(oldPin, full.pinHash)) {
+          recordPinFailure(u.id);
+          res.status(403).json({ error: 'Неверный текущий PIN' });
+          return;
+        }
+        clearPinFailures(u.id);
+      }
       await db.update(schema.users).set({ pinHash: hashPin(pin) }).where(eq(schema.users.id, u.id));
+      // Never log the PIN itself — only that it changed.
+      await db.insert(schema.auditLogs).values({
+        holdingId: u.holdingId ?? null,
+        userId: u.id,
+        action: full?.pinHash ? 'pin.changed' : 'pin.set',
+        module: 'auth',
+        entityType: 'user',
+        entityId: u.id,
+        source: 'api',
+      });
       res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Notification center (P1-6): a user's own persisted notifications ──────────
+  r.get('/me/notifications', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const unreadOnly = String((req.query.unread ?? '')) === '1';
+      const items = await listUserNotifications(db, u.id, { unreadOnly });
+      res.json({ items, unread: await unreadCount(db, u.id) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.get('/me/notifications/unread-count', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      res.json({ unread: await unreadCount(db, u.id) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/me/notifications/:id/read', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const ok = await markRead(db, u.id, String(req.params.id));
+      if (!ok) { res.status(404).json({ error: 'Not found' }); return; }
+      res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/me/notifications/read-all', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const count = await markAllRead(db, u.id);
+      res.json({ ok: true, count });
     } catch (e) {
       next(e);
     }
@@ -732,8 +1089,9 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      // Only editable in early stages
-      const EDITABLE = ['draft', 'pending_approval'];
+      // Only editable in early stages — плюс «на доработке»: возврат автору
+      // затем и существует, чтобы он поправил заявку перед повторной отправкой.
+      const EDITABLE = ['draft', 'pending_approval', 'needs_revision'];
       if (!EDITABLE.includes(reqRow.status)) {
         res.status(409).json({ error: 'Заявку нельзя редактировать на этом этапе' });
         return;
@@ -795,8 +1153,16 @@ export function buildRouter(deps: RouterDeps): Router {
           warehouseName: schema.warehouses.name,
         })
         .from(schema.stockBalances)
-        .innerJoin(schema.materials, eq(schema.materials.id, schema.stockBalances.materialId))
-        .leftJoin(schema.warehouses, eq(schema.warehouses.id, schema.stockBalances.warehouseId))
+        // P2-3: joins are holding-scoped too (defense in depth) so a cross-holding
+        // material/warehouse name can never leak through the join.
+        .innerJoin(
+          schema.materials,
+          and(eq(schema.materials.id, schema.stockBalances.materialId), eq(schema.materials.holdingId, u.holdingId)),
+        )
+        .leftJoin(
+          schema.warehouses,
+          and(eq(schema.warehouses.id, schema.stockBalances.warehouseId), eq(schema.warehouses.holdingId, u.holdingId)),
+        )
         .where(eq(schema.stockBalances.holdingId, u.holdingId));
       res.json(rows);
     } catch (e) {
@@ -819,13 +1185,15 @@ export function buildRouter(deps: RouterDeps): Router {
       const materialId = String(body.materialId ?? '');
       const [mat] = await db.select().from(schema.materials).where(and(eq(schema.materials.id, materialId), eq(schema.materials.holdingId, u.holdingId!)));
       if (!mat) { res.status(400).json({ error: 'Material not found in your holding' }); return; }
+      const scoped = await validateWarehouseScope(db, u.holdingId!, body.warehouseId, body.requestId);
+      if (scoped.error) { res.status(400).json({ error: scoped.error }); return; }
       const result = await receiveStock(db, {
         holdingId: u.holdingId,
         materialId,
-        warehouseId: body.warehouseId ?? null,
+        warehouseId: scoped.warehouseId,
         quantity,
         performedBy: u.id,
-        requestId: body.requestId ?? null,
+        requestId: scoped.requestId,
         reason: body.reason ?? null,
       });
       res.json(result);
@@ -849,13 +1217,15 @@ export function buildRouter(deps: RouterDeps): Router {
       const materialId = String(body.materialId ?? '');
       const [mat] = await db.select().from(schema.materials).where(and(eq(schema.materials.id, materialId), eq(schema.materials.holdingId, u.holdingId!)));
       if (!mat) { res.status(400).json({ error: 'Material not found in your holding' }); return; }
+      const scoped = await validateWarehouseScope(db, u.holdingId!, body.warehouseId, body.requestId);
+      if (scoped.error) { res.status(400).json({ error: scoped.error }); return; }
       const result = await issueStock(db, {
         holdingId: u.holdingId,
         materialId,
-        warehouseId: body.warehouseId ?? null,
+        warehouseId: scoped.warehouseId,
         quantity,
         performedBy: u.id,
-        requestId: body.requestId ?? null,
+        requestId: scoped.requestId,
         reason: body.reason ?? null,
       });
       res.json(result);

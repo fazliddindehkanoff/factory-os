@@ -1,13 +1,27 @@
 const TOKEN_KEY = 'factoryos.token';
+const TEST_USER_KEY = 'factoryos.testUser';
 
+// Test mode (docs/TEST_MODE.md): a window logged in via `?user=<test login>` keeps
+// its token in sessionStorage, so several windows can hold DIFFERENT users at the
+// same time. localStorage stays the normal single-user store (Telegram login).
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
 }
-export function setToken(t: string): void {
-  localStorage.setItem(TOKEN_KEY, t);
+export function setToken(t: string, opts?: { perWindow?: boolean }): void {
+  if (opts?.perWindow || sessionStorage.getItem(TOKEN_KEY) != null) sessionStorage.setItem(TOKEN_KEY, t);
+  else localStorage.setItem(TOKEN_KEY, t);
 }
 export function clearToken(): void {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TEST_USER_KEY);
   localStorage.removeItem(TOKEN_KEY);
+}
+/** The test-user login this WINDOW is pinned to (test mode only). */
+export function getTestUser(): string | null {
+  return sessionStorage.getItem(TEST_USER_KEY);
+}
+export function setTestUser(username: string): void {
+  sessionStorage.setItem(TEST_USER_KEY, username);
 }
 
 async function call(path: string, opts: RequestInit = {}, retried = false): Promise<any> {
@@ -73,19 +87,34 @@ export const api = {
     call('/auth/telegram', { method: 'POST', body: JSON.stringify({ initData }) }),
   loginDev: (telegramId: string) =>
     call('/auth/dev', { method: 'POST', body: JSON.stringify({ telegramId }) }),
+  // Dev/test only — 404 in production (stealth), callers must swallow the error.
+  devUsers: (): Promise<{ users: { username: string; fullName: string; roles: string[] }[]; pin: string }> =>
+    call('/dev/users'),
   me: () => call('/me'),
   config: () => call('/config'),
   form: (screen: string) => call('/form/' + screen),
   dashboard: () => call('/dashboard'),
-  listRequests: (opts?: { limit?: number; offset?: number }) => {
+  notificationsUnreadCount: () => call('/me/notifications/unread-count'),
+  notifications: (unreadOnly?: boolean) => call('/me/notifications' + (unreadOnly ? '?unread=1' : '')),
+  markNotificationRead: (id: string) => call(`/me/notifications/${id}/read`, { method: 'POST' }),
+  markAllNotificationsRead: () => call('/me/notifications/read-all', { method: 'POST' }),
+  listRequests: (opts?: { limit?: number; offset?: number; search?: string; status?: string }) => {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));
     if (opts?.offset) params.set('offset', String(opts.offset));
+    // P1-7: search/filter run server-side so they match across the whole holding,
+    // not just the current page.
+    if (opts?.search) params.set('search', opts.search);
+    if (opts?.status) params.set('status', opts.status);
     const qs = params.toString();
     return call('/requests' + (qs ? '?' + qs : ''));
   },
   inbox: () => call('/requests/inbox'),
   getRequest: (id: string) => call('/requests/' + id),
+  cancelRequest: (id: string, reason?: string) =>
+    call(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason ?? '' }) }),
+  rejectReasons: (id: string) => call(`/requests/${id}/reject-reasons`),
+  procurementAssignees: (): Promise<{ users: { id: string; fullName: string | null }[] }> => call('/procurement/assignees'),
   createRequest: (data: CreateRequestData) =>
     call('/requests', { method: 'POST', body: JSON.stringify(data) }),
   approve: (id: string, comment?: string) =>
@@ -217,12 +246,30 @@ export const api = {
       call('/admin/workflows/' + id, { method: 'PUT', body: JSON.stringify(patch) }),
     addStep: (
       wfId: string,
-      data: { name: string; step_kind?: string; approver_role_id: string | null; order_index: number; threshold_amount: number | null },
+      data: {
+        name: string;
+        step_kind?: string;
+        approver_role_id: string | null;
+        order_index: number;
+        threshold_amount: number | null;
+        condition_rule?: Record<string, unknown> | null;
+        on_reject?: string;
+        on_reject_step_order?: number | null;
+      },
     ) => call(`/admin/workflows/${wfId}/steps`, { method: 'POST', body: JSON.stringify(data) }),
     updateStep: (
       wfId: string,
       stepId: string,
-      patch: Partial<{ name: string; step_kind: string; approver_role_id: string | null; order_index: number; threshold_amount: number | null }>,
+      patch: Partial<{
+        name: string;
+        step_kind: string;
+        approver_role_id: string | null;
+        order_index: number;
+        threshold_amount: number | null;
+        condition_rule: Record<string, unknown> | null;
+        on_reject: string;
+        on_reject_step_order: number | null;
+      }>,
     ) => call(`/admin/workflows/${wfId}/steps/${stepId}`, { method: 'PUT', body: JSON.stringify(patch) }),
     deleteStep: (wfId: string, stepId: string) =>
       call(`/admin/workflows/${wfId}/steps/${stepId}`, { method: 'DELETE' }),

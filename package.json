@@ -14,6 +14,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed-cli.ts",
     "seed:pilot": "tsx src/db/seed-pilot-cli.ts",
+    "seed:test": "tsx src/db/seed-test-cli.ts",
+    "seed:test-logins": "tsx src/db/seed-test-logins-cli.ts",
     "seed:demo-workflows": "tsx src/db/seed-demo-workflows-cli.ts",
     "tenant:setup": "tsx src/db/tenant-setup-cli.ts",
     "smoke:golden": "tsx src/smoke/golden.ts"

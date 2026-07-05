@@ -122,6 +122,9 @@ describe('C1 — approve endpoint is fail-closed', () => {
     const { app, db, holding, factory } = await make();
     // Same person creates AND would approve (has both requester + director).
     const self = await userWithRoles(db, holding, ['requester', 'director'], 'self', PIN);
+    // A SECOND director must exist, else the director step is auto-skipped (bug #1);
+    // here we test that self-approval stays blocked while the step is live.
+    await userWithRoles(db, holding, ['director'], 'dir2', PIN);
     const { approvalId } = await approvalFlow(db, holding, factory, self, await roleId(db, 'director'));
     const tk = await login(app, 'self');
 

@@ -52,6 +52,11 @@ export interface StepActionDef {
    * on the same step (e.g. recording another quotation before a supplier is picked).
    */
   advance: boolean;
+  /**
+   * Bug #8: assign a specific procurement person. Requires an `assigneeId`; sets
+   * request.responsibleUserId so ONLY that person works the procurement step.
+   */
+  assign?: boolean;
 }
 
 /**
@@ -70,6 +75,8 @@ const REJECT: StepActionDef = {
 export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   approval: [
     { action: 'approve', label: 'Согласовать', perm: 'approvals.approve', pin: true, advance: true },
+    // Bug #8: only surfaced when the NEXT step is procurement (see availableActions).
+    { action: 'assign_procurement', label: 'Передать снабженцу', perm: 'approvals.approve', pin: true, assign: true, advance: true },
     REJECT,
   ],
   warehouse_check: [
@@ -121,9 +128,41 @@ export const STEP_KIND_LABELS: Record<StepKind, string> = {
 export const TERMINAL_APPROVED = 'approved';
 export const TERMINAL_CLOSED = 'closed';
 export const TERMINAL_REJECTED = 'rejected';
+export const TERMINAL_CANCELLED = 'cancelled';
+export const TERMINAL_ARCHIVED = 'archived';
+
+/**
+ * Every status in which a request is finished / no longer in-flight. Single
+ * source of truth — dashboards, workflow in-flight checks and override guards
+ * all consult this so `closed`/`cancelled`/`archived` can never be forgotten in
+ * one place and treated as "still active" in another. (P2-1)
+ */
+export const TERMINAL_STATUSES: readonly string[] = [
+  TERMINAL_APPROVED,
+  TERMINAL_CLOSED,
+  TERMINAL_REJECTED,
+  TERMINAL_CANCELLED,
+  TERMINAL_ARCHIVED,
+];
+
+/** True if `status` is a finished/terminal request state. */
+export function isTerminalStatus(status: string): boolean {
+  return TERMINAL_STATUSES.includes(status);
+}
 
 /** In-flight status name for an approval step (kept for compat with approval.service). */
 export const STATUS_PENDING_APPROVAL = 'pending_approval';
+
+/**
+ * Не-терминальный статус «на доработке»: шаг с политикой return_requester
+ * вернул заявку автору; автор правит и выполняет действие `resubmit`, которое
+ * заново прокладывает маршрут с первого применимого шага.
+ */
+export const STATUS_NEEDS_REVISION = 'needs_revision';
+
+/** Политика «Если отклонил» шага (workflow_steps.on_reject). */
+export type OnRejectPolicy = 'cancel' | 'return_requester' | 'return_step';
+export const ON_REJECT_POLICIES: readonly OnRejectPolicy[] = ['cancel', 'return_requester', 'return_step'];
 
 /**
  * The request.status text while it sits on a given step. Approval steps use the
@@ -150,4 +189,6 @@ export interface KindStep extends StepLike {
   stepKind: string;
   stepName?: string | null;
   approverRoleId?: string | null;
+  onReject?: OnRejectPolicy | string | null;
+  onRejectStepOrder?: number | null;
 }

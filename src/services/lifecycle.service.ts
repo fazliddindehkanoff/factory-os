@@ -11,23 +11,27 @@
  * the new status, a status-history row, approval/signature bookkeeping and a DNA
  * audit log.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
-import { hasPermission, scopeCovers, type Scope } from '../rbac/rbac.js';
+import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
 import { verifyPin } from '../auth/pin.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from '../http/rate-limit.js';
 import { applyStockOp } from './warehouse.service.js';
-import { nextStep, firstStep, type WorkflowContext } from '../workflow/engine.js';
+import { nextStep, firstStep, applicableSteps, type WorkflowContext } from '../workflow/engine.js';
 import {
   actionsForKind,
   findKindAction,
   statusForStep,
   STEP_KIND_LABELS,
+  STEP_KINDS,
+  STATUS_NEEDS_REVISION,
   TERMINAL_APPROVED,
   TERMINAL_CLOSED,
   TERMINAL_REJECTED,
+  TERMINAL_STATUSES,
   type KindStep,
+  type OnRejectPolicy,
   type StepActionDef,
 } from '../workflow/step-kinds.js';
 
@@ -40,6 +44,7 @@ interface RequestRow {
   factoryId: string | null;
   departmentId: string | null;
   requesterId: string;
+  responsibleUserId: string | null;
   requestType: string;
   status: string;
   workflowId: string | null;
@@ -65,6 +70,7 @@ const TERMINAL_LABELS: Record<string, string> = {
   [TERMINAL_APPROVED]: 'Согласована',
   [TERMINAL_CLOSED]: 'Закрыта',
   [TERMINAL_REJECTED]: 'Отклонена',
+  [STATUS_NEEDS_REVISION]: 'На доработке',
   draft: 'Черновик',
 };
 
@@ -84,6 +90,8 @@ export async function loadKindSteps(db: Db, workflowId: string): Promise<KindSte
     thresholdAmount: s.thresholdAmount,
     isRequired: s.isRequired,
     enabled: s.enabled,
+    onReject: s.onReject,
+    onRejectStepOrder: s.onRejectStepOrder,
   }));
 }
 
@@ -96,6 +104,72 @@ export async function firstStepForRequest(
   const steps = await loadKindSteps(db, workflowId);
   return firstStep(steps, ctx);
 }
+
+/**
+ * Bug #1: an approval step is auto-skipped ONLY when the request's author HOLDS that
+ * step's role AND is its sole holder in the holding. If the author doesn't hold the
+ * role, or someone else also holds it, the step is NOT skipped (preserves normal
+ * behaviour, incl. steps whose role currently has no holder). Non-approval steps are
+ * never auto-skipped — they are real work.
+ */
+async function shouldAutoSkipStep(
+  db: Db,
+  step: KindStep,
+  requesterId: string,
+  holdingId: string,
+): Promise<boolean> {
+  if (step.stepKind !== 'approval' || !step.approverRoleId) return false;
+  const holders = await db
+    .select({ uid: schema.userRoles.userId })
+    .from(schema.userRoles)
+    .where(
+      and(
+        eq(schema.userRoles.roleId, step.approverRoleId),
+        eq(schema.userRoles.status, 'active'),
+        eq(schema.userRoles.holdingId, holdingId),
+      ),
+    );
+  const uids = new Set(holders.map((h: { uid: string }) => h.uid));
+  return uids.has(requesterId) && uids.size === 1;
+}
+
+/**
+ * Walk forward from `start`, skipping approval steps whose only eligible approver is
+ * the requester (bug #1). Pure — records nothing; returns the landing step (or null)
+ * plus the list of steps that were skipped so the caller can log them.
+ */
+async function resolveSkippingSelfApprovals(
+  db: Db,
+  steps: KindStep[],
+  ctx: WorkflowContext,
+  requesterId: string,
+  holdingId: string,
+  start: KindStep | null,
+): Promise<{ step: KindStep | null; skipped: KindStep[] }> {
+  const skipped: KindStep[] = [];
+  let cur = start;
+  while (cur && (await shouldAutoSkipStep(db, cur, requesterId, holdingId))) {
+    skipped.push(cur);
+    cur = nextStep(steps, ctx, cur.stepOrder) as KindStep | null;
+  }
+  return { step: cur, skipped };
+}
+
+/** Landing step for a fresh request AFTER auto-skipping the requester's own approval
+ *  steps (bug #1), plus the skipped steps for the audit trail. */
+export async function initialPlacement(
+  db: Db,
+  workflowId: string,
+  ctx: WorkflowContext,
+  requesterId: string,
+  holdingId: string,
+): Promise<{ step: KindStep | null; skipped: KindStep[] }> {
+  const steps = await loadKindSteps(db, workflowId);
+  const first = firstStep(steps, ctx) as KindStep | null;
+  return resolveSkippingSelfApprovals(db, steps, ctx, requesterId, holdingId, first);
+}
+
+export { resolveSkippingSelfApprovals };
 
 async function loadStep(db: Db, stepId: string): Promise<KindStep | null> {
   const [s] = await db.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.id, stepId));
@@ -110,6 +184,8 @@ async function loadStep(db: Db, stepId: string): Promise<KindStep | null> {
     thresholdAmount: s.thresholdAmount,
     isRequired: s.isRequired,
     enabled: s.enabled,
+    onReject: s.onReject,
+    onRejectStepOrder: s.onRejectStepOrder,
   };
 }
 
@@ -149,6 +225,11 @@ async function actorMayAct(
   if (step.stepKind === 'approval' && !def.reject && step.approverRoleId) {
     if (!(await actorHoldsRoleInScope(db, userId, step.approverRoleId, scope))) return false;
   }
+  // Bug #8: once a specific procurement person is assigned, only THEY work the
+  // procurement step (others with the permission are locked out).
+  if (step.stepKind === 'procurement' && req.responsibleUserId && req.responsibleUserId !== userId) {
+    return false;
+  }
   return true;
 }
 
@@ -159,6 +240,7 @@ export interface UiAction {
   comment: boolean;
   amount: boolean;
   quote: 'add' | 'select' | null;
+  assign?: boolean;
 }
 
 const toUi = (a: StepActionDef): UiAction => ({
@@ -168,6 +250,7 @@ const toUi = (a: StepActionDef): UiAction => ({
   comment: !!a.comment,
   amount: !!a.amount,
   quote: a.quote ?? null,
+  assign: !!a.assign,
 });
 
 /**
@@ -189,16 +272,114 @@ async function canHandleStep(db: Db, userId: string, req: RequestRow, step: Kind
   return false;
 }
 
+/**
+ * Кандидаты инбокса «Ожидают меня» — SQL-префильтр ДО каких-либо лимитов (фикс
+ * LIMIT-100: раньше грузились 100 новейших открытых заявок и фильтровались после,
+ * поэтому при >100 заявок в работе инбокс согласующего пустел). Отбор по текущему
+ * шагу: approval — роль шага среди ролей пользователя; прочие виды — есть право
+ * хотя бы одного действия шага; close — только автор; procurement — чужое
+ * назначение отсекает; плюс собственные заявки «на доработке» (resubmit).
+ * availableActions остаётся финальным судьёй по каждому кандидату — здесь только
+ * сужение множества. Используется инбоксом И KPI дашборда, чтобы они совпадали.
+ */
+export async function inboxCandidates(db: Db, userId: string, holdingId: string): Promise<(RequestRow & { requestNumber: string; title: string | null; createdAt: unknown })[]> {
+  const roleRows = await db
+    .select({ roleId: schema.userRoles.roleId })
+    .from(schema.userRoles)
+    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
+  const roleIds = roleRows.map((r: { roleId: string }) => r.roleId);
+  const permCodes = await getUserPermissionCodes(db, userId);
+
+  const ws = schema.workflowSteps;
+  const stepConds: SQL[] = [];
+  if (roleIds.length) {
+    stepConds.push(and(eq(ws.stepKind, 'approval'), inArray(ws.approverRoleId, roleIds)) as SQL);
+  }
+  const workableKinds = STEP_KINDS.filter(
+    (k) =>
+      k !== 'approval' &&
+      k !== 'close' &&
+      k !== 'procurement' &&
+      actionsForKind(k).some((a) => !a.reject && permCodes.includes(a.perm)),
+  );
+  if (workableKinds.length) stepConds.push(inArray(ws.stepKind, workableKinds) as SQL);
+  if (actionsForKind('close').some((a) => !a.reject && permCodes.includes(a.perm))) {
+    stepConds.push(and(eq(ws.stepKind, 'close'), eq(schema.requests.requesterId, userId)) as SQL);
+  }
+  if (actionsForKind('procurement').some((a) => !a.reject && permCodes.includes(a.perm))) {
+    stepConds.push(
+      and(
+        eq(ws.stepKind, 'procurement'),
+        or(isNull(schema.requests.responsibleUserId), eq(schema.requests.responsibleUserId, userId)),
+      ) as SQL,
+    );
+  }
+
+  const candidates = stepConds.length
+    ? await db
+        .select({ r: schema.requests })
+        .from(schema.requests)
+        .innerJoin(ws, eq(schema.requests.currentStepId, ws.id))
+        .where(
+          and(
+            eq(schema.requests.holdingId, holdingId),
+            notInArray(schema.requests.status, [...TERMINAL_STATUSES, 'draft']),
+            or(...stepConds),
+          ),
+        )
+        .orderBy(desc(schema.requests.createdAt))
+    : [];
+
+  // «На доработке» ждёт самого автора; у таких заявок нет текущего шага.
+  const revisions = await db
+    .select()
+    .from(schema.requests)
+    .where(
+      and(
+        eq(schema.requests.holdingId, holdingId),
+        eq(schema.requests.status, STATUS_NEEDS_REVISION),
+        eq(schema.requests.requesterId, userId),
+      ),
+    )
+    .orderBy(desc(schema.requests.createdAt));
+
+  const all = [...revisions, ...candidates.map((c: { r: RequestRow }) => c.r)];
+  all.sort(
+    (a: any, b: any) => new Date(b.createdAt as string).getTime() - new Date(a.createdAt as string).getTime(),
+  );
+  return all as (RequestRow & { requestNumber: string; title: string | null; createdAt: unknown })[];
+}
+
 /** Actions the user may take on this request right now (step kind × permission × scope × role). */
 export async function availableActions(db: Db, req: RequestRow, userId: string): Promise<UiAction[]> {
-  if (!req.currentStepId) return [];
+  if (!req.currentStepId) {
+    // «На доработке»: автор (и только он) отправляет заявку повторно.
+    if (
+      req.status === STATUS_NEEDS_REVISION &&
+      req.requesterId === userId &&
+      (await hasPermission(db, userId, 'requests.create', reqScope(req)))
+    ) {
+      return [{ action: 'resubmit', label: 'Отправить повторно', pin: false, comment: false, amount: false, quote: null }];
+    }
+    return [];
+  }
   const step = await loadStep(db, req.currentStepId);
   if (!step) return [];
+  // Bug #8: the "assign to procurement" action is offered on an approval step only
+  // when the NEXT step is a procurement step (i.e. the procurement head hands off).
+  let nextIsProcurement = false;
+  if (req.workflowId) {
+    const steps = await loadKindSteps(db, req.workflowId);
+    const ctx = reqContext({ estimatedAmount: req.estimatedAmount, inStock: req.inStock, requestType: req.requestType });
+    const nxt = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
+    nextIsProcurement = nxt?.stepKind === 'procurement';
+  }
   const defs = actionsForKind(step.stepKind);
   const out: UiAction[] = [];
   let isHandler = false;
   for (const a of defs) {
     if (a.reject) continue;
+    if (a.assign && !nextIsProcurement) continue; // assign only before a procurement step
     // Self-service on money/routing decisions is forbidden (separation of duties).
     if (sodBlocked(a, req, userId)) continue;
     if (a.requesterOnly && req.requesterId !== userId) continue;
@@ -234,6 +415,7 @@ export interface PerformInput {
   supplierId?: string;
   leadTime?: string;
   quotationId?: string;
+  assigneeId?: string;
 }
 
 /** Create the pending approval row a step needs when it is an approval step. */
@@ -250,6 +432,65 @@ export async function performAction(db: Db, input: PerformInput) {
     // Then use Drizzle select (returns camelCase fields)
     const [req] = (await tx.select().from(schema.requests).where(eq(schema.requests.id, input.requestId))) as RequestRow[];
     if (!req || req.holdingId !== input.actor.holdingId) throw new NotFoundError('Заявка не найдена');
+
+    // «На доработке» → повторная отправка автором: маршрут прокладывается заново
+    // с первого применимого шага (как при создании), с теми же авто-скипами.
+    if (input.action === 'resubmit') {
+      if (req.status !== STATUS_NEEDS_REVISION) throw new ConflictError('Заявка не на доработке');
+      if (req.requesterId !== input.actor.id) throw new ForbiddenError('Отправить повторно может только автор заявки');
+      if (!(await hasPermission(tx, input.actor.id, 'requests.create', reqScope(req)))) {
+        throw new ForbiddenError('Недостаточно прав для этого действия');
+      }
+      if (!req.workflowId) throw new ConflictError('Заявка не привязана к workflow');
+      const placement = await initialPlacement(tx, req.workflowId, reqContext(req), req.requesterId, req.holdingId);
+      for (const s of placement.skipped) {
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: req.id,
+          oldStatus: req.status,
+          newStatus: statusForStep(s),
+          changedBy: null,
+          source: 'auto_skip',
+          comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+        });
+      }
+      const landed = placement.step;
+      const rePatch: Record<string, unknown> = { updatedAt: new Date() };
+      let reTo: string;
+      if (landed) {
+        reTo = statusForStep(landed);
+        rePatch.currentStepId = landed.id;
+        await enterApprovalIfNeeded(tx, req.id, landed);
+      } else {
+        reTo = TERMINAL_APPROVED;
+        rePatch.currentStepId = null;
+        rePatch.closedAt = new Date();
+      }
+      rePatch.status = reTo;
+      await tx.update(schema.requests).set(rePatch).where(eq(schema.requests.id, req.id));
+      await tx.insert(schema.requestStatusHistory).values({
+        requestId: req.id,
+        oldStatus: req.status,
+        newStatus: reTo,
+        changedBy: input.actor.id,
+        comment: input.comment ?? null,
+        source: 'lifecycle',
+      });
+      await tx.insert(schema.auditLogs).values({
+        holdingId: req.holdingId,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'request.resubmit',
+        module: 'lifecycle',
+        entityType: 'request',
+        entityId: req.id,
+        oldValue: { status: req.status, stepId: null },
+        newValue: { status: reTo, stepId: (rePatch.currentStepId as string | null) ?? null },
+        source: 'lifecycle',
+      });
+      const [resubmitted] = await tx.select().from(schema.requests).where(eq(schema.requests.id, req.id));
+      return { ...resubmitted, warnings: [] };
+    }
+
     if (!req.currentStepId) {
       // Distinguish a never-started draft (no workflow matched at creation) from a
       // finished request — the old message misled users about drafts. (B10)
@@ -371,6 +612,34 @@ export async function performAction(db: Db, input: PerformInput) {
       if (Number.isFinite(n) && n >= 0) patch.estimatedAmount = Math.round(n);
     }
 
+    // Bug #8: assign a specific procurement person — only they will work the
+    // upcoming procurement step. Validate the assignee is an active procurement user.
+    if (def.assign) {
+      const assigneeId = String(input.assigneeId ?? '');
+      if (!assigneeId) throw new ValidationError('Выберите снабженца');
+      const [assignee] = await tx
+        .select()
+        .from(schema.users)
+        .where(and(eq(schema.users.id, assigneeId), eq(schema.users.holdingId, req.holdingId), eq(schema.users.status, 'active')));
+      if (!assignee) throw new ValidationError('Снабженец не найден в организации');
+      const acodes = await getUserPermissionCodes(tx, assigneeId);
+      if (!['procurement.quote', 'procurement.select_supplier', 'procurement.view'].some((p) => acodes.includes(p))) {
+        throw new ValidationError('У выбранного пользователя нет прав снабжения');
+      }
+      patch.responsibleUserId = assigneeId;
+      await tx.insert(schema.auditLogs).values({
+        holdingId: req.holdingId,
+        factoryId: req.factoryId,
+        userId: input.actor.id,
+        action: 'procurement.assigned',
+        module: 'procurement',
+        entityType: 'request',
+        entityId: req.id,
+        newValue: { assigneeId, assigneeName: assignee.fullName },
+        source: 'lifecycle',
+      });
+    }
+
     // Approval bookkeeping: mark this step's pending approval resolved + sign.
     if (step.stepKind === 'approval') {
       const [pending] = await tx
@@ -426,16 +695,52 @@ export async function performAction(db: Db, input: PerformInput) {
     let newCurrentStepId: string | null;
 
     if (def.reject) {
-      to = TERMINAL_REJECTED;
-      newCurrentStepId = null;
-      patch.closedAt = new Date();
+      // Ветка «Если отклонил» шага: отменить / вернуть автору / вернуть на шаг N.
+      const policy = (step.onReject ?? 'cancel') as OnRejectPolicy;
+      if (policy === 'return_requester') {
+        to = STATUS_NEEDS_REVISION;
+        newCurrentStepId = null;
+      } else if (policy === 'return_step' && req.workflowId && step.onRejectStepOrder != null) {
+        // Возврат допустим только на БОЛЕЕ РАННИЙ применимый шаг — вперёд и на
+        // самого себя нельзя (петля). Некорректная настройка → как cancel.
+        const steps = await loadKindSteps(tx, req.workflowId);
+        const target = (applicableSteps(steps, ctx) as KindStep[]).find(
+          (s) => s.stepOrder === step.onRejectStepOrder && s.stepOrder < step.stepOrder,
+        );
+        if (target) {
+          to = statusForStep(target);
+          newCurrentStepId = target.id;
+          await enterApprovalIfNeeded(tx, req.id, target);
+        } else {
+          to = TERMINAL_REJECTED;
+          newCurrentStepId = null;
+          patch.closedAt = new Date();
+        }
+      } else {
+        to = TERMINAL_REJECTED;
+        newCurrentStepId = null;
+        patch.closedAt = new Date();
+      }
     } else if (!def.advance) {
       // Stays on the same step (e.g. recording another quotation).
       to = from;
       newCurrentStepId = step.id;
     } else {
       const steps = await loadKindSteps(tx, req.workflowId!);
-      const next = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
+      let next = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
+      // Bug #1: auto-skip the next approval step(s) if the author is their only approver.
+      const selfSkip = await resolveSkippingSelfApprovals(tx, steps, ctx, req.requesterId, req.holdingId, next);
+      next = selfSkip.step;
+      for (const s of selfSkip.skipped) {
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: req.id,
+          oldStatus: from,
+          newStatus: statusForStep(s),
+          changedBy: null,
+          source: 'auto_skip',
+          comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+        });
+      }
       if (next) {
         to = statusForStep(next);
         newCurrentStepId = next.id;

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { api, clearToken, getToken, setToken, type CreateRequestData } from './api';
-import { getTelegram } from './telegram';
+import { api, clearToken, getToken, setToken, getTestUser, setTestUser, type CreateRequestData } from './api';
+import { getTelegram, confirmDialog, alertDialog } from './telegram';
 import { AdminPanel } from './admin/AdminPanel';
 import { WarehouseScreen } from './screens/Warehouse';
 import { InboxScreen } from './screens/Inbox';
 import { ProcurementScreen } from './screens/Procurement';
 import { Icon, TINT_BG, TINT_FG } from './icons';
 import { applyTheme, getTheme, type Theme } from './theme';
-import { DASHBOARD_ACTIONS, DASHBOARD_STATS } from './dashboard.config';
+import { DASHBOARD_ACTIONS } from './dashboard.config';
 // Single source of truth for status labels/progress (covers every workflow-driven
 // status incl. finance_payment/delivery/receiving/issue) — see screens/shared.tsx.
 import { statusMeta, progressOf } from './screens/shared';
@@ -49,6 +49,7 @@ interface LifecycleActionBtn {
   comment: boolean;
   amount: boolean;
   quote?: 'add' | 'select' | null;
+  assign?: boolean;
 }
 interface QuotationRow {
   id: string;
@@ -68,28 +69,50 @@ interface StatusHistoryRow {
   changedByRole?: string | null;
 }
 interface WorkflowTimelineStep {
+  stepId?: string;
   stepName: string;
   stepKind: string;
-  state: 'completed' | 'current' | 'future';
+  state: 'completed' | 'current' | 'future' | 'rejected';
+  actorName?: string | null;
+  actorRole?: string | null;
+  at?: string | null;
+  action?: string | null;
 }
 interface RequestDetail extends RequestRow {
-  items: { id: string; name: string; quantity: string; totalAmount: number }[];
+  items: { id: string; name: string; quantity: string; unit?: string | null; estimatedPrice?: number | null; totalAmount: number | null }[];
   approvals: ApprovalRow[];
   statusLabel?: string;
   statusHistory?: StatusHistoryRow[];
   quotations?: QuotationRow[];
   actions?: LifecycleActionBtn[];
   workflowTimeline?: WorkflowTimelineStep[];
+  canSeeMoney?: boolean;
+  // full-info fields (bug #9)
+  requesterName?: string | null;
+  responsibleName?: string | null;
+  factoryName?: string | null;
+  departmentNameResolved?: string | null;
+  departmentName?: string | null;
+  warehouseName?: string | null;
+  priority?: string | null;
+  requestType?: string | null;
+  neededDate?: string | null;
+  description?: string | null;
+  customFields?: Record<string, unknown> | null;
+  updatedAt?: string | null;
+  currency?: string | null;
 }
 type Screen =
   | { name: 'home' }
-  | { name: 'list' }
+  // `status` — optional prefilter applied when the list opens (KPI/by-status click).
+  | { name: 'list'; status?: string }
   | { name: 'create' }
   // `from` — the screen that opened the detail, so "back" returns to the source.
-  | { name: 'detail'; id: string; from?: 'home' | 'list' | 'approvals' | 'procurement' }
+  | { name: 'detail'; id: string; from?: 'home' | 'list' | 'approvals' | 'procurement' | 'notifications' }
   | { name: 'approvals' }
   | { name: 'warehouse' }
   | { name: 'procurement' }
+  | { name: 'notifications' }
   | { name: 'menu' }
   | { name: 'admin' };
 
@@ -98,17 +121,15 @@ interface DashboardData {
   pendingForMe: number;
   totalActive: number;
   activity: { id: string; requestNumber: string; status: string; title: string | null }[];
+  // Sprint 1 additive aggregates. null = no permission → card hidden.
+  awaitingPayment: number | null;
+  inProcurement: number | null;
+  lowStock: number | null;
+  byStatus: Record<string, number> | null;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const money = (n: number) => new Intl.NumberFormat('ru-RU').format(n || 0);
-const STATUS: Record<string, { label: string; cls: string }> = {
-  draft: { label: 'Черновик', cls: 'bg-fg3/20 text-fg2' },
-  pending_approval: { label: 'На согласовании', cls: 'bg-warning/15 text-warning' },
-  approved: { label: 'Согласована', cls: 'bg-success/15 text-success' },
-  rejected: { label: 'Отклонена', cls: 'bg-danger/15 text-danger' },
-};
-const statusOf = (s: string) => STATUS[s] ?? { label: s, cls: 'bg-fg3/20 text-fg2' };
 
 // ── Root ─────────────────────────────────────────────────────────────────────
 interface TenantConfig {
@@ -124,9 +145,33 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const [theme, setTheme] = useState<Theme>(getTheme());
+  const [unread, setUnread] = useState<number>(0);
+  // Test mode: the seeded test users for the DEV role-switcher. Stays null in
+  // production — /api/dev/users answers 404 there, so no panel is ever rendered.
+  const [devUsers, setDevUsers] = useState<DevUser[] | null>(null);
+  const [devPin, setDevPin] = useState('');
+  useEffect(() => {
+    api.devUsers().then((r) => { setDevUsers(r.users); setDevPin(r.pin); }).catch(() => {});
+  }, []);
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // Header bell badge — unread notification count (best-effort; failure keeps 0).
+  const refreshUnread = useCallback(() => {
+    api.notificationsUnreadCount().then((r: any) => setUnread(r?.unread ?? 0)).catch(() => {});
+  }, []);
+  useEffect(() => { if (me) refreshUnread(); }, [me, refreshUnread]);
+
+  // Bug #6: silent auto-refresh every 30s so new data appears without a manual
+  // reload. Screens include `tick` in their fetch deps; refreshes are silent (no
+  // skeleton flash) and forms/modals keep their own state, so nothing is lost.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!me) return;
+    const t = setInterval(() => { setTick((x) => x + 1); refreshUnread(); }, 30000);
+    return () => clearInterval(t);
+  }, [me, refreshUnread]);
 
   const loadMe = useCallback(async () => setMe(await api.me()), []);
 
@@ -140,7 +185,17 @@ export default function App() {
         const tg = getTelegram();
         tg?.ready?.();
         tg?.expand?.();
-        if (getToken()) await loadMe();
+        // Test mode (docs/TEST_MODE.md): `?user=sklad_01` pins THIS WINDOW to a test
+        // user — the token lives in sessionStorage, so several windows can run
+        // different roles side by side. Dev auth is stealth-404 in production, so a
+        // stray ?user= there simply falls through to the normal login paths.
+        const urlUser = new URLSearchParams(window.location.search).get('user')?.trim();
+        if (urlUser && urlUser !== getTestUser()) {
+          const r = await api.loginDev(urlUser);
+          setToken(r.token, { perWindow: true });
+          setTestUser(urlUser);
+          await loadMe();
+        } else if (getToken()) await loadMe();
         else if (tg?.initData) {
           const r = await api.loginTelegram(tg.initData);
           setToken(r.token);
@@ -159,6 +214,7 @@ export default function App() {
   if (!me)
     return (
       <DevLogin
+        testUsers={devUsers}
         error={authError}
         onLoggedIn={async () => {
           setBooting(true);
@@ -182,12 +238,13 @@ export default function App() {
     approvals: 'Согласования',
     warehouse: 'Склад',
     procurement: 'Закупки',
+    notifications: 'Уведомления',
     menu: 'Меню',
     admin: 'Администрирование',
   };
   const title = TITLES[screen.name];
-  const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse'].includes(screen.name);
-  const showNav = ['home', 'list', 'approvals', 'warehouse', 'procurement', 'menu', 'admin'].includes(screen.name);
+  const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse', 'notifications'].includes(screen.name);
+  const showNav = ['home', 'list', 'approvals', 'warehouse', 'procurement', 'notifications', 'menu', 'admin'].includes(screen.name);
   const iconBtn: CSSProperties = {
     width: 38,
     height: 38,
@@ -217,6 +274,17 @@ export default function App() {
             </div>
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <button aria-label="Уведомления" onClick={() => setScreen({ name: 'notifications' })} style={{ ...iconBtn, position: 'relative' }}>
+              <Icon name="bell" size={20} />
+              {unread > 0 && (
+                <span
+                  aria-label={`${unread} непрочитанных`}
+                  style={{ position: 'absolute', top: -3, right: -3, minWidth: 17, height: 17, padding: '0 4px', borderRadius: 9, background: 'var(--danger)', color: '#fff', fontSize: 10, fontWeight: 700, lineHeight: '17px', textAlign: 'center', boxShadow: '0 0 0 2px var(--header)' }}
+                >
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </button>
             <button aria-label="Сменить тему" onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} style={iconBtn}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
             </button>
@@ -237,23 +305,31 @@ export default function App() {
           </div>
         )}
         {screen.name === 'home' && (
-          <Home me={me} onNav={setScreen} onOpen={(id) => setScreen({ name: 'detail', id, from: 'home' })} />
+          <Home me={me} tick={tick} onNav={setScreen} onOpen={(id) => setScreen({ name: 'detail', id, from: 'home' })} />
         )}
         {screen.name === 'list' && (
           <RequestsList
             me={me}
+            tick={tick}
+            initialStatus={screen.status}
             onCreate={() => setScreen({ name: 'create' })}
             onOpen={(id) => setScreen({ name: 'detail', id, from: 'list' })}
           />
         )}
         {screen.name === 'create' && <CreateRequest onDone={() => setScreen({ name: 'list' })} />}
         {screen.name === 'detail' && (
-          <RequestDetailView id={screen.id} me={me} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
+          <RequestDetailView id={screen.id} me={me} tick={tick} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
         )}
         {screen.name === 'approvals' && <InboxScreen onOpen={(id) => setScreen({ name: 'detail', id, from: 'approvals' })} permissions={me.permissions} />}
         {screen.name === 'warehouse' && <WarehouseScreen permissions={me.permissions} />}
         {screen.name === 'procurement' && (
           <ProcurementScreen canManage={me.permissions.includes('suppliers.manage')} onOpen={(id) => setScreen({ name: 'detail', id, from: 'procurement' })} />
+        )}
+        {screen.name === 'notifications' && (
+          <NotificationsScreen
+            onOpenRequest={(id) => setScreen({ name: 'detail', id, from: 'notifications' })}
+            onChanged={refreshUnread}
+          />
         )}
         {screen.name === 'menu' && <Menu me={me} theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onLogout={() => { clearToken(); setMe(null); }} onProfileUpdated={loadMe} />}
         {screen.name === 'admin' && (
@@ -262,6 +338,7 @@ export default function App() {
       </main>
 
       {showNav && <BottomNav me={me} active={screen.name} onNav={setScreen} />}
+      {devUsers && devUsers.length > 0 && <DevSwitcher users={devUsers} pin={devPin} current={getTestUser()} />}
     </div>
   );
 }
@@ -461,34 +538,271 @@ const SECTION_LABEL: CSSProperties = {
   marginBottom: 12,
 };
 
+// A compact request row shared by the recent-activity feed and the queue previews.
+function RequestRowButton({ id, title, requestNumber, status, onOpen, first }: {
+  id: string; title: string | null; requestNumber: string; status: string; onOpen: (id: string) => void; first: boolean;
+}) {
+  const t = actTint(status);
+  return (
+    <button
+      onClick={() => onOpen(id)}
+      style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 13, padding: '13px 15px', border: 'none', borderTop: first ? 'none' : '1px solid var(--line)', background: 'none', cursor: 'pointer' }}
+    >
+      <span style={{ width: 36, height: 36, flex: 'none', borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[t.tint], color: TINT_FG[t.tint] }}>
+        <Icon name={t.ic} size={18} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title || requestNumber}</div>
+        <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{statusMeta(status).label} · {requestNumber}</div>
+      </div>
+    </button>
+  );
+}
+
+type QueueItem = { id: string; title: string | null; requestNumber: string; status: string };
+const normalizeReq = (x: any): QueueItem => ({ id: x.id, title: x.title ?? null, requestNumber: x.requestNumber ?? '', status: x.status ?? '' });
+const pickItems = (res: any): QueueItem[] => (Array.isArray(res) ? res : res?.items ?? []).map(normalizeReq);
+
+// Role-aware queue preview: fetches a list endpoint, shows top items with
+// loading / empty / error states. Used for "My Approvals" and the profile queue.
+function QueuePreview({ title, load, onOpen, onSeeAll, emptyText }: {
+  title: string;
+  load: () => Promise<QueueItem[]>;
+  onOpen: (id: string) => void;
+  onSeeAll?: () => void;
+  emptyText: string;
+}) {
+  const [rows, setRows] = useState<QueueItem[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setRows(null); setErr(null);
+    load().then((r) => { if (alive) setRows(r); }).catch((e) => { if (alive) setErr((e as Error).message); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title]);
+  const top = rows ? rows.slice(0, 4) : [];
+  return (
+    <div style={{ padding: '22px 20px 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ ...SECTION_LABEL, marginBottom: 0 }}>{title}{rows ? ` · ${rows.length}` : ''}</div>
+        {onSeeAll && rows && rows.length > 0 && (
+          <button onClick={onSeeAll} style={{ border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>все →</button>
+        )}
+      </div>
+      {!rows && !err && <div className="animate-pulse" style={{ height: 60, borderRadius: 14, background: 'var(--skel)' }} />}
+      {err && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, padding: '14px 16px', fontSize: 13, color: 'var(--danger)' }}>
+          Не удалось загрузить: {err}
+        </div>
+      )}
+      {rows && !err && rows.length === 0 && (
+        <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '20px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>{emptyText}</div>
+      )}
+      {rows && rows.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', overflow: 'hidden' }}>
+          {top.map((r, i) => <RequestRowButton key={r.id} {...r} onOpen={onOpen} first={i === 0} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface KpiCard { key: string; label: string; value: number | null; tint: string; ic: string; onClick?: () => void; }
+
+// ── Notification Center (P1-6 backend) ───────────────────────────────────────
+interface NotifItem {
+  id: string;
+  title: string;
+  message: string;
+  priority: string;
+  status: string; // pending | delivered (=unread) | read | failed
+  errorMessage: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  createdAt: string | null;
+  deliveredAt: string | null;
+  readAt: string | null;
+}
+
+const NOTIF_STATUS: Record<string, { label: string; tint: string }> = {
+  delivered: { label: 'Непрочитано', tint: 'accent' },
+  read: { label: 'Прочитано', tint: 'success' },
+  failed: { label: 'Не доставлено', tint: 'danger' },
+  pending: { label: 'Отправляется', tint: 'warning' },
+};
+// Priority accent — a coloured left rail for the ones that matter.
+const NOTIF_PRIORITY_TINT: Record<string, string> = { critical: 'danger', urgent: 'danger', high: 'warning' };
+
+function fmtDateTime(v: string | null): string {
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id: string) => void; onChanged: () => void }) {
+  const [items, setItems] = useState<NotifItem[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  const [markingAll, setMarkingAll] = useState(false);
+
+  const load = useCallback(() => {
+    setItems(null); setErr(null);
+    api.notifications(filter === 'unread').then((r: any) => setItems(r?.items ?? [])).catch((e) => setErr((e as Error).message));
+  }, [filter]);
+  useEffect(() => { load(); }, [load]);
+
+  // Only a delivered (unread) notification needs marking.
+  const markRead = async (n: NotifItem) => {
+    if (n.status !== 'delivered') return;
+    try { await api.markNotificationRead(n.id); } catch { /* best-effort — must never block navigation */ }
+    setItems((prev) => (prev ? prev.map((x) => (x.id === n.id ? { ...x, status: 'read', readAt: new Date().toISOString() } : x)) : prev));
+    onChanged();
+  };
+
+  const onCardClick = async (n: NotifItem) => {
+    // Auto mark-read, THEN navigate. Navigation happens even if mark-read failed (no fake success).
+    await markRead(n);
+    if (n.entityType === 'request' && n.entityId) onOpenRequest(n.entityId);
+  };
+
+  const markAll = async () => {
+    setMarkingAll(true);
+    try { await api.markAllNotificationsRead(); onChanged(); load(); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setMarkingAll(false); }
+  };
+
+  // In the "unread" tab, drop items just marked read locally.
+  const visible = items ? (filter === 'unread' ? items.filter((n) => n.status === 'delivered') : items) : null;
+  const hasUnread = (items ?? []).some((n) => n.status === 'delivered');
+
+  const pill = (active: boolean): CSSProperties => ({
+    padding: '7px 14px', borderRadius: 10, border: '1px solid var(--border)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+    background: active ? 'var(--accent)' : 'var(--card)', color: active ? '#fff' : 'var(--fg2)',
+  });
+
+  return (
+    <div>
+      <div style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg)', padding: '14px 16px 8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--fg2)' }}>Уведомления</span>
+          <button
+            onClick={markAll}
+            disabled={markingAll || !hasUnread}
+            style={{ padding: '7px 12px', borderRadius: 10, border: 'none', background: hasUnread ? 'var(--accent-bg)' : 'transparent', color: hasUnread ? 'var(--accent)' : 'var(--fg3)', fontSize: 12.5, fontWeight: 600, cursor: hasUnread ? 'pointer' : 'default' }}
+          >
+            Прочитать все
+          </button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setFilter('all')} style={pill(filter === 'all')}>Все</button>
+          <button onClick={() => setFilter('unread')} style={pill(filter === 'unread')}>Непрочитанные</button>
+        </div>
+      </div>
+
+      <div style={{ padding: '10px 16px 24px' }}>
+        {!visible && !err && <div className="animate-pulse" style={{ height: 76, borderRadius: 14, background: 'var(--skel)' }} />}
+        {err && (
+          <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, padding: '16px', fontSize: 13.5, color: 'var(--danger)' }}>
+            Не удалось загрузить уведомления: {err}
+          </div>
+        )}
+        {visible && !err && visible.length === 0 && (
+          <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '32px 16px', textAlign: 'center', fontSize: 13.5, color: 'var(--fg3)' }}>
+            {filter === 'unread' ? 'Непрочитанных уведомлений нет.' : 'Уведомлений пока нет.'}
+          </div>
+        )}
+        {visible && visible.map((n) => {
+          const st = NOTIF_STATUS[n.status] ?? { label: n.status, tint: 'accent' };
+          const unreadRow = n.status === 'delivered';
+          const railTint = NOTIF_PRIORITY_TINT[n.priority];
+          return (
+            <button
+              key={n.id}
+              onClick={() => onCardClick(n)}
+              style={{
+                width: '100%', textAlign: 'left', display: 'block', marginBottom: 10, cursor: 'pointer',
+                background: 'var(--card)', border: '1px solid var(--border)',
+                borderLeft: railTint ? `3px solid ${TINT_FG[railTint]}` : '1px solid var(--border)',
+                borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: '13px 15px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                {unreadRow && <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', flex: 'none' }} />}
+                <span style={{ flex: 1, fontSize: 14, fontWeight: unreadRow ? 700 : 600, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.title}</span>
+                <span style={{ flex: 'none', fontSize: 10.5, fontWeight: 700, padding: '3px 8px', borderRadius: 8, background: TINT_BG[st.tint], color: TINT_FG[st.tint] }}>{st.label}</span>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--fg2)', lineHeight: 1.4 }}>{n.message}</div>
+              {n.status === 'failed' && n.errorMessage && (
+                <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>Причина: {n.errorMessage}</div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, fontSize: 11.5, color: 'var(--fg3)' }}>
+                <span>{fmtDateTime(n.createdAt)}</span>
+                {n.readAt && <span>· прочитано {fmtDateTime(n.readAt)}</span>}
+                {n.entityType === 'request' && n.entityId && (
+                  <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                    К заявке <Icon name="chev" size={14} sw={2.2} />
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Home({
   me,
   onNav,
   onOpen,
+  tick = 0,
 }: {
   me: Me;
   onNav: (s: Screen) => void;
   onOpen: (id: string) => void;
+  tick?: number;
 }) {
   const [dash, setDash] = useState<DashboardData | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
-    api.dashboard().then(setDash).catch((e) => console.error('Dashboard load failed:', e));
-  }, []);
+    let alive = true;
+    // Silent refresh on tick: keep old data visible (no skeleton) until new arrives.
+    api.dashboard().then((d) => { if (alive) { setDash(d); setErr(null); } }).catch((e) => { if (alive && !dash) setErr((e as Error).message); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick]);
   const can = (p: string) => me.permissions.includes(p);
+  const oversight = can('reports.view') || can('audit.view');
 
-  const values: Record<string, number | string> = {
-    myActive: dash?.myActive ?? '—',
-    pendingForMe: dash?.pendingForMe ?? '—',
-    totalActive: dash?.totalActive ?? '—',
-  };
-  const stats = DASHBOARD_STATS.filter((s) =>
-    s.valueKey === 'totalActive' ? can('reports.view') || can('audit.view') : can(s.perm),
-  );
+  // KPI cards — permission-gated; the new aggregates are hidden unless the backend
+  // returned a non-null value (permission-hiding driven by GET /dashboard).
+  const cards: KpiCard[] = [];
+  if (can('requests.view')) cards.push({ key: 'myActive', label: 'Мои заявки', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
+  if (can('approvals.approve')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
+  if (oversight) cards.push({ key: 'total', label: 'Активных всего', value: dash?.totalActive ?? null, tint: 'success', ic: 'box', onClick: () => onNav({ name: 'list' }) });
+  if (dash && dash.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
+  if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'В закупке', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'procurement' }) });
+  if (dash && dash.lowStock != null) cards.push({ key: 'low', label: 'Низкий остаток', value: dash.lowStock, tint: 'danger', ic: 'alert', onClick: () => onNav({ name: 'warehouse' }) });
+  // Unread is shown via the header bell badge, not a dashboard card (per request).
 
-  const actions: { label: string; tint: string; ic: string; onClick: () => void }[] = [];
-  for (const a of DASHBOARD_ACTIONS) if (can(a.perm)) actions.push({ label: a.label, tint: a.tint, ic: a.ic, onClick: () => onNav({ name: a.go }) });
-  if (ADMIN_PERMS.some((p) => can(p)))
-    actions.push({ label: 'Администрирование', tint: 'accent', ic: 'gear', onClick: () => onNav({ name: 'admin' }) });
+  // by-status breakdown (oversight only) — chips deep-link to the filtered list.
+  const byStatus = dash?.byStatus ?? null;
+  const byStatusEntries = byStatus ? Object.entries(byStatus).sort((a, b) => b[1] - a[1]) : [];
+
+  // Profile queue (one, by role) — only endpoints that exist as a single call.
+  // NOTE: warehouse "receiving|issue" tasks need a multi-status list the API does
+  // not expose (out of this sprint's backend scope), so warehouse users get a link
+  // to the Warehouse screen instead of an inline list — not a silent single-status hack.
+  const profileQueue: { title: string; load: () => Promise<QueueItem[]>; onSeeAll?: () => void; emptyText: string } | null =
+    can('procurement.view')
+      ? { title: 'Очередь снабжения', load: async () => pickItems(await api.procurement.queue()), onSeeAll: () => onNav({ name: 'procurement' }), emptyText: 'Нет заявок в закупке.' }
+      : can('finance.view')
+        ? { title: 'Ожидают оплаты', load: async () => pickItems(await api.listRequests({ status: 'finance_payment', limit: 8 })), onSeeAll: () => onNav({ name: 'list', status: 'finance_payment' }), emptyText: 'Нет заявок на оплату.' }
+        : null;
 
   return (
     <div>
@@ -504,57 +818,137 @@ function Home({
         </div>
       </div>
 
-      {/* Stat cards — overlap up into the navy block */}
-      {stats.length > 0 && (
+      {/* Dashboard load error — surfaced, never a silent blank (audit fix) */}
+      {err && (
+        <div style={{ position: 'relative', marginTop: -32, padding: '0 20px' }}>
+          <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '16px', fontSize: 13.5, color: 'var(--danger)' }}>
+            Не удалось загрузить дашборд: {err}
+          </div>
+        </div>
+      )}
+
+      {/* KPI cards — overlap up into the navy block */}
+      {!err && cards.length > 0 && (
         <div style={{ position: 'relative', marginTop: -32 }}>
           <div style={{ display: 'flex', gap: 12, overflowX: 'auto', padding: '0 20px 4px', scrollSnapType: 'x mandatory' }}>
-            {stats.map((s) => (
-              <button
-                key={s.label}
-                onClick={() => onNav({ name: s.go })}
-                style={{ scrollSnapAlign: 'start', flex: '0 0 auto', width: 166, textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '14px 15px', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 9 }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[s.tint], color: TINT_FG[s.tint] }}>
-                    <Icon name={s.ic} size={19} />
-                  </span>
-                  <span style={{ color: 'var(--fg3)' }}>
-                    <Icon name="chev" size={17} sw={2.2} />
-                  </span>
-                </div>
-                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 30, fontWeight: 600, lineHeight: 1, color: 'var(--fg)' }}>{values[s.valueKey]}</div>
-                <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{s.label}</div>
-              </button>
-            ))}
+            {cards.map((c) => {
+              const inner = (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[c.tint], color: TINT_FG[c.tint] }}>
+                      <Icon name={c.ic} size={19} />
+                    </span>
+                    {c.onClick && <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={17} sw={2.2} /></span>}
+                  </div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 30, fontWeight: 600, lineHeight: 1, color: 'var(--fg)' }}>{c.value ?? '—'}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{c.label}</div>
+                </>
+              );
+              const base: CSSProperties = { scrollSnapAlign: 'start', flex: '0 0 auto', width: 166, textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '14px 15px', display: 'flex', flexDirection: 'column', gap: 9 };
+              return c.onClick
+                ? <button key={c.key} onClick={c.onClick} style={{ ...base, cursor: 'pointer' }}>{inner}</button>
+                : <div key={c.key} style={base}>{inner}</div>;
+            })}
           </div>
         </div>
       )}
 
-      {/* Quick actions */}
-      {actions.length > 0 && (
+      {/* Loading skeleton for KPI cards while the dashboard loads */}
+      {!err && !dash && (
+        <div style={{ position: 'relative', marginTop: -32, padding: '0 20px' }}>
+          <div className="animate-pulse" style={{ height: 118, borderRadius: 14, background: 'var(--skel)' }} />
+        </div>
+      )}
+
+      {/* Quick actions (New request / All requests / Admin) — role-gated */}
+      {!err && (() => {
+        const actions: { label: string; tint: string; ic: string; onClick: () => void }[] = [];
+        for (const a of DASHBOARD_ACTIONS) if (can(a.perm)) actions.push({ label: a.label, tint: a.tint, ic: a.ic, onClick: () => onNav({ name: a.go }) });
+        if (ADMIN_PERMS.some(can)) actions.push({ label: 'Администрирование', tint: 'accent', ic: 'gear', onClick: () => onNav({ name: 'admin' }) });
+        return actions.length > 0 ? (
+          <div style={{ padding: '24px 20px 0' }}>
+            <div style={SECTION_LABEL}>Быстрые действия</div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              {actions.map((a) => (
+                <button
+                  key={a.label}
+                  onClick={a.onClick}
+                  style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 14, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 15, cursor: 'pointer', textAlign: 'left' }}
+                >
+                  <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[a.tint], color: TINT_FG[a.tint] }}>
+                    <Icon name={a.ic} size={22} sw={a.ic === 'plus' ? 2.4 : 1.9} />
+                  </span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.2 }}>{a.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null;
+      })()}
+
+      {/* requests-by-status breakdown (oversight only) */}
+      {!err && oversight && byStatusEntries.length > 0 && (
         <div style={{ padding: '24px 20px 0' }}>
-          <div style={SECTION_LABEL}>Быстрые действия</div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            {actions.map((a) => (
-              <button
-                key={a.label}
-                onClick={a.onClick}
-                style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 14, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 15, cursor: 'pointer', textAlign: 'left' }}
-              >
-                <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[a.tint], color: TINT_FG[a.tint] }}>
-                  <Icon name={a.ic} size={22} sw={a.ic === 'plus' ? 2.4 : 1.9} />
-                </span>
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.2 }}>{a.label}</span>
-              </button>
-            ))}
+          <div style={SECTION_LABEL}>Заявки по статусам</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {byStatusEntries.map(([st, n]) => {
+              const m = statusMeta(st);
+              return (
+                <button
+                  key={st}
+                  onClick={() => onNav({ name: 'list', status: st })}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '7px 11px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card)', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, color: 'var(--fg2)' }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: m.color }} />
+                  {m.label}
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: 'var(--fg)' }}>{n}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
 
-      {/* Recent activity */}
+      {/* Queue slot 1 — My Approvals (role-aware) */}
+      {!err && can('approvals.approve') && (
+        <QueuePreview
+          title="Ждут моего решения"
+          load={async () => pickItems(await api.inbox())}
+          onOpen={onOpen}
+          onSeeAll={() => onNav({ name: 'approvals' })}
+          emptyText="Нет заявок, ожидающих вашего решения."
+        />
+      )}
+
+      {/* Queue slot 2 — profile queue (procurement / finance) */}
+      {!err && profileQueue && (
+        <QueuePreview title={profileQueue.title} load={profileQueue.load} onOpen={onOpen} onSeeAll={profileQueue.onSeeAll} emptyText={profileQueue.emptyText} />
+      )}
+
+      {/* Queue slot 2 (warehouse) — link to the Warehouse screen (multi-status list not in API) */}
+      {!err && !profileQueue && can('warehouse.view') && (
+        <div style={{ padding: '22px 20px 0' }}>
+          <div style={SECTION_LABEL}>Склад</div>
+          <button
+            onClick={() => onNav({ name: 'warehouse' })}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: '15px', cursor: 'pointer', textAlign: 'left' }}
+          >
+            <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG.accent, color: TINT_FG.accent }}>
+              <Icon name="box" size={21} />
+            </span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>Приёмка и выдача</div>
+              <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>Открыть склад: остатки, приёмка, выдача</div>
+            </div>
+            <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={18} sw={2.2} /></span>
+          </button>
+        </div>
+      )}
+
+      {/* Queue slot 3 — Recent activity (own for requester, holding for oversight) */}
       <div style={{ padding: '24px 20px 24px' }}>
         <div style={SECTION_LABEL}>Последние события</div>
-        {!dash && <div className="animate-pulse" style={{ height: 68, borderRadius: 14, background: 'var(--skel)' }} />}
+        {!dash && !err && <div className="animate-pulse" style={{ height: 68, borderRadius: 14, background: 'var(--skel)' }} />}
         {dash && dash.activity.length === 0 && (
           <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '24px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>
             Пока нет событий — здесь появятся обновления по вашим заявкам.
@@ -562,26 +956,9 @@ function Home({
         )}
         {dash && dash.activity.length > 0 && (
           <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', overflow: 'hidden' }}>
-            {dash.activity.map((e, idx) => {
-              const t = actTint(e.status);
-              return (
-                <button
-                  key={e.id}
-                  onClick={() => onOpen(e.id)}
-                  style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 13, padding: '14px 15px', border: 'none', borderTop: idx === 0 ? 'none' : '1px solid var(--line)', background: 'none', cursor: 'pointer' }}
-                >
-                  <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[t.tint], color: TINT_FG[t.tint] }}>
-                    <Icon name={t.ic} size={19} />
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.title || e.requestNumber}</div>
-                    <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>
-                      {statusOf(e.status).label} · {e.requestNumber}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
+            {dash.activity.map((e, idx) => (
+              <RequestRowButton key={e.id} id={e.id} title={e.title} requestNumber={e.requestNumber} status={e.status} onOpen={onOpen} first={idx === 0} />
+            ))}
           </div>
         )}
       </div>
@@ -657,33 +1034,50 @@ function RequestsList({
   me,
   onCreate,
   onOpen,
+  initialStatus,
+  tick = 0,
 }: {
   me: Me;
   onCreate: () => void;
   onOpen: (id: string) => void;
+  initialStatus?: string;
+  tick?: number;
 }) {
   const [rows, setRows] = useState<RequestRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  // Prefilter from a KPI/by-status click on the dashboard (deep-link via state).
+  const [statusFilter, setStatusFilter] = useState(initialStatus ?? '');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [showCalendar, setShowCalendar] = useState(false); // bug #12: calendar collapsed by default
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState<number | null>(null);
   const PAGE = 30;
   const canSeeProcurement = me.permissions.includes('procurement.view') || me.permissions.includes('procurement.quote') || me.permissions.includes('procurement.select_supplier');
 
+  // P1-7: search + status filter run on the SERVER (debounced 350ms), so they
+  // match requests across the whole holding, not only the current page.
   useEffect(() => {
-    api.listRequests({ limit: PAGE }).then((res: any) => {
-      if (Array.isArray(res)) { setRows(res); setHasMore(false); }
-      else { setRows(res.items); setHasMore(res.hasMore); }
-    }).catch((e) => setError((e as Error).message));
-  }, []);
+    let cancelled = false;
+    // Silent refresh (no skeleton wipe) — keep the current list visible until new
+    // data arrives; also fires on the 30s tick (bug #6).
+    const t = setTimeout(() => {
+      api.listRequests({ limit: PAGE, search: search.trim(), status: statusFilter }).then((res: any) => {
+        if (cancelled) return;
+        setError(null);
+        if (Array.isArray(res)) { setRows(res); setHasMore(false); setTotal(res.length); }
+        else { setRows(res.items); setHasMore(res.hasMore); setTotal(res.total ?? res.items.length); }
+      }).catch((e) => { if (!cancelled) setError((e as Error).message); });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [search, statusFilter, tick]);
 
   const loadMore = async () => {
     if (!rows || loadingMore) return;
     setLoadingMore(true);
     try {
-      const res = await api.listRequests({ limit: PAGE, offset: rows.length }) as any;
+      const res = await api.listRequests({ limit: PAGE, offset: rows.length, search: search.trim(), status: statusFilter }) as any;
       const next = Array.isArray(res) ? res : res.items;
       setRows([...rows, ...next]);
       setHasMore(Array.isArray(res) ? false : res.hasMore);
@@ -705,13 +1099,9 @@ function RequestsList({
     }
   }
 
+  // Search + status are already applied server-side; only the calendar-day filter
+  // is refined client-side over the loaded page.
   const filtered = rows?.filter((r) => {
-    if (statusFilter && r.status !== statusFilter) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      const match = r.requestNumber.toLowerCase().includes(q) || (r.title ?? '').toLowerCase().includes(q);
-      if (!match) return false;
-    }
     if (selectedDate && r.createdAt) {
       const d = new Date(r.createdAt);
       const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -725,15 +1115,33 @@ function RequestsList({
       <div style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg)', padding: '14px 16px 8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--fg2)' }}>
-            Все заявки {filtered ? `· ${filtered.length}` : ''}
+            Все заявки {selectedDate ? (filtered ? `· ${filtered.length}` : '') : total != null ? `· ${total}` : ''}
           </span>
-          {me.permissions.includes('requests.create') && (
-            <button onClick={onCreate} style={{ padding: '8px 13px', borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-              + Создать
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* bug #12: calendar collapsed into a small toggle next to "+ Создать" */}
+            <button
+              aria-label="Календарь"
+              onClick={() => setShowCalendar((v) => !v)}
+              style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 10, border: '1px solid var(--border)', background: showCalendar || selectedDate ? 'var(--accent-bg)' : 'var(--card)', color: showCalendar || selectedDate ? 'var(--accent)' : 'var(--fg2)', cursor: 'pointer', position: 'relative' }}
+            >
+              <Icon name="clock" size={18} />
+              {selectedDate && <span style={{ position: 'absolute', top: -3, right: -3, width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)' }} />}
             </button>
-          )}
+            {me.permissions.includes('requests.create') && (
+              <button onClick={onCreate} style={{ padding: '8px 13px', borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                + Создать
+              </button>
+            )}
+          </div>
         </div>
-        <MiniCalendar requestDates={requestDates} selectedDate={selectedDate} onSelect={setSelectedDate} />
+        {showCalendar && (
+          <div style={{ marginBottom: 8 }}>
+            <MiniCalendar requestDates={requestDates} selectedDate={selectedDate} onSelect={(d) => { setSelectedDate(d); }} />
+            {selectedDate && (
+              <button onClick={() => setSelectedDate(null)} style={{ marginTop: 6, border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>Сбросить дату</button>
+            )}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             value={search}
@@ -748,6 +1156,7 @@ function RequestsList({
           >
             <option value="">Все</option>
             <option value="pending_approval">На согласовании</option>
+            <option value="needs_revision">На доработке</option>
             <option value="approved">Согласована</option>
             <option value="rejected">Отклонена</option>
             <option value="draft">Черновик</option>
@@ -1453,7 +1862,7 @@ function DateDivider({ label }: { label: string }) {
   );
 }
 
-function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () => void }) {
+function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; onBack: () => void; tick?: number }) {
   const [req, setReq] = useState<RequestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<LifecycleActionBtn | null>(null);
@@ -1462,12 +1871,13 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
 
   useEffect(() => {
     let cancelled = false;
-    setError(null);
+    // Silent refresh (keeps current view; also fires on the 30s tick, bug #6).
     api.getRequest(id)
-      .then(data => { if (!cancelled) setReq(data); })
-      .catch(e => { if (!cancelled) setError((e as Error).message); });
+      .then(data => { if (!cancelled) { setReq(data); setError(null); } })
+      .catch(e => { if (!cancelled && !req) setError((e as Error).message); });
     return () => { cancelled = true; };
-  }, [id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, tick]);
 
   const load = useCallback(() => {
     api.getRequest(id).then(setReq).catch((e) => setError((e as Error).message));
@@ -1475,7 +1885,7 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
 
   const run = async (
     action: string,
-    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string } = {},
+    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
   ) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -1486,10 +1896,7 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
       setPending(null);
       load();
       if (res?.warnings?.length) {
-        const msg = (res.warnings as string[]).join('\n');
-        const tg = (window as { Telegram?: { WebApp?: { showAlert?: (m: string) => void } } }).Telegram?.WebApp;
-        if (tg?.showAlert) tg.showAlert(msg);
-        else window.alert(msg);
+        alertDialog((res.warnings as string[]).join('\n'));
       }
     } catch (e) {
       setError((e as Error).message);
@@ -1511,16 +1918,55 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
   const history = req.statusHistory ?? [];
   const canSeeProcurement = me.permissions.includes('procurement.view') || me.permissions.includes('procurement.quote') || me.permissions.includes('procurement.select_supplier');
   const quotations = canSeeProcurement ? (req.quotations ?? []) : [];
-  const info = [
-    { k: 'Статус', v: req.statusLabel ?? statusMeta(req.status).label },
-    ...(canSeeProcurement ? [{ k: 'Позиций', v: String(req.items.length) }] : []),
-  ];
+
+  // Bug #5: the author may cancel their own request while no one has approved yet.
+  const TERMINAL = ['approved', 'closed', 'rejected', 'cancelled', 'archived'];
+  const canCancel =
+    req.requesterId === me.user.id &&
+    !TERMINAL.includes(req.status) &&
+    !(req.approvals ?? []).some((a) => a.status === 'approved');
+  const doCancel = async () => {
+    if (!(await confirmDialog('Удалить заявку? Отменить это действие будет нельзя.'))) return;
+    try {
+      await api.cancelRequest(id);
+      onBack();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  // Full info (bug #9): show every meaningful field, not just status.
+  const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
+  const TYPE_LABEL: Record<string, string> = { material_request: 'Материалы / товар', service_request: 'Услуга', other: 'Другое' };
+  const info: { k: string; v: string }[] = [];
+  const pushInfo = (k: string, v: unknown) => { if (v != null && String(v).trim() !== '') info.push({ k, v: String(v) }); };
+  pushInfo('Статус', req.statusLabel ?? statusMeta(req.status).label);
+  pushInfo('Автор', req.requesterName);
+  pushInfo('Завод', req.factoryName);
+  pushInfo('Отдел', req.departmentNameResolved ?? req.departmentName);
+  pushInfo('Склад', req.warehouseName);
+  pushInfo('Приоритет', req.priority ? (PRIORITY_LABEL[req.priority] ?? req.priority) : null);
+  pushInfo('Тип', req.requestType ? (TYPE_LABEL[req.requestType] ?? req.requestType) : null);
+  pushInfo('Ответственный', req.responsibleName);
+  pushInfo('Нужно к', req.neededDate ? fmtDate(req.neededDate) : null);
+  pushInfo('Создана', fmtDate(req.createdAt));
+  if (req.canSeeMoney && req.estimatedAmount != null) pushInfo('Сумма', `${Number(req.estimatedAmount).toLocaleString('ru-RU')} ${req.currency || 'UZS'}`);
+  pushInfo('Позиций', String(req.items.length));
+  // Custom form fields entered at creation.
+  const customEntries = req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : [];
 
   return (
     <div style={{ padding: '16px 16px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <button onClick={onBack} style={{ alignSelf: 'flex-start', background: 'none', border: 'none', color: 'var(--fg2)', fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
-        ← Назад
-      </button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--fg2)', fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
+          ← Назад
+        </button>
+        {canCancel && (
+          <button onClick={doCancel} style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
+            Удалить заявку
+          </button>
+        )}
+      </div>
 
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
@@ -1538,15 +1984,77 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
         </div>
       </div>
 
+      {/* Progress timeline — top of the card (#10), per-step actor/date-time (#7), correct rejected state (#4) */}
+      {(req.workflowTimeline ?? []).length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Прогресс согласования</div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {(req.workflowTimeline ?? []).map((step, idx, arr) => {
+              const last = idx === arr.length - 1;
+              const done = step.state === 'completed';
+              const cur = step.state === 'current';
+              const rej = step.state === 'rejected';
+              const color = rej ? 'var(--danger)' : done ? 'var(--success)' : cur ? 'var(--warning)' : 'var(--fg3)';
+              const mark = rej ? '✕' : done ? '✓' : cur ? '●' : '';
+              const lineColor = rej ? 'var(--danger)' : step.state === 'future' ? 'var(--line)' : color;
+              return (
+                <div key={step.stepId ?? idx} style={{ display: 'flex', gap: 13 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 'none' }}>
+                    <span style={{ width: 18, height: 18, borderRadius: '50%', marginTop: 2, flex: 'none', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', fontWeight: 700 }}>{mark}</span>
+                    {!last && <span style={{ width: 2, flex: 1, minHeight: 26, background: lineColor }} />}
+                  </div>
+                  <div style={{ paddingBottom: 16, flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
+                    <div style={{ fontSize: 11.5, marginTop: 2, fontWeight: cur || rej ? 600 : 500, color: rej ? 'var(--danger)' : cur ? 'var(--warning)' : done ? 'var(--success)' : 'var(--fg3)' }}>
+                      {step.action === 'created' ? 'Создана' : rej ? 'Отклонено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
+                    </div>
+                    {(step.actorName || step.at) && (
+                      <div style={{ fontSize: 11, color: 'var(--fg3)', marginTop: 3, fontFamily: "'IBM Plex Mono', monospace" }}>
+                        {step.actorName ?? ''}{step.actorRole ? ` · ${step.actorRole}` : ''}{step.at ? ` · ${fmtDateTime(step.at)}` : ''}
+                      </div>
+                    )}
+                    {cur && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 3, fontWeight: 600 }}>→ {nextActionHint(step.stepKind)}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {req.description && String(req.description).trim() !== '' && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Примечание</div>
+          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
+        </div>
+      )}
+
+      {customEntries.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Дополнительно</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '11px 12px' }}>
+            {customEntries.map(([k, v]) => (
+              <div key={k}>
+                <div style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{k}</div>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', marginTop: 3 }}>{v == null || v === '' ? '—' : String(v)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {req.items.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Позиции</div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {req.items.map((it) => (
-              <div key={it.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderTop: '1px solid var(--line)' }}>
-                <span style={{ fontSize: 14, color: 'var(--fg)' }}>
-                  {it.name} <span style={{ color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace" }}>× {it.quantity}</span>
+              <div key={it.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 0', borderTop: '1px solid var(--line)' }}>
+                <span style={{ fontSize: 14, color: 'var(--fg)', minWidth: 0 }}>
+                  {it.name} <span style={{ color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace" }}>× {it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
                 </span>
+                {req.canSeeMoney && it.totalAmount != null && (
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace", flex: 'none' }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
+                )}
               </div>
             ))}
           </div>
@@ -1575,39 +2083,6 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
 
       <AttachmentsSection requestId={id} />
 
-      {/* Workflow timeline — shows all steps with completed/current/future state */}
-      {(req.workflowTimeline ?? []).length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Этапы согласования</div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {(req.workflowTimeline ?? []).map((step, idx) => {
-              const last = idx === (req.workflowTimeline ?? []).length - 1;
-              const color = step.state === 'completed' ? 'var(--success)' : step.state === 'current' ? 'var(--warning)' : 'var(--fg3)';
-              const stateLabel = step.state === 'completed' ? '✓' : step.state === 'current' ? '●' : '';
-              return (
-                <div key={idx} style={{ display: 'flex', gap: 13 }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 'none' }}>
-                    <span style={{ width: 12, height: 12, borderRadius: '50%', marginTop: 4, flex: 'none', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, color: '#fff', fontWeight: 700 }}>{stateLabel}</span>
-                    {!last && <span style={{ width: 2, flex: 1, minHeight: 18, background: step.state === 'future' ? 'var(--line)' : color }} />}
-                  </div>
-                  <div style={{ paddingBottom: 14, paddingTop: 1 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
-                    <div style={{ fontSize: 11, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg2)', marginTop: 2 }}>
-                      {step.state === 'completed' ? 'Готово' : step.state === 'current' ? 'Текущий этап' : 'Ожидает'}
-                    </div>
-                    {step.state === 'current' && (
-                      <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 3, fontWeight: 600 }}>
-                        → {nextActionHint(step.stepKind)}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {history.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>История действий</div>
@@ -1630,7 +2105,7 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
                       </div>
                     )}
                     {h.comment && <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{h.comment}</div>}
-                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{fmtDate(h.createdAt)}</div>
+                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>{fmtDateTime(h.createdAt)}</div>
                   </div>
                 </div>
               );
@@ -1654,6 +2129,7 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
       {pending && (
         <ActionModal
           action={pending}
+          requestId={id}
           busy={busy}
           error={error}
           quotations={quotations}
@@ -1667,6 +2143,7 @@ function RequestDetailView({ id, me, onBack }: { id: string; me: Me; onBack: () 
 
 function ActionModal({
   action,
+  requestId,
   busy,
   error,
   quotations,
@@ -1674,14 +2151,31 @@ function ActionModal({
   onConfirm,
 }: {
   action: LifecycleActionBtn;
+  requestId: string;
   busy: boolean;
   error: string | null;
   quotations: QuotationRow[];
   onCancel: () => void;
-  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string }) => void;
+  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
 }) {
   const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
+  // Bug #3: role-based rejection reasons + «Другое» → free text.
+  const isReject = action.action === 'reject';
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [reasonChoice, setReasonChoice] = useState('');
+  useEffect(() => {
+    if (isReject) api.rejectReasons(requestId).then((r: any) => setReasons(r?.reasons ?? [])).catch(() => setReasons([]));
+  }, [isReject, requestId]);
+  const OTHER = '__other__';
+
+  // Bug #8: procurement head assigns a specific снабженец.
+  const isAssign = !!action.assign;
+  const [assignees, setAssignees] = useState<{ id: string; fullName: string | null }[]>([]);
+  const [assigneeId, setAssigneeId] = useState('');
+  useEffect(() => {
+    if (isAssign) api.procurementAssignees().then((r) => setAssignees(r?.users ?? [])).catch(() => setAssignees([]));
+  }, [isAssign]);
   const [amount, setAmount] = useState('');
   const [supplier, setSupplier] = useState('');
   const [supplierId, setSupplierId] = useState('');
@@ -1695,18 +2189,33 @@ function ActionModal({
   }, [isAdd]);
   const inputStyle: CSSProperties = { width: '100%', padding: '13px 15px', fontSize: 15, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
   const lbl: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 8 };
+  // Effective reject comment: chosen preset, or free text when «Другое».
+  const effectiveComment = isReject && reasons.length > 0
+    ? (reasonChoice === OTHER ? comment.trim() : reasonChoice)
+    : comment.trim();
   const ok =
     (!action.pin || pin.length >= 4) &&
-    (!action.comment || comment.trim().length > 0) &&
+    (!action.comment || effectiveComment.length > 0) &&
     (!action.amount || (amount !== '' && Number(amount) > 0)) &&
     (!isAdd || ((supplierId !== '' || supplier.trim().length > 0) && amount !== '' && Number(amount) > 0)) &&
-    (!isSelect || quotationId !== '');
+    (!isSelect || quotationId !== '') &&
+    (!isAssign || assigneeId !== '');
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
       <div onClick={onCancel} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)' }} />
       <div style={{ position: 'relative', width: '100%', maxWidth: 560, background: 'var(--bg)', borderTop: '1px solid var(--edge)', borderRadius: '24px 24px 0 0', padding: '20px 20px 28px' }}>
         <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--fg)', marginBottom: 16 }}>{action.label}</div>
+        {isAssign && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={lbl}>Снабженец</div>
+            <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} style={inputStyle}>
+              <option value="" disabled>Выберите снабженца…</option>
+              {assignees.map((a) => <option key={a.id} value={a.id}>{a.fullName || a.id}</option>)}
+            </select>
+            {assignees.length === 0 && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 6 }}>Нет пользователей с правами снабжения</div>}
+          </div>
+        )}
         {isAdd && (
           <>
             <div style={{ marginBottom: 12 }}>
@@ -1775,7 +2284,20 @@ function ActionModal({
             <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
           </div>
         )}
-        {action.comment && (
+        {action.comment && isReject && reasons.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={lbl}>Причина отклонения</div>
+            <select value={reasonChoice} onChange={(e) => setReasonChoice(e.target.value)} style={inputStyle}>
+              <option value="" disabled>Выберите причину…</option>
+              {reasons.map((r) => <option key={r} value={r}>{r}</option>)}
+              <option value={OTHER}>Другое…</option>
+            </select>
+            {reasonChoice === OTHER && (
+              <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Укажите причину" style={{ ...inputStyle, resize: 'none', lineHeight: 1.45, marginTop: 8 }} />
+            )}
+          </div>
+        )}
+        {action.comment && !(isReject && reasons.length > 0) && (
           <div style={{ marginBottom: 12 }}>
             <div style={lbl}>Комментарий</div>
             <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Причина / комментарий" style={{ ...inputStyle, resize: 'none', lineHeight: 1.45 }} />
@@ -1794,12 +2316,13 @@ function ActionModal({
             onClick={() =>
               onConfirm({
                 pin: action.pin ? pin : undefined,
-                comment: action.comment ? comment : undefined,
+                comment: action.comment ? effectiveComment : undefined,
                 amount: action.amount || isAdd ? Number(amount) : undefined,
                 supplierId: isAdd && supplierId ? supplierId : undefined,
                 supplierName: isAdd ? supplier.trim() || undefined : undefined,
                 leadTime: isAdd && leadTime.trim() ? leadTime.trim() : undefined,
                 quotationId: isSelect ? quotationId : undefined,
+                assigneeId: isAssign ? assigneeId : undefined,
               })
             }
             disabled={busy || !ok}
@@ -1814,7 +2337,55 @@ function ActionModal({
 }
 
 // ── Small UI bits ────────────────────────────────────────────────────────────
-function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () => void }) {
+interface DevUser {
+  username: string;
+  fullName: string;
+  roles: string[];
+}
+
+/** Test-mode switch: pin THIS WINDOW to a test user via `?user=` (boot re-logins). */
+function switchTestUser(username: string): void {
+  window.location.href = '/?user=' + encodeURIComponent(username);
+}
+
+/**
+ * DEV MODE panel — per-window test-user switcher (docs/TEST_MODE.md). Rendered
+ * only when /api/dev/users answered, i.e. never in production (stealth 404).
+ */
+function DevSwitcher({ users, pin, current }: { users: DevUser[]; pin: string; current: string | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-label="DEV: сменить пользователя"
+        style={{ position: 'fixed', right: 12, bottom: 84, zIndex: 60, padding: '8px 12px', borderRadius: 12, border: 'none', background: '#7c3aed', color: '#fff', fontSize: 12, fontWeight: 800, letterSpacing: '.05em', cursor: 'pointer', boxShadow: '0 4px 14px rgba(0,0,0,.35)' }}
+      >
+        DEV{current ? `: ${current}` : ''}
+      </button>
+      {open && (
+        <div style={{ position: 'fixed', right: 12, bottom: 128, zIndex: 60, width: 268, maxHeight: '60vh', overflowY: 'auto', borderRadius: 14, background: 'var(--card)', color: 'var(--fg)', border: '1px solid var(--line)', boxShadow: '0 10px 30px rgba(0,0,0,.45)', padding: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.07em', opacity: 0.7, margin: '2px 4px 8px' }}>
+            DEV MODE — пользователь этого окна · PIN: {pin}
+          </div>
+          {users.map((u) => (
+            <button
+              key={u.username}
+              onClick={() => switchTestUser(u.username)}
+              disabled={u.username === current}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginBottom: 4, borderRadius: 10, border: 'none', cursor: u.username === current ? 'default' : 'pointer', background: u.username === current ? '#7c3aed' : 'rgba(127,127,127,.14)', color: u.username === current ? '#fff' : 'inherit' }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{u.fullName}</div>
+              <div style={{ fontSize: 11, opacity: 0.72 }}>{u.username} · {u.roles.join(', ')}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | null; error: string | null; onLoggedIn: () => void }) {
   const [tgId, setTgId] = useState('');
   const [err, setErr] = useState<string | null>(error);
   const [loading, setLoading] = useState(false);
@@ -1840,6 +2411,21 @@ function DevLogin({ error, onLoggedIn }: { error: string | null; onLoggedIn: () 
         <p className="mb-5 text-center text-xs leading-relaxed text-fg3">
           Откройте внутри Telegram для обычного входа. Локально — dev-вход по Telegram ID.
         </p>
+        {testUsers && testUsers.length > 0 && (
+          <div className="mb-4">
+            <div className="mb-1.5 text-center text-[11px] font-bold uppercase tracking-wider text-fg3">Тестовые пользователи</div>
+            {testUsers.map((u) => (
+              <button
+                key={u.username}
+                onClick={() => switchTestUser(u.username)}
+                className="mb-1 w-full rounded-xl border border-line bg-card px-3.5 py-2 text-left active:scale-[.98]"
+              >
+                <div className="text-[13px] font-semibold text-fg">{u.fullName}</div>
+                <div className="text-[11px] text-fg3">{u.username} · {u.roles.join(', ')}</div>
+              </button>
+            ))}
+          </div>
+        )}
         <input
           value={tgId}
           onChange={(e) => setTgId(e.target.value)}

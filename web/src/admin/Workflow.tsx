@@ -11,7 +11,17 @@ interface Step {
   stepKind: string;
   approverRoleId: string | null;
   thresholdAmount: number | null;
+  conditionRule: { amountGte?: number; amountLt?: number; inStock?: boolean; requestType?: string } | null;
+  onReject: string | null;
+  onRejectStepOrder: number | null;
 }
+
+const REQUEST_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'material_request', label: 'Материал' },
+  { value: 'service_request', label: 'Услуга' },
+  { value: 'repair_request', label: 'Ремонт' },
+];
+const requestTypeLabel = (v: string) => REQUEST_TYPE_OPTIONS.find((o) => o.value === v)?.label ?? v;
 
 // What each step DOES — drives the request through the lifecycle (data-driven).
 const KIND_OPTIONS: { value: string; label: string }[] = [
@@ -45,7 +55,18 @@ interface StepSheet {
   kind: string;
   roleId: string;
   threshold: string;
+  /** Порядковый номер этого шага (для списка «вернуть на шаг…» — только более ранние). */
+  ownOrder: number;
+  // Условия включения шага (condition_rule)
+  amountLt: string;
+  requestType: string;
+  stockCond: '' | 'in' | 'out';
+  // Ветка «Если отклонил»
+  onReject: string;
+  onRejectStep: string;
 }
+
+const emptyConditions = { amountLt: '', requestType: '', stockCond: '' as const, onReject: 'cancel', onRejectStep: '' };
 
 export function WorkflowPage() {
   const [wfs, setWfs] = useState<Workflow[] | null>(null);
@@ -146,21 +167,24 @@ export function WorkflowPage() {
     try {
       const threshold = stepSheet.threshold.trim() === '' ? null : Number(stepSheet.threshold);
       const roleId = stepSheet.roleId || null;
+      const rule: Record<string, unknown> = {};
+      if (stepSheet.amountLt.trim() !== '') rule.amountLt = Number(stepSheet.amountLt);
+      if (stepSheet.requestType) rule.requestType = stepSheet.requestType;
+      if (stepSheet.stockCond === 'in') rule.inStock = true;
+      if (stepSheet.stockCond === 'out') rule.inStock = false;
+      const common = {
+        name: stepSheet.name.trim(),
+        step_kind: stepSheet.kind,
+        approver_role_id: roleId,
+        threshold_amount: threshold,
+        condition_rule: Object.keys(rule).length ? rule : null,
+        on_reject: stepSheet.onReject,
+        on_reject_step_order: stepSheet.onReject === 'return_step' ? Number(stepSheet.onRejectStep) : null,
+      };
       if (stepSheet.mode === 'add') {
-        await api.admin.addStep(selectedId, {
-          name: stepSheet.name.trim(),
-          step_kind: stepSheet.kind,
-          approver_role_id: roleId,
-          order_index: localSteps.length + 1,
-          threshold_amount: threshold,
-        });
+        await api.admin.addStep(selectedId, { ...common, order_index: localSteps.length + 1 });
       } else {
-        await api.admin.updateStep(selectedId, stepSheet.id!, {
-          name: stepSheet.name.trim(),
-          step_kind: stepSheet.kind,
-          approver_role_id: roleId,
-          threshold_amount: threshold,
-        });
+        await api.admin.updateStep(selectedId, stepSheet.id!, common);
       }
       setStepSheet(null);
       await load(selectedId);
@@ -219,7 +243,11 @@ export function WorkflowPage() {
 
       <div className="flex items-center justify-between">
         <Label>Шаги согласования</Label>
-        <MiniBtn className="bg-accent/15 text-accent" disabled={dirty} onClick={() => setStepSheet({ mode: 'add', name: '', kind: 'approval', roleId: '', threshold: '' })}>
+        <MiniBtn
+          className="bg-accent/15 text-accent"
+          disabled={dirty}
+          onClick={() => setStepSheet({ mode: 'add', name: '', kind: 'approval', roleId: '', threshold: '', ownOrder: localSteps.length + 1, ...emptyConditions })}
+        >
           + Добавить шаг
         </MiniBtn>
       </div>
@@ -237,7 +265,22 @@ export function WorkflowPage() {
             <div className="w-1.5 flex-none bg-accent" />
             <button
               disabled={dirty}
-              onClick={() => setStepSheet({ mode: 'edit', id: s.id, name: s.stepName, kind: s.stepKind ?? 'approval', roleId: s.approverRoleId ?? '', threshold: s.thresholdAmount != null ? String(s.thresholdAmount) : '' })}
+              onClick={() =>
+                setStepSheet({
+                  mode: 'edit',
+                  id: s.id,
+                  name: s.stepName,
+                  kind: s.stepKind ?? 'approval',
+                  roleId: s.approverRoleId ?? '',
+                  threshold: s.thresholdAmount != null ? String(s.thresholdAmount) : '',
+                  ownOrder: s.stepOrder,
+                  amountLt: s.conditionRule?.amountLt != null ? String(s.conditionRule.amountLt) : '',
+                  requestType: s.conditionRule?.requestType ?? '',
+                  stockCond: s.conditionRule?.inStock === true ? 'in' : s.conditionRule?.inStock === false ? 'out' : '',
+                  onReject: s.onReject ?? 'cancel',
+                  onRejectStep: s.onRejectStepOrder != null ? String(s.onRejectStepOrder) : '',
+                })
+              }
               className="min-w-0 flex-1 p-3 text-left disabled:opacity-60"
             >
               <div className="flex items-center gap-2">
@@ -250,6 +293,12 @@ export function WorkflowPage() {
                   <Pill tone="system">{s.approverRoleId ? roleName.get(s.approverRoleId) ?? 'роль' : 'без роли'}</Pill>
                 )}
                 {s.thresholdAmount != null && <Pill tone="warning">от {money(s.thresholdAmount)} UZS</Pill>}
+                {s.conditionRule?.amountLt != null && <Pill tone="warning">до {money(s.conditionRule.amountLt)} UZS</Pill>}
+                {s.conditionRule?.requestType && <Pill tone="warning">тип: {requestTypeLabel(s.conditionRule.requestType)}</Pill>}
+                {s.conditionRule?.inStock === true && <Pill tone="warning">если в наличии</Pill>}
+                {s.conditionRule?.inStock === false && <Pill tone="warning">если нет в наличии</Pill>}
+                {s.onReject === 'return_requester' && <Pill tone="danger">✕ → на доработку</Pill>}
+                {s.onReject === 'return_step' && <Pill tone="danger">✕ → на шаг {s.onRejectStepOrder}</Pill>}
               </div>
             </button>
             <div className="flex flex-none flex-col justify-center gap-1 px-2">
@@ -312,15 +361,77 @@ export function WorkflowPage() {
                 ))}
               </Select>
             </div>
-            <div className="mt-4">
-              <Label>Порог суммы, UZS (необязательно)</Label>
-              <Field
-                value={stepSheet.threshold}
-                onChange={(e) => setStepSheet({ ...stepSheet, threshold: e.target.value })}
-                placeholder="напр. 5000000"
-                inputMode="numeric"
-              />
-              <div className="mt-1 text-xs text-fg3">Шаг включается, если сумма заявки ≥ порога.</div>
+            <div className="mt-5 border-t border-line pt-4">
+              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-fg3">Условия включения шага</div>
+              <div className="mt-1 text-xs text-fg3">Шаг попадает в маршрут, только если ВСЕ заданные условия выполнены. Пустое поле — условие не проверяется.</div>
+              <div className="mt-3 flex gap-2.5">
+                <div className="flex-1">
+                  <Label>Сумма от, UZS</Label>
+                  <Field
+                    value={stepSheet.threshold}
+                    onChange={(e) => setStepSheet({ ...stepSheet, threshold: e.target.value })}
+                    placeholder="напр. 5000000"
+                    inputMode="numeric"
+                  />
+                </div>
+                <div className="flex-1">
+                  <Label>Сумма до, UZS</Label>
+                  <Field
+                    value={stepSheet.amountLt}
+                    onChange={(e) => setStepSheet({ ...stepSheet, amountLt: e.target.value })}
+                    placeholder="без границы"
+                    inputMode="numeric"
+                  />
+                </div>
+              </div>
+              <div className="mt-3">
+                <Label>Тип заявки</Label>
+                <Select value={stepSheet.requestType} onChange={(e) => setStepSheet({ ...stepSheet, requestType: (e.target as HTMLSelectElement).value })}>
+                  <option value="">Любой</option>
+                  {REQUEST_TYPE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="mt-3">
+                <Label>Наличие на складе</Label>
+                <Select value={stepSheet.stockCond} onChange={(e) => setStepSheet({ ...stepSheet, stockCond: (e.target as HTMLSelectElement).value as StepSheet['stockCond'] })}>
+                  <option value="">Не важно</option>
+                  <option value="out">Только если НЕТ в наличии</option>
+                  <option value="in">Только если ЕСТЬ в наличии</option>
+                </Select>
+                <div className="mt-1 text-xs text-fg3">Работает после шага «Проверка склада» — например, закупка нужна только когда товара нет.</div>
+              </div>
+            </div>
+            <div className="mt-5 border-t border-line pt-4">
+              <div className="mb-2 text-xs font-bold uppercase tracking-wide text-fg3">Если отклонил</div>
+              <Select value={stepSheet.onReject} onChange={(e) => setStepSheet({ ...stepSheet, onReject: (e.target as HTMLSelectElement).value })}>
+                <option value="cancel">Отменить заявку (отклонена окончательно)</option>
+                <option value="return_requester">Вернуть заявителю на доработку</option>
+                <option value="return_step" disabled={stepSheet.ownOrder <= 1}>
+                  Вернуть на более ранний шаг…
+                </option>
+              </Select>
+              {stepSheet.onReject === 'return_step' && (
+                <div className="mt-3">
+                  <Label>На какой шаг вернуть</Label>
+                  <Select value={stepSheet.onRejectStep} onChange={(e) => setStepSheet({ ...stepSheet, onRejectStep: (e.target as HTMLSelectElement).value })}>
+                    <option value="">Выберите шаг</option>
+                    {localSteps
+                      .filter((s) => s.stepOrder < stepSheet.ownOrder)
+                      .map((s) => (
+                        <option key={s.id} value={String(s.stepOrder)}>
+                          {s.stepOrder}. {s.stepName}
+                        </option>
+                      ))}
+                  </Select>
+                </div>
+              )}
+              {stepSheet.onReject === 'return_requester' && (
+                <div className="mt-1 text-xs text-fg3">Заявка получит статус «На доработке»: автор сможет исправить её и отправить повторно — маршрут начнётся заново.</div>
+              )}
             </div>
             <div className="mt-5 flex gap-2.5">
               {stepSheet.mode === 'edit' && (
@@ -328,7 +439,11 @@ export function WorkflowPage() {
                   Удалить
                 </GhostBtn>
               )}
-              <PrimaryBtn className="flex-1" disabled={busy || !stepSheet.name.trim()} onClick={submitStep}>
+              <PrimaryBtn
+                className="flex-1"
+                disabled={busy || !stepSheet.name.trim() || (stepSheet.onReject === 'return_step' && !stepSheet.onRejectStep)}
+                onClick={submitStep}
+              >
                 {busy ? '…' : 'Сохранить'}
               </PrimaryBtn>
             </div>
