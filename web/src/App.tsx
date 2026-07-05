@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { api, clearToken, getToken, setToken, getTestUser, setTestUser, type CreateRequestData } from './api';
-import { getTelegram, confirmDialog } from './telegram';
+import { getTelegram, confirmDialog, alertDialog } from './telegram';
 import { AdminPanel } from './admin/AdminPanel';
 import { WarehouseScreen } from './screens/Warehouse';
 import { InboxScreen } from './screens/Inbox';
@@ -1156,6 +1156,7 @@ function RequestsList({
           >
             <option value="">Все</option>
             <option value="pending_approval">На согласовании</option>
+            <option value="needs_revision">На доработке</option>
             <option value="approved">Согласована</option>
             <option value="rejected">Отклонена</option>
             <option value="draft">Черновик</option>
@@ -1895,10 +1896,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
       setPending(null);
       load();
       if (res?.warnings?.length) {
-        const msg = (res.warnings as string[]).join('\n');
-        const tg = (window as { Telegram?: { WebApp?: { showAlert?: (m: string) => void } } }).Telegram?.WebApp;
-        if (tg?.showAlert) tg.showAlert(msg);
-        else window.alert(msg);
+        alertDialog((res.warnings as string[]).join('\n'));
       }
     } catch (e) {
       setError((e as Error).message);
