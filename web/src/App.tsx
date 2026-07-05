@@ -654,9 +654,10 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
   }, [filter]);
   useEffect(() => { load(); }, [load]);
 
-  // Only a delivered (unread) notification needs marking.
+  // №9: непрочитанное = всё, что не 'read' (в т.ч. pending/failed — пуш мог не уйти,
+  // но in-app уведомление существует). Синхронно с серверным unreadCount.
   const markRead = async (n: NotifItem) => {
-    if (n.status !== 'delivered') return;
+    if (n.status === 'read') return;
     try { await api.markNotificationRead(n.id); } catch { /* best-effort — must never block navigation */ }
     setItems((prev) => (prev ? prev.map((x) => (x.id === n.id ? { ...x, status: 'read', readAt: new Date().toISOString() } : x)) : prev));
     onChanged();
@@ -676,8 +677,8 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
   };
 
   // In the "unread" tab, drop items just marked read locally.
-  const visible = items ? (filter === 'unread' ? items.filter((n) => n.status === 'delivered') : items) : null;
-  const hasUnread = (items ?? []).some((n) => n.status === 'delivered');
+  const visible = items ? (filter === 'unread' ? items.filter((n) => n.status !== 'read') : items) : null;
+  const hasUnread = (items ?? []).some((n) => n.status !== 'read');
 
   const pill = (active: boolean): CSSProperties => ({
     padding: '7px 14px', borderRadius: 10, border: '1px solid var(--border)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
@@ -717,7 +718,7 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
         )}
         {visible && visible.map((n) => {
           const st = NOTIF_STATUS[n.status] ?? { label: n.status, tint: 'accent' };
-          const unreadRow = n.status === 'delivered';
+          const unreadRow = n.status !== 'read';
           const railTint = NOTIF_PRIORITY_TINT[n.priority];
           return (
             <button

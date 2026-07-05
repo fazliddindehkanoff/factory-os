@@ -399,8 +399,9 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     if (a.reject || a.revision) continue;
     if (a.assign && !nextIsProcurement) continue; // assign only before a procurement step
     // №16б: перед шагом закупки простое «Согласовать» скрыто — начальник обязан
-    // передать заявку конкретному снабженцу (assign_procurement).
-    if (a.action === 'approve' && step.stepKind === 'approval' && nextIsProcurement) continue;
+    // передать заявку конкретному снабженцу (assign_procurement). Если исполнитель
+    // УЖЕ назначен ранее (второй проход закупки/доставки), approve остаётся (F1).
+    if (a.action === 'approve' && step.stepKind === 'approval' && nextIsProcurement && !req.responsibleUserId) continue;
     // Self-service on money/routing decisions is forbidden (separation of duties).
     if (sodBlocked(a, req, userId)) continue;
     if (a.requesterOnly && req.requesterId !== userId) continue;
@@ -550,8 +551,9 @@ export async function performAction(db: Db, input: PerformInput) {
       );
     }
     // №16б: серверное зеркало правила «перед закупкой — только передача снабженцу»:
-    // approve на approval-шаге, за которым идёт procurement, отклоняется и через API.
-    if (def.action === 'approve' && step.stepKind === 'approval' && req.workflowId) {
+    // approve на approval-шаге, за которым идёт procurement, отклоняется и через API,
+    // но ТОЛЬКО пока исполнитель ещё не назначен (второй проход закупки — F1).
+    if (def.action === 'approve' && step.stepKind === 'approval' && req.workflowId && !req.responsibleUserId) {
       const steps = await loadKindSteps(tx, req.workflowId);
       const ctx0 = reqContext(req);
       const nxt = nextStep(steps, ctx0, step.stepOrder) as KindStep | null;
