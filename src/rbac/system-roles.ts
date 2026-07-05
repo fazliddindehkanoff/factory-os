@@ -15,6 +15,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'admin',
     name: 'Администратор',
     permissions: [
+      'reports.status_summary',
       'users.view',
       'users.manage',
       'roles.manage',
@@ -31,6 +32,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'director',
     name: 'Директор',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'approvals.view',
       'approvals.approve',
@@ -46,6 +48,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'finance',
     name: 'Финансист',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'approvals.view',
       'approvals.approve',
@@ -58,6 +61,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'procurement',
     name: 'Снабжение',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'procurement.view',
       'procurement.quote',
@@ -70,6 +74,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'warehouse',
     name: 'Склад',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'approvals.view',
       'approvals.approve',
@@ -84,6 +89,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'dept_head',
     name: 'Руководитель отдела',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'requests.create',
       'approvals.view',
@@ -99,12 +105,14 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'warehouse_worker',
     name: 'Работник склада',
-    permissions: ['requests.view', 'warehouse.view', 'warehouse.check_stock', 'warehouse.receive', 'warehouse.issue'],
+    permissions: [
+      'reports.status_summary','requests.view', 'warehouse.view', 'warehouse.check_stock', 'warehouse.receive', 'warehouse.issue'],
   },
   {
     code: 'procurement_head',
     name: 'Руководитель снабжения',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'reports.view',
       'procurement.view',
@@ -121,6 +129,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'finance_head',
     name: 'Руководитель финансов',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'reports.view',
       'finance.view',
@@ -134,6 +143,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'deputy_director',
     name: 'Заместитель директора',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'reports.view',
       'finance.view',
@@ -146,6 +156,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'operations_lead',
     name: 'Руководитель внедрения',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'requests.create',
       'reports.view',
@@ -161,6 +172,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'procurement_manager',
     name: 'Менеджер по снабжению',
     permissions: [
+      'reports.status_summary',
       'requests.view',
       'approvals.view',
       'procurement.view',
@@ -173,21 +185,25 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'finance_manager',
     name: 'Финансовый менеджер',
-    permissions: ['requests.view', 'approvals.view', 'finance.view', 'finance.mark_paid'],
+    permissions: [
+      'reports.status_summary','requests.view', 'approvals.view', 'finance.view', 'finance.mark_paid'],
   },
   {
     code: 'accountant',
     name: 'Бухгалтер',
-    permissions: ['requests.view', 'finance.view'],
+    permissions: [
+      'reports.status_summary','requests.view', 'finance.view'],
   },
   {
     code: 'auditor',
     name: 'Аудитор',
-    permissions: ['requests.view', 'reports.view', 'audit.view', 'suppliers.view'],
+    permissions: [
+      'reports.status_summary','requests.view', 'reports.view', 'audit.view', 'suppliers.view'],
   },
   {
     code: 'observer',
     name: 'Наблюдатель',
-    permissions: ['requests.view', 'reports.view'],
+    permissions: [
+      'reports.status_summary','requests.view', 'reports.view'],
   },
 ];

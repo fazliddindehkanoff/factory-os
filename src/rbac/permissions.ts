@@ -49,6 +49,9 @@ export const PERMISSIONS: PermissionDef[] = [
   // audit / reports ('audit.export' removed — M5, no export endpoint yet)
   { code: 'audit.view', name: 'Просмотр аудита', module: 'audit' },
   { code: 'reports.view', name: 'Просмотр отчётов', module: 'reports' },
+  // №14: сводка «Заявки по статусам» на дашборде — отдельное право, чтобы админ
+  // раздавал его ролям галочкой (в т.ч. кастомным), не открывая полный reports.view.
+  { code: 'reports.status_summary', name: 'Сводка «Заявки по статусам»', module: 'reports' },
 ];
 
 export const PERMISSION_CODES: string[] = PERMISSIONS.map((p) => p.code);

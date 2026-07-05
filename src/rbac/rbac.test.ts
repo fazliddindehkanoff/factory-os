@@ -42,7 +42,7 @@ describe('RBAC seeding + enforcement', () => {
     await seedSystemRolesAndPermissions(db); // run a second time
     const perms = await db.select().from(schema.permissions);
     const roles = await db.select().from(schema.roles);
-    expect(perms.length).toBe(26); // catalog size (2026-07-02: 7 dead permissions removed — M5)
+    expect(perms.length).toBe(27); // catalog size (M5 −7 dead; 2026-07-06 +reports.status_summary — №14)
     expect(roles.length).toBe(18); // system roles, no duplicates
   });
 
@@ -87,7 +87,7 @@ describe('RBAC seeding + enforcement', () => {
     expect(await hasPermission(db, u.id, 'finance.mark_paid', { holdingId: h.id })).toBe(true);
     expect(await hasPermission(db, u.id, 'settings.manage', { holdingId: h.id })).toBe(true);
     const codes = await getUserPermissionCodes(db, u.id);
-    expect(codes.length).toBe(26);
+    expect(codes.length).toBe(27);
   });
 
   it('denies everything for a user with no role assignment (default-deny)', async () => {
