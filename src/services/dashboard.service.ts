@@ -9,7 +9,7 @@ import { and, count, desc, eq, isNotNull, notInArray, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility } from '../http/request-visibility.js';
-import { availableActions } from './lifecycle.service.js';
+import { availableActions, inboxCandidates } from './lifecycle.service.js';
 import { TERMINAL_STATUSES } from '../workflow/step-kinds.js';
 
 type Db = any;
@@ -134,14 +134,10 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   // requests the user can currently ACT on — approval steps AND action steps
   // (warehouse/procurement/finance), via availableActions. The old approvals-only
   // count missed action steps, so the KPI showed 0 while the queue showed 1.
+  // Тот же SQL-префильтр, что у инбокса (фикс LIMIT-100) — KPI и список совпадают.
   let pendingForMe = 0;
-  const inflight = await db
-    .select()
-    .from(schema.requests)
-    .where(and(eq(schema.requests.holdingId, holdingId), notInArray(schema.requests.status, ['closed', 'rejected', 'draft', 'approved', 'cancelled', 'archived'])))
-    .limit(100);
+  const inflight = await inboxCandidates(db, userId, holdingId);
   for (const r of inflight) {
-    if (!r.currentStepId) continue;
     const acts = await availableActions(db, r, userId);
     if (acts.length > 0) pendingForMe++;
   }

@@ -24,6 +24,9 @@ export const approvedFinalMessage = (requestNumber: string): string =>
 export const rejectedMessage = (requestNumber: string, reason: string): string =>
   `❌ Заявка ${requestNumber} отклонена.\nПричина: ${reason}`;
 
+export const needsRevisionMessage = (requestNumber: string, reason: string): string =>
+  `✏️ Заявка ${requestNumber} возвращена вам на доработку.${reason ? `\nПричина: ${reason}` : ''}\nИсправьте её и нажмите «Отправить повторно».`;
+
 export const newRequestForApproverMessage = (requestNumber: string, title: string, stepName: string): string =>
   `📋 Новая заявка ${requestNumber} ожидает вашего действия.\n${title ? `Тема: ${title}\n` : ''}Этап: ${stepName}`;
 

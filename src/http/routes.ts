@@ -1,6 +1,6 @@
 /** REST routes. Auth on every /api route except login; RBAC checked per action. */
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { and, desc, eq, inArray, notInArray, or, ilike, gte, lte, count, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, ilike, gte, lte, count, isNull, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
@@ -10,7 +10,7 @@ import { getRequestVisibility } from './request-visibility.js';
 import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
-import { performAction, availableActions, statusLabelFor } from '../services/lifecycle.service.js';
+import { performAction, availableActions, statusLabelFor, inboxCandidates } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
@@ -23,7 +23,7 @@ import {
   markRead,
   markAllRead,
 } from '../services/notification.service.js';
-import { approvedStageMessage, approvedFinalMessage, rejectedMessage, newRequestForApproverMessage } from '../bot/messages.js';
+import { approvedStageMessage, approvedFinalMessage, rejectedMessage, needsRevisionMessage, newRequestForApproverMessage } from '../bot/messages.js';
 import { buildAdminRouter } from './admin.routes.js';
 import { TEST_USERNAMES, TEST_PIN } from '../db/seed-test.js';
 
@@ -538,48 +538,34 @@ export function buildRouter(deps: RouterDeps): Router {
         return;
       }
 
-      // 1. Find user's active role IDs
-      const roleRows = await db
-        .select({ roleId: schema.userRoles.roleId })
-        .from(schema.userRoles)
-        .where(and(eq(schema.userRoles.userId, u.id), eq(schema.userRoles.status, 'active')));
-      const roleIds = roleRows.map((r0: { roleId: string }) => r0.roleId);
-      if (!roleIds.length) {
-        res.json([]);
-        return;
-      }
+      // Кандидаты отбираются В SQL до какого-либо лимита (фикс LIMIT-100: раньше
+      // грузились 100 новейших открытых заявок и фильтровались после — при >100
+      // заявок в работе инбокс согласующего пустел). Общий с KPI дашборда хелпер.
+      const all = await inboxCandidates(db, u.id, u.holdingId);
 
-      // 2. Find workflow steps these roles can act on
-      // 3. Load only in-flight requests in this holding with a currentStepId
-      const rows = await db
-        .select()
-        .from(schema.requests)
-        .where(
-          and(
-            eq(schema.requests.holdingId, u.holdingId),
-            notInArray(schema.requests.status, ['closed', 'rejected', 'draft', 'approved']),
-          ),
-        )
-        .orderBy(desc(schema.requests.createdAt))
-        .limit(100);
+      // Пагинация: ?limit (1..200, по умолчанию 100) и ?offset — применяются к
+      // УЖЕ отфильтрованному списку, поэтому «дальние» заявки не теряются.
+      const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
+      const offset = Math.max(0, Number(req.query.offset) || 0);
 
-      // 4. Only check availableActions for requests on a step this user might handle
+      // availableActions — финальная проверка прав на каждом кандидате.
       const inbox: unknown[] = [];
-      for (const r0 of rows) {
-        if (!r0.currentStepId) continue;
-        // Quick pre-check: the step must exist (role-based or permission-based)
+      let matched = 0;
+      for (const r0 of all) {
         const actions = await availableActions(db, r0, u.id);
-        if (actions.length > 0) {
-          inbox.push({
-            id: r0.id,
-            requestNumber: r0.requestNumber,
-            title: r0.title,
-            status: r0.status,
-            statusLabel: await statusLabelFor(db, r0),
-            estimatedAmount: r0.estimatedAmount,
-            actions,
-          });
-        }
+        if (actions.length === 0) continue;
+        matched++;
+        if (matched <= offset) continue;
+        inbox.push({
+          id: r0.id,
+          requestNumber: r0.requestNumber,
+          title: r0.title,
+          status: r0.status,
+          statusLabel: await statusLabelFor(db, r0),
+          estimatedAmount: r0.estimatedAmount,
+          actions,
+        });
+        if (inbox.length >= limit) break;
       }
       res.json(inbox);
     } catch (e) {
@@ -902,6 +888,9 @@ export function buildRouter(deps: RouterDeps): Router {
         notifyRequester(db, notify, result.id, (rn) => approvedFinalMessage(rn));
       } else if (result.status === 'rejected') {
         notifyRequester(db, notify, result.id, (rn) => rejectedMessage(rn, String(body.comment ?? '').trim()));
+      } else if (result.status === 'needs_revision' && result.status !== fromStatus) {
+        // Ветка «вернуть на доработку»: автор должен узнать сразу, не заходя в приложение.
+        notifyRequester(db, notify, result.id, (rn) => needsRevisionMessage(rn, String(body.comment ?? '').trim()));
       } else if (result.currentStepId && result.status !== fromStatus) {
         // Only notify about stage progression when status actually changed
         notifyRequester(db, notify, result.id, (rn) => approvedStageMessage(rn));

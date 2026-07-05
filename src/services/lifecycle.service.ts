@@ -11,7 +11,7 @@
  * the new status, a status-history row, approval/signature bookkeeping and a DNA
  * audit log.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
 import { verifyPin } from '../auth/pin.js';
@@ -24,10 +24,12 @@ import {
   findKindAction,
   statusForStep,
   STEP_KIND_LABELS,
+  STEP_KINDS,
   STATUS_NEEDS_REVISION,
   TERMINAL_APPROVED,
   TERMINAL_CLOSED,
   TERMINAL_REJECTED,
+  TERMINAL_STATUSES,
   type KindStep,
   type OnRejectPolicy,
   type StepActionDef,
@@ -268,6 +270,84 @@ async function canHandleStep(db: Db, userId: string, req: RequestRow, step: Kind
     if (await actorMayAct(db, userId, req, step, a)) return true;
   }
   return false;
+}
+
+/**
+ * Кандидаты инбокса «Ожидают меня» — SQL-префильтр ДО каких-либо лимитов (фикс
+ * LIMIT-100: раньше грузились 100 новейших открытых заявок и фильтровались после,
+ * поэтому при >100 заявок в работе инбокс согласующего пустел). Отбор по текущему
+ * шагу: approval — роль шага среди ролей пользователя; прочие виды — есть право
+ * хотя бы одного действия шага; close — только автор; procurement — чужое
+ * назначение отсекает; плюс собственные заявки «на доработке» (resubmit).
+ * availableActions остаётся финальным судьёй по каждому кандидату — здесь только
+ * сужение множества. Используется инбоксом И KPI дашборда, чтобы они совпадали.
+ */
+export async function inboxCandidates(db: Db, userId: string, holdingId: string): Promise<(RequestRow & { requestNumber: string; title: string | null; createdAt: unknown })[]> {
+  const roleRows = await db
+    .select({ roleId: schema.userRoles.roleId })
+    .from(schema.userRoles)
+    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
+  const roleIds = roleRows.map((r: { roleId: string }) => r.roleId);
+  const permCodes = await getUserPermissionCodes(db, userId);
+
+  const ws = schema.workflowSteps;
+  const stepConds: SQL[] = [];
+  if (roleIds.length) {
+    stepConds.push(and(eq(ws.stepKind, 'approval'), inArray(ws.approverRoleId, roleIds)) as SQL);
+  }
+  const workableKinds = STEP_KINDS.filter(
+    (k) =>
+      k !== 'approval' &&
+      k !== 'close' &&
+      k !== 'procurement' &&
+      actionsForKind(k).some((a) => !a.reject && permCodes.includes(a.perm)),
+  );
+  if (workableKinds.length) stepConds.push(inArray(ws.stepKind, workableKinds) as SQL);
+  if (actionsForKind('close').some((a) => !a.reject && permCodes.includes(a.perm))) {
+    stepConds.push(and(eq(ws.stepKind, 'close'), eq(schema.requests.requesterId, userId)) as SQL);
+  }
+  if (actionsForKind('procurement').some((a) => !a.reject && permCodes.includes(a.perm))) {
+    stepConds.push(
+      and(
+        eq(ws.stepKind, 'procurement'),
+        or(isNull(schema.requests.responsibleUserId), eq(schema.requests.responsibleUserId, userId)),
+      ) as SQL,
+    );
+  }
+
+  const candidates = stepConds.length
+    ? await db
+        .select({ r: schema.requests })
+        .from(schema.requests)
+        .innerJoin(ws, eq(schema.requests.currentStepId, ws.id))
+        .where(
+          and(
+            eq(schema.requests.holdingId, holdingId),
+            notInArray(schema.requests.status, [...TERMINAL_STATUSES, 'draft']),
+            or(...stepConds),
+          ),
+        )
+        .orderBy(desc(schema.requests.createdAt))
+    : [];
+
+  // «На доработке» ждёт самого автора; у таких заявок нет текущего шага.
+  const revisions = await db
+    .select()
+    .from(schema.requests)
+    .where(
+      and(
+        eq(schema.requests.holdingId, holdingId),
+        eq(schema.requests.status, STATUS_NEEDS_REVISION),
+        eq(schema.requests.requesterId, userId),
+      ),
+    )
+    .orderBy(desc(schema.requests.createdAt));
+
+  const all = [...revisions, ...candidates.map((c: { r: RequestRow }) => c.r)];
+  all.sort(
+    (a: any, b: any) => new Date(b.createdAt as string).getTime() - new Date(a.createdAt as string).getTime(),
+  );
+  return all as (RequestRow & { requestNumber: string; title: string | null; createdAt: unknown })[];
 }
 
 /** Actions the user may take on this request right now (step kind × permission × scope × role). */
