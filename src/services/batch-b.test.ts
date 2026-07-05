@@ -168,6 +168,37 @@ describe('№16б — перед закупкой только «Передат�
     expect(r.responsibleUserId).toBe(snab);
   });
 
+  it('F1: если снабженец уже назначен, approve перед вторым шагом закупки остаётся', async () => {
+    const db = await setup();
+    const { h, f } = await org(db);
+    const requester = await mkUser(db, h.id, ['requester'], 'req');
+    const ph = await mkUser(db, h.id, ['procurement_head'], 'ph');
+    const dir = await mkUser(db, h.id, ['director'], 'dir');
+    const snab = await mkUser(db, h.id, ['procurement_manager'], 'snab');
+    const [wf] = await db.insert(schema.workflows).values({ holdingId: h.id, name: 'WF1', isActive: true }).returning();
+    await db.insert(schema.workflowSteps).values([
+      { workflowId: wf.id, stepOrder: 1, stepName: 'РОС', stepKind: 'approval', approverRoleId: await roleId(db, 'procurement_head') },
+      { workflowId: wf.id, stepOrder: 2, stepName: 'Закупка', stepKind: 'procurement', approverRoleId: await roleId(db, 'procurement_manager') },
+      { workflowId: wf.id, stepOrder: 3, stepName: 'Директор', stepKind: 'approval', approverRoleId: await roleId(db, 'director') },
+      { workflowId: wf.id, stepOrder: 4, stepName: 'Доставка (закупка 2)', stepKind: 'procurement', approverRoleId: await roleId(db, 'procurement_manager') },
+      { workflowId: wf.id, stepOrder: 5, stepName: 'Закрытие', stepKind: 'close', approverRoleId: await roleId(db, 'requester') },
+    ]);
+    const req = await createRequest(db, { holdingId: h.id, requesterId: requester, factoryId: f.id, items: [{ name: 'X', quantity: 1, unitPrice: 3 }] });
+
+    await performAction(db, { requestId: req.id, action: 'assign_procurement', actor: { id: ph, holdingId: h.id }, pin: PIN, assigneeId: snab });
+    await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: snab, holdingId: h.id }, amount: 500, supplierName: 'ООО X' });
+    const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
+    await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: snab, holdingId: h.id }, quotationId: q.id });
+
+    // Шаг «Директор» перед ВТОРОЙ закупкой: исполнитель уже назначен → approve есть.
+    const dirActs = acts(await availableActions(db, await reload(db, req.id), dir));
+    expect(dirActs).toContain('approve');
+    await performAction(db, { requestId: req.id, action: 'approve', actor: { id: dir, holdingId: h.id }, pin: PIN });
+    const r = await reload(db, req.id);
+    expect(r.status).toBe('procurement');
+    expect(r.responsibleUserId).toBe(snab); // назначение сохранилось
+  });
+
   it('если следующий шаг НЕ закупка (in stock → закупка выпадает), approve остаётся', async () => {
     const db = await setup();
     const { h, f } = await org(db);
