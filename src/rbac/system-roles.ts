@@ -60,12 +60,13 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'procurement',
     name: 'Снабжение',
+    // Выбор поставщика — ТОЛЬКО у руководителя снабжения (решение владельца
+    // 2026-07-06): отдел собирает КП, руководитель выбирает.
     permissions: [
       'reports.status_summary',
       'requests.view',
       'procurement.view',
       'procurement.quote',
-      'procurement.select_supplier',
       'suppliers.view',
       'suppliers.manage',
     ],
@@ -171,13 +172,13 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'procurement_manager',
     name: 'Менеджер по снабжению',
+    // Собирает КП; выбор поставщика — только procurement_head (2026-07-06).
     permissions: [
       'reports.status_summary',
       'requests.view',
       'approvals.view',
       'procurement.view',
       'procurement.quote',
-      'procurement.select_supplier',
       'suppliers.view',
       'suppliers.manage',
     ],

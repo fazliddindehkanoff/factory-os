@@ -55,7 +55,8 @@ describe('seedTest', () => {
     await act('nach_sklad_01', id, 'assign_procurement', { assigneeId: users['snab_01'].id });
     await act('snab_01', id, 'add_quotation', { amount: 100000, supplierName: 'ООО Тест-Снаб' });
     const [quote] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, id));
-    await act('snab_01', id, 'select_supplier', { quotationId: quote.id });
+    // Выбор поставщика — только руководитель снабжения (2026-07-06).
+    await act('nach_snab_01', id, 'select_supplier', { quotationId: quote.id });
     await act('zamdir_01', id, 'approve');
     await act('gendir_01', id, 'approve');
     await act('founder_01', id, 'approve');

@@ -228,8 +228,15 @@ async function actorMayAct(
     if (!(await actorHoldsRoleInScope(db, userId, step.approverRoleId, scope))) return false;
   }
   // Bug #8: once a specific procurement person is assigned, only THEY work the
-  // procurement step (others with the permission are locked out).
-  if (step.stepKind === 'procurement' && req.responsibleUserId && req.responsibleUserId !== userId) {
+  // procurement step (others with the permission are locked out). Исключение —
+  // «Выбрать поставщика»: это решение руководителя снабжения (только у него
+  // есть право с 2026-07-06), назначение снабженца его не запирает.
+  if (
+    step.stepKind === 'procurement' &&
+    req.responsibleUserId &&
+    req.responsibleUserId !== userId &&
+    def.quote !== 'select'
+  ) {
     return false;
   }
   return true;
@@ -323,7 +330,11 @@ export async function inboxCandidates(db: Db, userId: string, holdingId: string)
   if (actionsForKind('close').some((a) => !a.reject && permCodes.includes(a.perm))) {
     stepConds.push(and(eq(ws.stepKind, 'close'), eq(schema.requests.requesterId, userId)) as SQL);
   }
-  if (actionsForKind('procurement').some((a) => !a.reject && permCodes.includes(a.perm))) {
+  if (permCodes.includes('procurement.select_supplier')) {
+    // Руководитель снабжения выбирает поставщика на ЛЮБОЙ закупке — назначение
+    // снабженца не убирает шаг из его инбокса (2026-07-06).
+    stepConds.push(eq(ws.stepKind, 'procurement') as SQL);
+  } else if (actionsForKind('procurement').some((a) => !a.reject && permCodes.includes(a.perm))) {
     stepConds.push(
       and(
         eq(ws.stepKind, 'procurement'),

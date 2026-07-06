@@ -127,6 +127,8 @@ describe('L4 — estimatedAmount is locked by supplier selection only', () => {
     const { h, f } = await org(db);
     const requester = await mkUser(db, h.id, ['requester'], 'req');
     const proc = await mkUser(db, h.id, ['procurement'], 'proc');
+    // Выбор поставщика — только у руководителя снабжения (2026-07-06).
+    const procHead = await mkUser(db, h.id, ['procurement_head'], 'ph');
     const [wf] = await db.insert(schema.workflows).values({ holdingId: h.id, name: 'Proc', isActive: true }).returning();
     await db.insert(schema.workflowSteps).values([
       { workflowId: wf.id, stepOrder: 1, stepName: 'Закупка', stepKind: 'procurement', approverRoleId: await roleId(db, 'procurement') },
@@ -143,7 +145,7 @@ describe('L4 — estimatedAmount is locked by supplier selection only', () => {
       .select()
       .from(schema.quotations)
       .where(and(eq(schema.quotations.requestId, req.id), eq(schema.quotations.supplierName, 'B')));
-    const r = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: proc, holdingId: h.id }, quotationId: qb.id });
+    const r = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: procHead, holdingId: h.id }, quotationId: qb.id });
     expect(r.estimatedAmount).toBe(5000);
   });
 });

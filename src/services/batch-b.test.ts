@@ -188,7 +188,18 @@ describe('№16б — перед закупкой только «Передат�
     await performAction(db, { requestId: req.id, action: 'assign_procurement', actor: { id: ph, holdingId: h.id }, pin: PIN, assigneeId: snab });
     await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: snab, holdingId: h.id }, amount: 500, supplierName: 'ООО X' });
     const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: snab, holdingId: h.id }, quotationId: q.id });
+
+    // Выбор поставщика — ТОЛЬКО руководитель снабжения (2026-07-06): у снабженца
+    // права нет вовсе, а руководителя назначение исполнителя не запирает.
+    await expect(
+      performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: snab, holdingId: h.id }, quotationId: q.id }),
+    ).rejects.toThrow(/Недостаточно прав/);
+    const snabActs = acts(await availableActions(db, await reload(db, req.id), snab));
+    expect(snabActs).toContain('add_quotation');
+    expect(snabActs).not.toContain('select_supplier');
+    const phActs = acts(await availableActions(db, await reload(db, req.id), ph));
+    expect(phActs).toContain('select_supplier');
+    await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: ph, holdingId: h.id }, quotationId: q.id });
 
     // Шаг «Директор» перед ВТОРОЙ закупкой: исполнитель уже назначен → approve есть.
     const dirActs = acts(await availableActions(db, await reload(db, req.id), dir));

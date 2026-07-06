@@ -63,6 +63,8 @@ describe('full 8-link out-of-stock chain', () => {
     const dh = await mkUser(db, h.id, 'dept_head', 'dh', true);
     const wh = await mkUser(db, h.id, 'warehouse', 'wh');
     const proc = await mkUser(db, h.id, 'procurement', 'proc');
+    // Выбор поставщика — только у руководителя снабжения (2026-07-06).
+    const procHead = await mkUser(db, h.id, 'procurement_head', 'ph');
     const fin = await mkUser(db, h.id, 'finance', 'fin', true);
 
     const req = await createRequest(db, {
@@ -94,7 +96,7 @@ describe('full 8-link out-of-stock chain', () => {
     // 3 → 4: КП + supplier selection locks the amount.
     await act('add_quotation', proc, { supplierName: 'ООО Ремни', amount: 7000 });
     const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    const r3 = await act('select_supplier', proc, { quotationId: q.id });
+    const r3 = await act('select_supplier', procHead, { quotationId: q.id });
     expect(r3.status).toBe('finance_payment');
     expect(r3.estimatedAmount).toBe(7000);
 
