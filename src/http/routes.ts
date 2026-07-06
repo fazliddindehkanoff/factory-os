@@ -1187,7 +1187,22 @@ export function buildRouter(deps: RouterDeps): Router {
         if (PRIORITIES.includes(body.priority)) patch.priority = body.priority;
       }
       if (body.warehouseName !== undefined) patch.warehouseName = String(body.warehouseName).trim() || null;
-      if (body.neededDate !== undefined) patch.neededDate = body.neededDate ? new Date(body.neededDate) : null;
+      if (body.neededDate !== undefined) {
+        // №5: и при редактировании дата «необходимо к» не может быть в прошлом.
+        if (body.neededDate) {
+          const nd = new Date(body.neededDate);
+          if (isNaN(nd.getTime())) { res.status(400).json({ error: 'Invalid neededDate' }); return; }
+          const today0 = new Date();
+          today0.setHours(0, 0, 0, 0);
+          if (nd.getTime() < today0.getTime()) {
+            res.status(400).json({ error: 'Дата «необходимо к» не может быть в прошлом' });
+            return;
+          }
+          patch.neededDate = nd;
+        } else {
+          patch.neededDate = null;
+        }
+      }
       const [updated] = await db
         .update(schema.requests)
         .set(patch)

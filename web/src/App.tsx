@@ -1354,6 +1354,15 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
     return String(v ?? '').trim().length > 0;
   };
   const missingRequired = stepFields(steps[idx] ?? -1).filter((f) => f.required && !filled(f));
+  // №5: атрибут min закрывает только пикер — руками прошлую дату всё ещё можно
+  // впечатать. Валидируем значение и блокируем «Далее» (сервер дублирует).
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const pastDate = (f: FormField): boolean => {
+    if (f.type !== 'date') return false;
+    const v = String(values[f.key] ?? '').trim();
+    return v !== '' && v < todayISO;
+  };
+  const pastDates = stepFields(steps[idx] ?? -1).filter(pastDate);
 
   const submit = async () => {
     if (submitLock.current) return;
@@ -1427,7 +1436,9 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
   };
 
   const renderField = (f: FormField) => {
-    const optional = !f.required ? (
+    const optional = pastDate(f) ? (
+      <span style={{ fontWeight: 600, color: 'var(--danger)' }}> — дата в прошлом, выберите сегодня или позже</span>
+    ) : !f.required ? (
       <span style={{ fontWeight: 400, color: 'var(--fg3)' }}> (необязательно)</span>
     ) : showErrors && !filled(f) ? (
       <span style={{ fontWeight: 600, color: 'var(--danger)' }}> — заполните</span>
@@ -1715,14 +1726,14 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
         {!onReview && !onDoneStep && (
           <button
             onClick={() => {
-              if (missingRequired.length === 0) {
+              if (missingRequired.length === 0 && pastDates.length === 0) {
                 setShowErrors(false);
                 setIdx((i) => i + 1);
               } else {
                 setShowErrors(true);
               }
             }}
-            style={{ flex: 1, padding: 15, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}
+            style={{ flex: 1, padding: 15, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: pastDates.length > 0 ? 0.6 : 1 }}
           >
             Далее
           </button>
