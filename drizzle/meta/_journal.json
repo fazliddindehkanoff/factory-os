@@ -113,6 +113,13 @@
       "when": 1783296000000,
       "tag": "0015_status_summary_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1783382400000,
+      "tag": "0016_supplier_choice_head_only",
+      "breakpoints": true
     }
   ]
 }

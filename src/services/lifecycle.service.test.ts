@@ -113,6 +113,8 @@ describe('data-driven lifecycle', () => {
     const dh = await mkUser(db, h.id, 'dept_head', 'dh', true);
     const wh = await mkUser(db, h.id, 'warehouse', 'wh');
     const proc = await mkUser(db, h.id, 'procurement', 'proc');
+    // Выбор поставщика — только у руководителя снабжения (2026-07-06).
+    const procHead = await mkUser(db, h.id, 'procurement_head', 'ph');
 
     const req = await newRequest(db, h, f, requester);
     await performAction(db, { requestId: req.id, action: 'approve', actor: { id: dh, holdingId: h.id }, pin: PIN });
@@ -124,7 +126,7 @@ describe('data-driven lifecycle', () => {
     const r3 = await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: h.id }, supplierName: 'ООО Поставка', amount: 5000 });
     expect(r3.status).toBe('procurement');
     const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    const r4 = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: proc, holdingId: h.id }, quotationId: q.id });
+    const r4 = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: procHead, holdingId: h.id }, quotationId: q.id });
     expect(r4.status).toBe('finance_payment');
     expect(r4.estimatedAmount).toBe(5000);
   });
