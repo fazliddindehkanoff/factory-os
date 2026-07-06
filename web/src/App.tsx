@@ -321,7 +321,7 @@ export default function App() {
         {screen.name === 'detail' && (
           <RequestDetailView id={screen.id} me={me} tick={tick} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
         )}
-        {screen.name === 'approvals' && <InboxScreen onOpen={(id) => setScreen({ name: 'detail', id, from: 'approvals' })} permissions={me.permissions} />}
+        {screen.name === 'approvals' && <InboxScreen onOpen={(id) => setScreen({ name: 'detail', id, from: 'approvals' })} permissions={me.permissions} tick={tick} />}
         {screen.name === 'warehouse' && <WarehouseScreen permissions={me.permissions} />}
         {screen.name === 'procurement' && (
           <ProcurementScreen canManage={me.permissions.includes('suppliers.manage')} onOpen={(id) => setScreen({ name: 'detail', id, from: 'procurement' })} />
@@ -566,22 +566,25 @@ const pickItems = (res: any): QueueItem[] => (Array.isArray(res) ? res : res?.it
 
 // Role-aware queue preview: fetches a list endpoint, shows top items with
 // loading / empty / error states. Used for "My Approvals" and the profile queue.
-function QueuePreview({ title, load, onOpen, onSeeAll, emptyText }: {
+function QueuePreview({ title, load, onOpen, onSeeAll, emptyText, tick = 0 }: {
   title: string;
   load: () => Promise<QueueItem[]>;
   onOpen: (id: string) => void;
   onSeeAll?: () => void;
   emptyText: string;
+  tick?: number;
 }) {
   const [rows, setRows] = useState<QueueItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    setRows(null); setErr(null);
-    load().then((r) => { if (alive) setRows(r); }).catch((e) => { if (alive) setErr((e as Error).message); });
+    // №8: блок обновляется на том же 30с-тике, что и KPI-плитки, иначе
+    // «Ожидают меня» и «Ждут моего решения» расходятся до перезахода на экран.
+    // Тихий рефреш: старые данные видимы, скелетон — только при первой загрузке.
+    load().then((r) => { if (alive) { setRows(r); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title]);
+  }, [title, tick]);
   const top = rows ? rows.slice(0, 4) : [];
   return (
     <div style={{ padding: '22px 20px 0' }}>
@@ -920,12 +923,13 @@ function Home({
           onOpen={onOpen}
           onSeeAll={() => onNav({ name: 'approvals' })}
           emptyText="Нет заявок, ожидающих вашего решения."
+          tick={tick}
         />
       )}
 
       {/* Queue slot 2 — profile queue (procurement / finance) */}
       {!err && profileQueue && (
-        <QueuePreview title={profileQueue.title} load={profileQueue.load} onOpen={onOpen} onSeeAll={profileQueue.onSeeAll} emptyText={profileQueue.emptyText} />
+        <QueuePreview title={profileQueue.title} load={profileQueue.load} onOpen={onOpen} onSeeAll={profileQueue.onSeeAll} emptyText={profileQueue.emptyText} tick={tick} />
       )}
 
       {/* Queue slot 2 (warehouse) — link to the Warehouse screen (multi-status list not in API) */}

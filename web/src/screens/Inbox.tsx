@@ -34,15 +34,17 @@ function waitingSince(createdAt?: string | null): string | null {
   return `ждёт ${days} дн.`;
 }
 
-export function InboxScreen({ onOpen, permissions }: { onOpen: (id: string) => void; permissions?: string[] }) {
+export function InboxScreen({ onOpen, permissions, tick = 0 }: { onOpen: (id: string) => void; permissions?: string[]; tick?: number }) {
   const hasApprovalPerms = permissions ? INBOX_ACTOR_PERMS.some((p) => permissions.includes(p)) : true;
   const [rows, setRows] = useState<InboxItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    // №8: обновляемся на общем 30с-тике (тихо, без сброса списка) — иначе экран
+    // застывает на моменте открытия и расходится с KPI дашборда.
     if (hasApprovalPerms) {
-      api.inbox().then(setRows).catch((e) => setError((e as Error).message));
+      api.inbox().then((r) => { setRows(r); setError(null); }).catch((e) => setError((e as Error).message));
     }
-  }, [hasApprovalPerms]);
+  }, [hasApprovalPerms, tick]);
   if (!hasApprovalPerms) {
     return (
       <div>
