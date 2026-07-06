@@ -12,7 +12,7 @@ import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, type Scope } from '../rbac/rbac.js';
 import { PERMISSIONS } from '../rbac/permissions.js';
-import { STEP_KINDS, TERMINAL_STATUSES, ON_REJECT_POLICIES, type OnRejectPolicy } from '../workflow/step-kinds.js';
+import { STEP_KINDS, TERMINAL_STATUSES, ON_REJECT_POLICIES, actionsForKind, type OnRejectPolicy } from '../workflow/step-kinds.js';
 import { ValidationError, NotFoundError, ConflictError, ForbiddenError } from '../services/errors.js';
 import { notifyUser } from '../services/notification.service.js';
 import type { AuthedRequest, AuthedUser } from './auth.middleware.js';
@@ -1187,11 +1187,58 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         .from(schema.workflows)
         .where(eq(schema.workflows.holdingId, u.holdingId as string));
       const steps = await db.select().from(schema.workflowSteps);
+
+      // А3 (2026-07-06): предупреждения о «мёртвых» шагах — роль шага без нужных
+      // прав или без единого активного пользователя. Такой шаг непроходим: заявка
+      // застрянет на нём навсегда (случай роли «Исп дир» с нулём прав на проде).
+      const roleIds = [...new Set(steps.map((s: any) => s.approverRoleId).filter(Boolean))] as string[];
+      const permsByRole = new Map<string, Set<string>>();
+      const holdersByRole = new Map<string, number>();
+      if (roleIds.length) {
+        const rp = await db
+          .select({ roleId: schema.rolePermissions.roleId, code: schema.permissions.code })
+          .from(schema.rolePermissions)
+          .innerJoin(schema.permissions, eq(schema.permissions.id, schema.rolePermissions.permissionId))
+          .where(inArray(schema.rolePermissions.roleId, roleIds));
+        for (const row of rp as { roleId: string; code: string }[]) {
+          if (!permsByRole.has(row.roleId)) permsByRole.set(row.roleId, new Set());
+          permsByRole.get(row.roleId)!.add(row.code);
+        }
+        const ur = await db
+          .select({ roleId: schema.userRoles.roleId })
+          .from(schema.userRoles)
+          .where(and(
+            inArray(schema.userRoles.roleId, roleIds),
+            eq(schema.userRoles.status, 'active'),
+            eq(schema.userRoles.holdingId, u.holdingId as string),
+          ));
+        for (const row of ur as { roleId: string }[]) {
+          holdersByRole.set(row.roleId, (holdersByRole.get(row.roleId) ?? 0) + 1);
+        }
+      }
+      const warningsFor = (s: any): string[] => {
+        const w: string[] = [];
+        // close выполняет автор заявки, роль шага там не участвует.
+        if (!s.enabled || !s.approverRoleId || s.stepKind === 'close') return w;
+        const needed = actionsForKind(s.stepKind)
+          .filter((a) => !a.reject && !a.revision)
+          .map((a) => a.perm);
+        const has = permsByRole.get(s.approverRoleId) ?? new Set();
+        if (!needed.some((p) => has.has(p))) {
+          w.push('У роли этого шага нет прав для его прохождения — заявка застрянет. Выдайте права в разделе «Роли».');
+        }
+        if ((holdersByRole.get(s.approverRoleId) ?? 0) === 0) {
+          w.push('Роль этого шага не назначена ни одному пользователю — действовать некому.');
+        }
+        return w;
+      };
+
       const out = wfs.map((w: { id: string }) => ({
         ...w,
         steps: steps
           .filter((s: { workflowId: string }) => s.workflowId === w.id)
-          .sort((a: { stepOrder: number }, b: { stepOrder: number }) => a.stepOrder - b.stepOrder),
+          .sort((a: { stepOrder: number }, b: { stepOrder: number }) => a.stepOrder - b.stepOrder)
+          .map((s: any) => ({ ...s, roleWarnings: warningsFor(s) })),
       }));
       res.json(out);
     } catch (e) {

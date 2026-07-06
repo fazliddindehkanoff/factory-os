@@ -108,6 +108,8 @@ export function statusMeta(status: string): { label: string; color: string; bg: 
     case 'issue': return { label: 'Выдача', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'accepted_to_warehouse': return { label: 'Принята на склад', color: 'var(--success)', bg: 'var(--success-bg)' };
     case 'issued': return { label: 'Выдана в отдел', color: 'var(--success)', bg: 'var(--success-bg)' };
+    // Промежуточный шаг 'close' («подтвердите получение») — НЕ путать с терминальным 'closed'.
+    case 'close': return { label: 'Подтверждение получения', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'closed': return { label: 'Закрыта', color: 'var(--fg3)', bg: 'var(--chip)' };
     case 'draft': return { label: 'Черновик', color: 'var(--fg3)', bg: 'var(--chip)' };
     default: return { label: status, color: 'var(--fg2)', bg: 'var(--chip)' };
@@ -127,6 +129,7 @@ export function progressOf(status: string): string {
     case 'warehouse_receiving': case 'receiving': return '94%';
     case 'accepted_to_warehouse': return '96%';
     case 'issued': case 'issue': return '98%';
+    case 'close': return '99%';
     case 'closed': case 'rejected': return '100%';
     default: return '30%';
   }

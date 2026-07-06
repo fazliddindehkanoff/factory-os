@@ -14,6 +14,8 @@ interface Step {
   conditionRule: { amountGte?: number; amountLt?: number; inStock?: boolean; requestType?: string } | null;
   onReject: string | null;
   onRejectStepOrder: number | null;
+  /** А3: предупреждения сервера — роль шага без прав/без пользователей. */
+  roleWarnings?: string[];
 }
 
 const REQUEST_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -300,6 +302,16 @@ export function WorkflowPage() {
                 {s.onReject === 'return_requester' && <Pill tone="danger">✕ → на доработку</Pill>}
                 {s.onReject === 'return_step' && <Pill tone="danger">✕ → на шаг {s.onRejectStepOrder}</Pill>}
               </div>
+              {/* А3: «мёртвый» шаг — у роли нет прав или нет пользователей; заявка тут застрянет */}
+              {(s.roleWarnings ?? []).length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {(s.roleWarnings ?? []).map((w, wi) => (
+                    <div key={wi} className="rounded-lg bg-danger/15 px-2.5 py-1.5 text-xs font-semibold leading-snug text-danger">
+                      ⚠ {w}
+                    </div>
+                  ))}
+                </div>
+              )}
             </button>
             <div className="flex flex-none flex-col justify-center gap-1 px-2">
               <MiniBtn disabled={i === 0} onClick={() => move(i, -1)}>

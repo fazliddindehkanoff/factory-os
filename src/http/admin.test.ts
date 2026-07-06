@@ -678,3 +678,40 @@ describe('admin: frontend-review fixes', () => {
     expect(roles.body.filter((r: { roleId: string }) => r.roleId === rid).length).toBe(1);
   });
 });
+
+describe('admin: предупреждения о «мёртвых» шагах маршрута (А3, 2026-07-06)', () => {
+  it('шаг с ролью без прав и без пользователей получает roleWarnings; после выдачи прав и назначения — чисто', async () => {
+    const { app, db, holding } = await make();
+    const token = await login(app, '999');
+
+    // Кастомная роль без единого права (кейс «Исп дир» на проде).
+    const created = await request(app)
+      .post('/api/admin/roles')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: 'exec_dir', name: 'Исп дир' })
+      .expect(201);
+    const rid = created.body.id;
+
+    const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W-warn', isActive: false }).returning();
+    await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 1, stepName: 'Исп дир', stepKind: 'approval', approverRoleId: rid });
+
+    let res = await request(app).get('/api/admin/workflows').set('Authorization', `Bearer ${token}`).expect(200);
+    let step = res.body.find((w: any) => w.id === wf.id).steps[0];
+    expect(step.roleWarnings.length).toBe(2); // нет прав + нет пользователей
+    expect(step.roleWarnings.join(' ')).toMatch(/нет прав/);
+    expect(step.roleWarnings.join(' ')).toMatch(/не назначена/);
+
+    // Выдали права и назначили пользователя — предупреждения гаснут.
+    await request(app)
+      .put(`/api/admin/roles/${rid}/permissions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ codes: ['requests.view', 'approvals.view', 'approvals.approve', 'approvals.reject'] })
+      .expect(200);
+    const [u2] = await db.insert(schema.users).values({ holdingId: holding.id, fullName: 'ED', telegramId: 'ed1' }).returning();
+    await request(app).post(`/api/admin/users/${u2.id}/roles`).set('Authorization', `Bearer ${token}`).send({ roleId: rid }).expect(201);
+
+    res = await request(app).get('/api/admin/workflows').set('Authorization', `Bearer ${token}`).expect(200);
+    step = res.body.find((w: any) => w.id === wf.id).steps[0];
+    expect(step.roleWarnings).toEqual([]);
+  });
+});

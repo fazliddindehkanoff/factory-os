@@ -80,20 +80,8 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     stepGroup: 1,
     orderIndex: 4,
   },
-  {
-    fieldKey: 'priority',
-    label: 'Степень срочности',
-    fieldType: 'select',
-    system: true,
-    required: true,
-    options: [
-      { value: 'normal', label: 'Стандартная', meta: '3–7 дн.' },
-      { value: 'high', label: 'Срочная', meta: '1–3 дн.' },
-      { value: 'urgent', label: 'Аварийная', meta: 'Немедленно' },
-    ],
-    stepGroup: 1,
-    orderIndex: 5,
-  },
+  // №6: «Степень срочности» живёт прямо над «Необходимо к дате» (шаг 2) —
+  // решение владельца 2026-07-06.
   // ── Step 2: Позиция ──
   {
     fieldKey: 'itemName',
@@ -134,12 +122,26 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     orderIndex: 4,
   },
   {
+    fieldKey: 'priority',
+    label: 'Степень срочности',
+    fieldType: 'select',
+    system: true,
+    required: true,
+    options: [
+      { value: 'normal', label: 'Стандартная', meta: '3–7 дн.' },
+      { value: 'high', label: 'Срочная', meta: '1–3 дн.' },
+      { value: 'urgent', label: 'Аварийная', meta: 'Немедленно' },
+    ],
+    stepGroup: 2,
+    orderIndex: 5,
+  },
+  {
     fieldKey: 'neededDate',
     label: 'Необходимо к дате',
     fieldType: 'date',
     system: true,
     stepGroup: 2,
-    orderIndex: 5,
+    orderIndex: 6,
   },
   {
     fieldKey: 'note',
@@ -148,7 +150,7 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     system: true,
     placeholder: 'Спецификации или контекст для склада и снабжения.',
     stepGroup: 2,
-    orderIndex: 6,
+    orderIndex: 7,
   },
   {
     fieldKey: 'attachment',
@@ -156,7 +158,7 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     fieldType: 'file',
     system: false,
     stepGroup: 2,
-    orderIndex: 7,
+    orderIndex: 8,
   },
 ];
 
