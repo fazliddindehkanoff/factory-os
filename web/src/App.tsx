@@ -1432,6 +1432,14 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
     const v = values[f.key];
     if (f.type === 'checkbox') return v === true ? 'Да' : 'Нет';
     if (f.type === 'select') return optionsFor(f).find((o) => o.value === v)?.label ?? '—';
+    if (f.type === 'file') {
+      // Файлы лежат отдельно (__files_<key>), обычное значение поля всегда пусто —
+      // без этой ветки в ревью у «Вложений» стоял «—» даже с прикреплёнными файлами.
+      const files = ((values as any)['__files_' + f.key] ?? []) as { name: string }[];
+      if (files.length === 0) return 'нет';
+      const names = files.map((x) => x.name).join(', ');
+      return names.length > 60 ? `${files.length} файл(ов)` : names;
+    }
     return String(v ?? '').trim() || '—';
   };
 
