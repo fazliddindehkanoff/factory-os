@@ -32,3 +32,28 @@ export const newRequestForApproverMessage = (requestNumber: string, title: strin
 
 export const requestMovedToStepMessage = (requestNumber: string, stepName: string): string =>
   `🔄 Заявка ${requestNumber} перешла на этап: ${stepName}.`;
+
+export const returnedToStepMessage = (requestNumber: string, stepName: string, reason: string): string =>
+  `↩️ Заявка ${requestNumber} возвращена на этап: ${stepName}.${reason ? `\nПричина: ${reason}` : ''}`;
+
+export const confirmReceiptMessage = (requestNumber: string): string =>
+  `📦 Заявка ${requestNumber}: товар передан. Подтвердите получение в приложении.`;
+
+export const closedMessage = (requestNumber: string): string =>
+  `✅ Заявка ${requestNumber} закрыта.`;
+
+export const escalationReminderMessage = (requestNumber: string, stepName: string, hours: number): string =>
+  `⏰ Заявка ${requestNumber} ждёт на этапе «${stepName}» уже ${hours} ч. Пожалуйста, примите решение.`;
+
+export const escalationOverdueMessage = (requestNumber: string, stepName: string, hours: number): string =>
+  `🚨 Заявка ${requestNumber} стоит на этапе «${stepName}» ${hours} ч — вдвое дольше таймаута. Нужно вмешательство.`;
+
+export const digestMessage = (count: number, numbers: string[]): string =>
+  `⏳ Ждут вашего решения: ${count} ${plural(count, 'заявка', 'заявки', 'заявок')}.\n${numbers.join(', ')}${count > numbers.length ? '…' : ''}\nОткройте приложение, раздел «Ожидают меня».`;
+
+const plural = (n: number, one: string, few: string, many: string): string => {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+};

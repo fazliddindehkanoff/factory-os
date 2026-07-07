@@ -28,6 +28,85 @@ export interface RequestVisibility {
   canSee: (req: { requesterId: string; workflowId: string | null; id: string; responsibleUserId?: string | null }) => boolean;
 }
 
+/**
+ * Права, дающие видимость сумм всегда (закупка / финансы / аудит). Гейт общий
+ * для списка, инбокса и деталей — раньше каждый экран решал по-своему и роли
+ * видели цену в одном месте, но не видели в другом.
+ */
+export const MONEY_PERMS = [
+  'procurement.view',
+  'procurement.quote',
+  'procurement.select_supplier',
+  'finance.view',
+  'finance.mark_paid',
+  'audit.view',
+];
+
+export interface MoneyVisibility {
+  /** Денежные права — видит суммы по всем заявкам. */
+  always: boolean;
+  /** Workflow'ы, где роль пользователя согласует на шаге не раньше первой закупки. */
+  workflowIds: Set<string>;
+  /** Видит ли пользователь суммы этой заявки. */
+  canSee: (req: { workflowId: string | null }) => boolean;
+}
+
+/**
+ * Денежная видимость (bug #9, расширено 2026-07-07): суммы видят
+ *  1) держатели MONEY_PERMS — всегда;
+ *  2) согласующие маршрута, чей шаг стоит НЕ РАНЬШЕ первого шага закупки: они
+ *     утверждают уже оценённую заявку и обязаны видеть, ЧТО утверждают. Это
+ *     покрывает кастомные роли холдингов (например «Исп дир»), которым админ
+ *     не выдал procurement.* — из-за чего часть цепочки цену не видела.
+ * Роли ДО закупки (рук. отдела, склад) сумм по-прежнему не видят.
+ */
+export async function getMoneyVisibility(db: Db, userId: string): Promise<MoneyVisibility> {
+  const codes = await getUserPermissionCodes(db, userId);
+  const mk = (always: boolean, workflowIds: Set<string>): MoneyVisibility => ({
+    always,
+    workflowIds,
+    canSee: (req) => always || (req.workflowId != null && workflowIds.has(req.workflowId)),
+  });
+  if (MONEY_PERMS.some((p) => codes.includes(p))) return mk(true, new Set());
+
+  const roleRows = await db
+    .select({ roleId: schema.userRoles.roleId })
+    .from(schema.userRoles)
+    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
+  const myRoleIds = [...new Set(roleRows.map((r: { roleId: string }) => r.roleId))] as string[];
+  if (!myRoleIds.length) return mk(false, new Set());
+
+  // Первый включённый шаг закупки каждого workflow.
+  const procMins = await db
+    .select({ wf: schema.workflowSteps.workflowId, minOrder: sql<number>`min(${schema.workflowSteps.stepOrder})` })
+    .from(schema.workflowSteps)
+    .where(and(eq(schema.workflowSteps.stepKind, 'procurement' as any), sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`))
+    .groupBy(schema.workflowSteps.workflowId);
+  const minByWf = new Map<string, number>(procMins.map((r: { wf: string; minOrder: number }) => [r.wf, Number(r.minOrder)]));
+  if (!minByWf.size) return mk(false, new Set());
+
+  // Мои шаги согласования: «не раньше первой закупки» проверяем по order.
+  // Считаются только РЕШАЮЩИЕ шаги (approval/procurement/finance) — роль,
+  // прикреплённая к close-шагу (подтверждает автор) или складским шагам,
+  // сумм из-за этого не получает.
+  const mySteps = await db
+    .select({ wf: schema.workflowSteps.workflowId, ord: schema.workflowSteps.stepOrder })
+    .from(schema.workflowSteps)
+    .where(
+      and(
+        inArray(schema.workflowSteps.approverRoleId, myRoleIds),
+        inArray(schema.workflowSteps.stepKind, ['approval', 'procurement', 'finance_payment'] as any),
+        sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`,
+      ),
+    );
+  const qualified = new Set<string>();
+  for (const s of mySteps as { wf: string; ord: number }[]) {
+    const min = minByWf.get(s.wf);
+    if (min != null && s.ord >= min) qualified.add(s.wf);
+  }
+  return mk(false, qualified);
+}
+
 export async function getRequestVisibility(db: Db, userId: string): Promise<RequestVisibility> {
   const codes = await getUserPermissionCodes(db, userId);
   if (TOP_VIEW_PERMS.some((p) => codes.includes(p))) {

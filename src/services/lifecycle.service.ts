@@ -242,6 +242,16 @@ async function actorMayAct(
   return true;
 }
 
+/** Есть ли по заявке выбранное (selected) КП — т.е. поставщик уже определён. */
+async function hasSelectedQuote(db: Db, requestId: string): Promise<boolean> {
+  const [q] = await db
+    .select({ id: schema.quotations.id })
+    .from(schema.quotations)
+    .where(and(eq(schema.quotations.requestId, requestId), eq(schema.quotations.selected, true)))
+    .limit(1);
+  return !!q;
+}
+
 export interface UiAction {
   action: string;
   label: string;
@@ -404,11 +414,18 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   }
   const requirePin = await holdingRequiresPin(db, req.holdingId);
   const defs = actionsForKind(step.stepKind);
+  // Повторный проход закупки: поставщик уже выбран → снабженцу предлагается
+  // «Закуплено» (продвигает шаг); до выбора поставщика действия нет.
+  const supplierChosen =
+    step.stepKind === 'procurement' && defs.some((d) => d.needsSelectedQuote)
+      ? await hasSelectedQuote(db, req.id)
+      : false;
   const out: UiAction[] = [];
   let isHandler = false;
   for (const a of defs) {
     if (a.reject || a.revision) continue;
     if (a.assign && !nextIsProcurement) continue; // assign only before a procurement step
+    if (a.needsSelectedQuote && !supplierChosen) continue; // «Закуплено» — только когда поставщик выбран
     // №16б: перед шагом закупки простое «Согласовать» скрыто — начальник обязан
     // передать заявку конкретному снабженцу (assign_procurement). Если исполнитель
     // УЖЕ назначен ранее (второй проход закупки/доставки), approve остаётся (F1).
@@ -554,6 +571,11 @@ export async function performAction(db: Db, input: PerformInput) {
     }
     if (!(await actorMayAct(tx, input.actor.id, req, step, def))) {
       throw new ForbiddenError('Недостаточно прав для этого действия');
+    }
+    // «Закуплено» имеет смысл только после выбора поставщика — зеркало фильтра
+    // availableActions, чтобы действие нельзя было вызвать напрямую через API.
+    if (def.needsSelectedQuote && !(await hasSelectedQuote(tx, req.id))) {
+      throw new ConflictError('Сначала должен быть выбран поставщик (КП)');
     }
     // Reject / return-for-revision are reserved for the current step's handler.
     if ((def.reject || def.revision) && !(await canHandleStep(tx, input.actor.id, req, step))) {

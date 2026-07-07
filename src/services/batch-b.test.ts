@@ -208,6 +208,30 @@ describe('№16б — перед закупкой только «Передат�
     const r = await reload(db, req.id);
     expect(r.status).toBe('procurement');
     expect(r.responsibleUserId).toBe(snab); // назначение сохранилось
+
+    // ВТОРОЙ шаг закупки (поставщик уже выбран): у снабженца есть «Закуплено» —
+    // именно оно двигает заявку дальше (без него шаг вставал после отзыва
+    // select_supplier у снабженца, 2026-07-06).
+    const snabActs2 = acts(await availableActions(db, r, snab));
+    expect(snabActs2).toContain('mark_purchased');
+    await performAction(db, { requestId: req.id, action: 'mark_purchased', actor: { id: snab, holdingId: h.id } });
+    expect((await reload(db, req.id)).status).toBe('close');
+  });
+
+  it('«Закуплено» не предлагается и запрещено, пока поставщик не выбран', async () => {
+    const db = await setup();
+    const { h, f } = await org(db);
+    const requester = await mkUser(db, h.id, ['requester'], 'req');
+    const ph = await mkUser(db, h.id, ['procurement_head'], 'ph');
+    const snab = await mkUser(db, h.id, ['procurement_manager'], 'snab');
+    const req = await flow(db, h, f, requester);
+
+    await performAction(db, { requestId: req.id, action: 'assign_procurement', actor: { id: ph, holdingId: h.id }, pin: PIN, assigneeId: snab });
+    const snabActs = acts(await availableActions(db, await reload(db, req.id), snab));
+    expect(snabActs).not.toContain('mark_purchased');
+    await expect(
+      performAction(db, { requestId: req.id, action: 'mark_purchased', actor: { id: snab, holdingId: h.id } }),
+    ).rejects.toThrow(/поставщик/i);
   });
 
   it('если следующий шаг НЕ закупка (in stock → закупка выпадает), approve остаётся', async () => {
