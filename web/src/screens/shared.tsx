@@ -10,7 +10,8 @@ export interface RequestRow {
   id: string;
   requestNumber: string;
   status: string;
-  estimatedAmount: number;
+  /** null = суммы этому пользователю не положены (getMoneyVisibility). */
+  estimatedAmount: number | null;
   title: string | null;
   createdAt: string;
 }
@@ -111,6 +112,9 @@ export function statusMeta(status: string): { label: string; color: string; bg: 
     // Промежуточный шаг 'close' («подтвердите получение») — НЕ путать с терминальным 'closed'.
     case 'close': return { label: 'Подтверждение получения', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'closed': return { label: 'Закрыта', color: 'var(--fg3)', bg: 'var(--chip)' };
+    // QA 2026-07-07: cancelled/archived показывались сырым статусом (default).
+    case 'cancelled': return { label: 'Отменена', color: 'var(--fg3)', bg: 'var(--chip)' };
+    case 'archived': return { label: 'В архиве', color: 'var(--fg3)', bg: 'var(--chip)' };
     case 'draft': return { label: 'Черновик', color: 'var(--fg3)', bg: 'var(--chip)' };
     default: return { label: status, color: 'var(--fg2)', bg: 'var(--chip)' };
   }
@@ -130,7 +134,7 @@ export function progressOf(status: string): string {
     case 'accepted_to_warehouse': return '96%';
     case 'issued': case 'issue': return '98%';
     case 'close': return '99%';
-    case 'closed': case 'rejected': return '100%';
+    case 'closed': case 'rejected': case 'cancelled': case 'archived': return '100%';
     default: return '30%';
   }
 }
