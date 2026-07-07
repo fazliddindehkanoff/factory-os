@@ -64,6 +64,14 @@ export interface StepActionDef {
    * request.responsibleUserId so ONLY that person works the procurement step.
    */
   assign?: boolean;
+  /**
+   * Действие имеет смысл только когда поставщик по заявке УЖЕ выбран (есть
+   * selected-КП). Так различаются два прохода закупки: первый (сбор КП → выбор
+   * поставщика руководителем) и повторный («закупить и передать дальше») — без
+   * этого после отзыва select_supplier у снабженца (2026-07-06) повторный шаг
+   * закупки не имел для него ни одного продвигающего действия и заявка вставала.
+   */
+  needsSelectedQuote?: boolean;
 }
 
 /**
@@ -109,6 +117,9 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   procurement: [
     { action: 'add_quotation', label: 'Добавить КП', perm: 'procurement.quote', amount: true, quote: 'add', advance: false },
     { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: true },
+    // Повторный шаг закупки (поставщик уже выбран): снабженец закупает и двигает
+    // заявку дальше. Без этого действия шаг вставал — см. needsSelectedQuote.
+    { action: 'mark_purchased', label: 'Закуплено — передать дальше', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, advance: true },
     REVISE,
     REJECT,
   ],
