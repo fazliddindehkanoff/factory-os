@@ -641,6 +641,8 @@ const NOTIF_KIND: Record<string, { label: string; tint: string }> = {
   returned_step: { label: 'Возврат на этап', tint: 'warning' },
   closed: { label: 'Закрыта', tint: 'success' },
   security: { label: 'Безопасность', tint: 'warning' },
+  escalation: { label: 'Просрочено', tint: 'danger' },
+  digest: { label: 'Сводка', tint: 'accent' },
 };
 // Fallback для строк без kind (созданы до 0017) — прежние статусные ярлыки.
 const NOTIF_STATUS: Record<string, { label: string; tint: string }> = {

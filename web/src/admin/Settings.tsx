@@ -38,6 +38,25 @@ const KEYS: { key: string; label: string; placeholder: string; type?: 'select'; 
       { value: '0', label: 'Обычное подтверждение «Вы уверены?»' },
     ],
   },
+  {
+    // Эскалация: дефолтный таймаут шага в часах (у шага свой timeout_hours важнее).
+    key: 'step_timeout_hours',
+    label: 'Таймаут шага по умолчанию, часов (эскалация; пусто — выкл.)',
+    placeholder: 'напр. 24',
+  },
+  {
+    // Дайджест: «Ждёт вас» без TG-пуша, раз в интервал — одна сводка.
+    key: 'notification_digest',
+    label: 'Дайджест уведомлений «Ждёт вас»',
+    placeholder: '0',
+    type: 'select',
+    options: [
+      { value: '0', label: 'Выкл. — пуш на каждое событие' },
+      { value: '60', label: 'Сводка раз в час' },
+      { value: '180', label: 'Сводка раз в 3 часа' },
+      { value: '480', label: 'Сводка раз в 8 часов' },
+    ],
+  },
 ];
 
 export function Settings() {

@@ -31,7 +31,9 @@ export type NotificationKind =
   | 'needs_revision'
   | 'returned_step'
   | 'closed'
-  | 'security';
+  | 'security'
+  | 'escalation'
+  | 'digest';
 
 export interface NotifyInput {
   holdingId?: string | null;

@@ -24,6 +24,8 @@ import {
   markAllRead,
 } from '../services/notification.service.js';
 import { approvedStageMessage, approvedFinalMessage, rejectedMessage, needsRevisionMessage, newRequestForApproverMessage, requestMovedToStepMessage, returnedToStepMessage, confirmReceiptMessage, closedMessage } from '../bot/messages.js';
+import { stepActorIds } from '../services/step-actors.js';
+import { digestIntervalMinutes } from '../services/digest.service.js';
 import { buildAdminRouter } from './admin.routes.js';
 import { TEST_USERNAMES, TEST_PIN } from '../db/seed-test.js';
 
@@ -128,9 +130,13 @@ async function notifyStepApprovers(
     const [step] = await db.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.id, currentStepId));
     if (!step) return;
 
+    // Дайджест-режим холдинга: «Ждёт вас» пишется только in-app, TG-пуш на
+    // каждое событие подавлен — раз в интервал уйдёт одна сводка (digest.service).
+    const push = (await digestIntervalMinutes(db, reqRow.holdingId)) ? undefined : notify;
+
     if (step.stepKind === 'close') {
       if (reqRow.requesterId && reqRow.requesterId !== opts.actorId) {
-        await notifyUser(db, notify, {
+        await notifyUser(db, push, {
           holdingId: reqRow.holdingId,
           recipientUserId: reqRow.requesterId,
           title: `Подтвердите получение — ${reqRow.requestNumber}`,
@@ -144,27 +150,12 @@ async function notifyStepApprovers(
       return;
     }
 
-    let userIds: string[] = [];
-    if (step.stepKind === 'procurement' && reqRow.responsibleUserId) {
-      userIds = [reqRow.responsibleUserId];
-    } else {
-      if (!step.approverRoleId) return;
-      // Find all active user-role assignments for this role in this holding
-      const assigns = await db
-        .select({ userId: schema.userRoles.userId })
-        .from(schema.userRoles)
-        .where(and(
-          eq(schema.userRoles.roleId, step.approverRoleId),
-          eq(schema.userRoles.status, 'active'),
-          eq(schema.userRoles.holdingId, reqRow.holdingId),
-        ));
-      userIds = [...new Set(assigns.map((a: { userId: string }) => a.userId))] as string[];
-    }
+    const userIds = await stepActorIds(db, reqRow, step);
     if (!userIds.length) return;
     const msg = newRequestForApproverMessage(reqRow.requestNumber, reqRow.title ?? '', step.stepName);
     for (const uId of userIds) {
       if (uId === reqRow.requesterId || uId === opts.actorId) continue;
-      await notifyUser(db, notify, {
+      await notifyUser(db, push, {
         holdingId: reqRow.holdingId,
         recipientUserId: uId,
         title: `Требуется действие — ${reqRow.requestNumber}`,

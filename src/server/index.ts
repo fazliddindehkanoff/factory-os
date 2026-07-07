@@ -7,6 +7,8 @@ import { createBot, makeNotifier, type Notifier } from '../bot/bot.js';
 import { eq } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
+import { runEscalations } from '../services/escalation.service.js';
+import { runDigests } from '../services/digest.service.js';
 
 const env = loadEnv();
 const { db } = createDb(env.DATABASE_URL);
@@ -45,6 +47,31 @@ const app = createApp({
 const server = app.listen(env.PORT, () => {
   console.log(`✅ Factory OS API on http://localhost:${env.PORT}`);
 });
+
+// ── Фоновые задачи ────────────────────────────────────────────────────────────
+// Эскалации по таймауту шага — каждые 10 минут; дайджесты — каждые 5 минут
+// (сервис сам решает, какому холдингу/пользователю пора по его интервалу).
+// Работают и без бота: уведомления лягут in-app, без TG-пуша.
+const guardedJob = (name: string, fn: () => Promise<unknown>) => {
+  let running = false;
+  return async () => {
+    if (running) return;
+    running = true;
+    try {
+      await fn();
+    } catch (e) {
+      console.error(`[jobs] ${name} failed:`, (e as Error).message);
+    } finally {
+      running = false;
+    }
+  };
+};
+const escalationJob = guardedJob('escalations', () => runEscalations(db, notify));
+const digestJob = guardedJob('digests', () => runDigests(db, notify));
+setInterval(escalationJob, 10 * 60_000).unref();
+setInterval(digestJob, 5 * 60_000).unref();
+// Первый прогон вскоре после старта, чтобы просрочки не ждали первого тика.
+setTimeout(() => { void escalationJob(); void digestJob(); }, 30_000).unref();
 
 const shutdown = (signal: string) => {
   console.log(`[server] ${signal} received, shutting down gracefully...`);
