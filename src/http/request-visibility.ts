@@ -85,11 +85,20 @@ export async function getMoneyVisibility(db: Db, userId: string): Promise<MoneyV
   const minByWf = new Map<string, number>(procMins.map((r: { wf: string; minOrder: number }) => [r.wf, Number(r.minOrder)]));
   if (!minByWf.size) return mk(false, new Set());
 
-  // Мои шаги согласования: качество «не раньше первой закупки» проверяем по order.
+  // Мои шаги согласования: «не раньше первой закупки» проверяем по order.
+  // Считаются только РЕШАЮЩИЕ шаги (approval/procurement/finance) — роль,
+  // прикреплённая к close-шагу (подтверждает автор) или складским шагам,
+  // сумм из-за этого не получает.
   const mySteps = await db
     .select({ wf: schema.workflowSteps.workflowId, ord: schema.workflowSteps.stepOrder })
     .from(schema.workflowSteps)
-    .where(and(inArray(schema.workflowSteps.approverRoleId, myRoleIds), sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`));
+    .where(
+      and(
+        inArray(schema.workflowSteps.approverRoleId, myRoleIds),
+        inArray(schema.workflowSteps.stepKind, ['approval', 'procurement', 'finance_payment'] as any),
+        sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`,
+      ),
+    );
   const qualified = new Set<string>();
   for (const s of mySteps as { wf: string; ord: number }[]) {
     const min = minByWf.get(s.wf);
