@@ -54,6 +54,37 @@ describe('P1-6: notification persistence', () => {
     expect(stored.deliveredAt).not.toBeNull();
   });
 
+  it('без Telegram-канала уведомление считается доставленным in-app (не failed)', async () => {
+    const { db, holding, alice } = await setup();
+    // deliver=undefined — стенд/дев без BOT_TOKEN или админ-роутер без бота.
+    const row = await notifyUser(db, undefined, {
+      holdingId: holding.id,
+      recipientUserId: alice.id,
+      title: 'T',
+      message: 'in-app only',
+      kind: 'step_pending',
+    });
+    const [stored] = await db.select().from(schema.notifications).where(eq(schema.notifications.id, row.id));
+    expect(stored.status).toBe('delivered');
+    expect(stored.channel).toBe('inapp');
+    expect(stored.errorMessage).toBeNull();
+    expect(stored.kind).toBe('step_pending');
+    expect(await unreadCount(db, alice.id)).toBe(1);
+  });
+
+  it('получатель без telegram_id — тоже in-app delivered, а не failed', async () => {
+    const { db, holding } = await setup();
+    const [noTg] = await db
+      .insert(schema.users)
+      .values({ holdingId: holding.id, fullName: 'NoTg', telegramId: null, status: 'active' })
+      .returning();
+    const deliver = async () => { throw new Error('must not be called'); };
+    const row = await notifyUser(db, deliver, { holdingId: holding.id, recipientUserId: noTg.id, title: 'T', message: 'x' });
+    const [stored] = await db.select().from(schema.notifications).where(eq(schema.notifications.id, row.id));
+    expect(stored.status).toBe('delivered');
+    expect(stored.channel).toBe('inapp');
+  });
+
   it('records status=failed when delivery throws (nothing lost)', async () => {
     const { db, holding, alice } = await setup();
     const deliver = async () => { throw new Error('bot blocked'); };

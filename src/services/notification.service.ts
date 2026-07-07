@@ -19,12 +19,27 @@ export type DeliverFn = (telegramId: string, text: string) => Promise<void>;
 
 export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent' | 'critical';
 
+/**
+ * Тип события — источник осмысленного тега в UI («Ждёт вас», «Согласована»,
+ * «Отклонена»...). Статус доставки — отдельная ось и в теге не участвует.
+ */
+export type NotificationKind =
+  | 'step_pending'
+  | 'stage_passed'
+  | 'approved_final'
+  | 'rejected'
+  | 'needs_revision'
+  | 'returned_step'
+  | 'closed'
+  | 'security';
+
 export interface NotifyInput {
   holdingId?: string | null;
   recipientUserId: string;
   title: string;
   message: string;
   priority?: NotificationPriority;
+  kind?: NotificationKind | null;
   entityType?: string | null;
   entityId?: string | null;
   actionUrl?: string | null;
@@ -43,6 +58,7 @@ export async function notifyUser(db: Db, deliver: DeliverFn | undefined, input: 
       title: input.title,
       message: input.message,
       priority: input.priority ?? 'normal',
+      kind: input.kind ?? null,
       channel: 'telegram',
       entityType: input.entityType ?? null,
       entityId: input.entityId ?? null,
@@ -61,11 +77,16 @@ async function deliverRow(db: Db, deliver: DeliverFn | undefined, row: any): Pro
   const telegramId = recipient?.telegramId;
 
   if (!deliver || !telegramId) {
+    // In-app уведомление доставлено самим фактом записи в таблицу. Отсутствие
+    // Telegram-канала (стенд/дев без BOT_TOKEN, пользователь без telegram_id,
+    // админ-роутер без бота) — НЕ сбой: раньше такие строки помечались failed
+    // и весь экран «Уведомления» краснел «Не доставлено: no delivery channel
+    // configured». failed остаётся только за реальной ошибкой отправки в TG.
     await db
       .update(schema.notifications)
-      .set({ status: 'failed', errorMessage: !deliver ? 'no delivery channel configured' : 'recipient has no telegram id' })
+      .set({ status: 'delivered', channel: 'inapp', deliveredAt: new Date(), errorMessage: null })
       .where(eq(schema.notifications.id, row.id));
-    return false;
+    return true;
   }
 
   try {

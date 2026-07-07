@@ -620,6 +620,7 @@ interface NotifItem {
   title: string;
   message: string;
   priority: string;
+  kind: string | null; // тип события (step_pending | approved_final | ...), null у старых строк
   status: string; // pending | delivered (=unread) | read | failed
   errorMessage: string | null;
   entityType: string | null;
@@ -629,10 +630,23 @@ interface NotifItem {
   readAt: string | null;
 }
 
+// Тег карточки — ТИП события (что случилось с заявкой), а не статус доставки:
+// раньше каждая карточка кричала «Не доставлено» из-за отсутствия TG-канала.
+const NOTIF_KIND: Record<string, { label: string; tint: string }> = {
+  step_pending: { label: 'Ждёт вас', tint: 'accent' },
+  stage_passed: { label: 'Этап пройден', tint: 'accent' },
+  approved_final: { label: 'Согласована', tint: 'success' },
+  rejected: { label: 'Отклонена', tint: 'danger' },
+  needs_revision: { label: 'На доработку', tint: 'warning' },
+  returned_step: { label: 'Возврат на этап', tint: 'warning' },
+  closed: { label: 'Закрыта', tint: 'success' },
+  security: { label: 'Безопасность', tint: 'warning' },
+};
+// Fallback для строк без kind (созданы до 0017) — прежние статусные ярлыки.
 const NOTIF_STATUS: Record<string, { label: string; tint: string }> = {
-  delivered: { label: 'Непрочитано', tint: 'accent' },
+  delivered: { label: 'Новое', tint: 'accent' },
   read: { label: 'Прочитано', tint: 'success' },
-  failed: { label: 'Не доставлено', tint: 'danger' },
+  failed: { label: 'Новое', tint: 'accent' },
   pending: { label: 'Отправляется', tint: 'warning' },
 };
 // Priority accent — a coloured left rail for the ones that matter.
@@ -720,7 +734,7 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
           </div>
         )}
         {visible && visible.map((n) => {
-          const st = NOTIF_STATUS[n.status] ?? { label: n.status, tint: 'accent' };
+          const st = (n.kind && NOTIF_KIND[n.kind]) || NOTIF_STATUS[n.status] || { label: 'Новое', tint: 'accent' };
           const unreadRow = n.status !== 'read';
           const railTint = NOTIF_PRIORITY_TINT[n.priority];
           return (
@@ -740,8 +754,10 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
                 <span style={{ flex: 'none', fontSize: 10.5, fontWeight: 700, padding: '3px 8px', borderRadius: 8, background: TINT_BG[st.tint], color: TINT_FG[st.tint] }}>{st.label}</span>
               </div>
               <div style={{ fontSize: 13, color: 'var(--fg2)', lineHeight: 1.4 }}>{n.message}</div>
-              {n.status === 'failed' && n.errorMessage && (
-                <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>Причина: {n.errorMessage}</div>
+              {/* Техническая причина сбоя TG-доставки пользователю не показывается —
+                  in-app уведомление он уже читает. Мягкая пометка вместо красного крика. */}
+              {n.status === 'failed' && (
+                <div style={{ fontSize: 11.5, color: 'var(--fg3)', marginTop: 6 }}>Пуш в Telegram не дошёл — уведомление доступно здесь</div>
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, fontSize: 11.5, color: 'var(--fg3)' }}>
                 <span>{fmtDateTime(n.createdAt)}</span>
@@ -1062,7 +1078,6 @@ function RequestsList({
   const [loadingMore, setLoadingMore] = useState(false);
   const [total, setTotal] = useState<number | null>(null);
   const PAGE = 30;
-  const canSeeProcurement = me.permissions.includes('procurement.view') || me.permissions.includes('procurement.quote') || me.permissions.includes('procurement.select_supplier');
 
   // P1-7: search + status filter run on the SERVER (debounced 350ms), so they
   // match requests across the whole holding, not only the current page.
@@ -1226,7 +1241,9 @@ function RequestsList({
                   </div>
                   <StatusPill status={r.status} />
                 </div>
-                {canSeeProcurement && <div style={{ fontSize: 12, color: 'var(--fg2)', fontFamily: "'IBM Plex Mono', monospace" }}>{money(r.estimatedAmount)} UZS</div>}
+                {/* Сумму решает СЕРВЕР (getMoneyVisibility): null → скрыта. Клиентский
+                    гейт по procurement.* прятал цену у директора/зам.дира (finance/audit). */}
+                {r.estimatedAmount != null && <div style={{ fontSize: 12, color: 'var(--fg2)', fontFamily: "'IBM Plex Mono', monospace" }}>{money(r.estimatedAmount)} UZS</div>}
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--fg3)', fontWeight: 600, marginBottom: 5 }}>
                     <span>{s.label}</span>
@@ -1984,8 +2001,9 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
   const actions = req.actions ?? [];
   const history = req.statusHistory ?? [];
-  const canSeeProcurement = me.permissions.includes('procurement.view') || me.permissions.includes('procurement.quote') || me.permissions.includes('procurement.select_supplier');
-  const quotations = canSeeProcurement ? (req.quotations ?? []) : [];
+  // КП фильтрует сервер (getMoneyVisibility) — согласующие после шага закупки
+  // (напр. «Исп дир») видят их без procurement.*-прав.
+  const quotations = req.quotations ?? [];
 
   // Bug #5: the author may cancel their own request while no one has approved yet.
   const TERMINAL = ['approved', 'closed', 'rejected', 'cancelled', 'archived'];

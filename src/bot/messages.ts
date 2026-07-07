@@ -32,3 +32,12 @@ export const newRequestForApproverMessage = (requestNumber: string, title: strin
 
 export const requestMovedToStepMessage = (requestNumber: string, stepName: string): string =>
   `🔄 Заявка ${requestNumber} перешла на этап: ${stepName}.`;
+
+export const returnedToStepMessage = (requestNumber: string, stepName: string, reason: string): string =>
+  `↩️ Заявка ${requestNumber} возвращена на этап: ${stepName}.${reason ? `\nПричина: ${reason}` : ''}`;
+
+export const confirmReceiptMessage = (requestNumber: string): string =>
+  `📦 Заявка ${requestNumber}: товар передан. Подтвердите получение в приложении.`;
+
+export const closedMessage = (requestNumber: string): string =>
+  `✅ Заявка ${requestNumber} закрыта.`;

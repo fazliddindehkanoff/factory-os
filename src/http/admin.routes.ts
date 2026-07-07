@@ -818,6 +818,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         title: 'PIN сброшен администратором',
         message: `Ваш PIN был сброшен. Причина: ${reason}. Установите новый PIN в профиле.`,
         priority: 'high',
+        kind: 'security',
         entityType: 'user',
         entityId: id,
       });

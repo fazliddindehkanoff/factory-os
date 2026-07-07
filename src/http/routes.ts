@@ -6,7 +6,7 @@ import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
 import { requireAuth, type AuthedRequest } from './auth.middleware.js';
 import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
-import { getRequestVisibility } from './request-visibility.js';
+import { getRequestVisibility, getMoneyVisibility } from './request-visibility.js';
 import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
@@ -23,7 +23,7 @@ import {
   markRead,
   markAllRead,
 } from '../services/notification.service.js';
-import { approvedStageMessage, approvedFinalMessage, rejectedMessage, needsRevisionMessage, newRequestForApproverMessage } from '../bot/messages.js';
+import { approvedStageMessage, approvedFinalMessage, rejectedMessage, needsRevisionMessage, newRequestForApproverMessage, requestMovedToStepMessage, returnedToStepMessage, confirmReceiptMessage, closedMessage } from '../bot/messages.js';
 import { buildAdminRouter } from './admin.routes.js';
 import { TEST_USERNAMES, TEST_PIN } from '../db/seed-test.js';
 
@@ -85,7 +85,11 @@ async function validateWarehouseScope(
 
 // P1-6: notifications are PERSISTED first (notification.service), then delivered.
 // A failed Telegram send is recorded, not lost. `notify` is the delivery channel.
-async function notifyRequester(db: Db, notify: Notifier | undefined, requestId: string, text: (reqNumber: string) => string): Promise<void> {
+async function notifyRequester(
+  db: Db, notify: Notifier | undefined, requestId: string,
+  kind: 'stage_passed' | 'approved_final' | 'rejected' | 'needs_revision' | 'returned_step' | 'closed',
+  text: (reqNumber: string) => string,
+): Promise<void> {
   try {
     const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
     if (!reqRow) return;
@@ -94,6 +98,7 @@ async function notifyRequester(db: Db, notify: Notifier | undefined, requestId: 
       recipientUserId: reqRow.requesterId,
       title: `Заявка ${reqRow.requestNumber}`,
       message: text(reqRow.requestNumber),
+      kind,
       entityType: 'request',
       entityId: reqRow.id,
     });
@@ -102,37 +107,70 @@ async function notifyRequester(db: Db, notify: Notifier | undefined, requestId: 
   }
 }
 
-/** Notify all users who hold the approver role of the current step. */
+/**
+ * Notify whoever must act on the current step:
+ *  - close-шаг — подтверждает АВТОР (requesterOnly), а не держатели роли шага:
+ *    раньше «подтвердите получение» уходило складу, а автор не знал;
+ *  - procurement с назначенным исполнителем — только исполнитель (Bug #8):
+ *    остальные снабженцы всё равно заперты, их пуш — шум;
+ *  - иначе — все активные держатели роли шага.
+ * Сам актор действия уведомление не получает (он и так в приложении).
+ */
 async function notifyStepApprovers(
   db: Db, notify: Notifier | undefined,
   requestId: string, currentStepId: string | null,
+  opts: { actorId?: string } = {},
 ): Promise<void> {
   if (!currentStepId) return;
   try {
     const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
     if (!reqRow) return;
     const [step] = await db.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.id, currentStepId));
-    if (!step?.approverRoleId) return;
-    // Find all active user-role assignments for this role in this holding
-    const assigns = await db
-      .select({ userId: schema.userRoles.userId })
-      .from(schema.userRoles)
-      .where(and(
-        eq(schema.userRoles.roleId, step.approverRoleId),
-        eq(schema.userRoles.status, 'active'),
-        eq(schema.userRoles.holdingId, reqRow.holdingId),
-      ));
-    const userIds = [...new Set(assigns.map((a: { userId: string }) => a.userId))] as string[];
+    if (!step) return;
+
+    if (step.stepKind === 'close') {
+      if (reqRow.requesterId && reqRow.requesterId !== opts.actorId) {
+        await notifyUser(db, notify, {
+          holdingId: reqRow.holdingId,
+          recipientUserId: reqRow.requesterId,
+          title: `Подтвердите получение — ${reqRow.requestNumber}`,
+          message: confirmReceiptMessage(reqRow.requestNumber),
+          priority: 'high',
+          kind: 'step_pending',
+          entityType: 'request',
+          entityId: reqRow.id,
+        });
+      }
+      return;
+    }
+
+    let userIds: string[] = [];
+    if (step.stepKind === 'procurement' && reqRow.responsibleUserId) {
+      userIds = [reqRow.responsibleUserId];
+    } else {
+      if (!step.approverRoleId) return;
+      // Find all active user-role assignments for this role in this holding
+      const assigns = await db
+        .select({ userId: schema.userRoles.userId })
+        .from(schema.userRoles)
+        .where(and(
+          eq(schema.userRoles.roleId, step.approverRoleId),
+          eq(schema.userRoles.status, 'active'),
+          eq(schema.userRoles.holdingId, reqRow.holdingId),
+        ));
+      userIds = [...new Set(assigns.map((a: { userId: string }) => a.userId))] as string[];
+    }
     if (!userIds.length) return;
     const msg = newRequestForApproverMessage(reqRow.requestNumber, reqRow.title ?? '', step.stepName);
     for (const uId of userIds) {
-      if (uId === reqRow.requesterId) continue;
+      if (uId === reqRow.requesterId || uId === opts.actorId) continue;
       await notifyUser(db, notify, {
         holdingId: reqRow.holdingId,
         recipientUserId: uId,
-        title: `Требуется согласование — ${reqRow.requestNumber}`,
+        title: `Требуется действие — ${reqRow.requestNumber}`,
         message: msg,
         priority: 'high',
+        kind: 'step_pending',
         entityType: 'request',
         entityId: reqRow.id,
       });
@@ -473,10 +511,10 @@ export function buildRouter(deps: RouterDeps): Router {
       const hasMore = rows.length > limit;
       if (hasMore) rows.pop();
       const [{ total }] = await db.select({ total: count() }).from(schema.requests).where(where);
-      // Money gate (bug #9): hide estimatedAmount from roles below the procurement manager.
-      const listCodes = await getUserPermissionCodes(db, u.id);
-      const canSeeMoney = ['procurement.view', 'finance.view', 'audit.view'].some((p) => listCodes.includes(p));
-      const items = canSeeMoney ? rows : rows.map((r: any) => ({ ...r, estimatedAmount: null }));
+      // Money gate (bug #9): суммы — денежным правам и согласующим от шага
+      // закупки и дальше; ранние роли (рук. отдела, склад) их не видят.
+      const listMoney = await getMoneyVisibility(db, u.id);
+      const items = rows.map((r: any) => (listMoney.canSee(r) ? r : { ...r, estimatedAmount: null }));
       res.json({ items, hasMore, offset, limit, total });
     } catch (e) {
       next(e);
@@ -534,7 +572,7 @@ export function buildRouter(deps: RouterDeps): Router {
         items: Array.isArray(body.items) ? body.items : [],
       });
       // Notify approvers of the first step
-      notifyStepApprovers(db, notify, result.id, result.currentStepId).catch(() => {});
+      notifyStepApprovers(db, notify, result.id, result.currentStepId, { actorId: u.id }).catch(() => {});
       res.status(201).json(result);
     } catch (e) {
       next(e);
@@ -568,8 +606,7 @@ export function buildRouter(deps: RouterDeps): Router {
       // availableActions — финальная проверка прав на каждом кандидате.
       // №10: элемент инбокса несёт основные теги решения — автор, отдел,
       // срочность, возраст, число позиций; сумма только тем, кому можно (bug #9).
-      const inboxCodes = await getUserPermissionCodes(db, u.id);
-      const inboxSeesMoney = ['procurement.view', 'finance.view', 'audit.view'].some((p) => inboxCodes.includes(p));
+      const inboxMoney = await getMoneyVisibility(db, u.id);
       const inbox: any[] = [];
       let matched = 0;
       for (const r0 of all) {
@@ -584,7 +621,7 @@ export function buildRouter(deps: RouterDeps): Router {
           title: r0.title,
           status: r0.status,
           statusLabel: await statusLabelFor(db, r0),
-          estimatedAmount: inboxSeesMoney ? r0.estimatedAmount : null,
+          estimatedAmount: inboxMoney.canSee(r0) ? r0.estimatedAmount : null,
           priority: raw.priority ?? null,
           createdAt: raw.createdAt ?? null,
           requesterId: r0.requesterId,
@@ -682,10 +719,11 @@ export function buildRouter(deps: RouterDeps): Router {
         changedByRole: h.changedBy ? actorMap.get(h.changedBy)?.role ?? null : null,
       }));
       // КП are commercially sensitive: expose them only to roles that work with
-      // money/procurement — mirroring the UI's canSeeProcurement gate on the
-      // server side instead of trusting the client to hide them. (M3b)
+      // money/procurement OR approve at/after the procurement step — the single
+      // getMoneyVisibility gate, enforced server-side. (M3b, bug цены 2026-07-07)
       const viewerCodes = await getUserPermissionCodes(db, u.id);
-      const canSeeQuotes = ['procurement.view', 'finance.view', 'audit.view'].some((p) => viewerCodes.includes(p));
+      const detailMoney = await getMoneyVisibility(db, u.id);
+      const canSeeQuotes = detailMoney.canSee(reqRow);
       const quotations = canSeeQuotes
         ? await db
             .select()
@@ -942,9 +980,13 @@ export function buildRouter(deps: RouterDeps): Router {
     try {
       const u = (req as AuthedRequest).user!;
       const body = req.body ?? {};
-      // Capture current status before the action so we can detect real transitions
-      const [beforeReq] = await db.select({ status: schema.requests.status }).from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      // Capture status + step before the action so we can detect real transitions
+      const [beforeReq] = await db
+        .select({ status: schema.requests.status, currentStepId: schema.requests.currentStepId })
+        .from(schema.requests)
+        .where(eq(schema.requests.id, req.params.id as string));
       const fromStatus = beforeReq?.status;
+      const fromStepId = beforeReq?.currentStepId ?? null;
       const result = await performAction(db, {
         requestId: req.params.id as string,
         action: String(body.action ?? ''),
@@ -958,22 +1000,36 @@ export function buildRouter(deps: RouterDeps): Router {
         quotationId: body.quotationId,
         assigneeId: body.assigneeId,
       });
-      // Notify next step's approvers + notify requester about progress
-      if (result.currentStepId) {
-        notifyStepApprovers(db, notify, result.id, result.currentStepId).catch(() => {});
+      const stepLabel = await statusLabelFor(db, result);
+      // Ответственные следующего шага — ТОЛЬКО когда шаг реально сменился.
+      // Раньше пуш «требуется согласование» уходил на КАЖДОЕ действие (в т.ч.
+      // «Добавить КП», не двигающее заявку) — согласующих заваливало дублями.
+      const stepChanged = (result.currentStepId ?? null) !== fromStepId;
+      if (result.currentStepId && stepChanged) {
+        notifyStepApprovers(db, notify, result.id, result.currentStepId, { actorId: u.id }).catch(() => {});
       }
-      if (result.status === 'approved') {
-        notifyRequester(db, notify, result.id, (rn) => approvedFinalMessage(rn));
-      } else if (result.status === 'rejected') {
-        notifyRequester(db, notify, result.id, (rn) => rejectedMessage(rn, String(body.comment ?? '').trim()));
-      } else if (result.status === 'needs_revision' && result.status !== fromStatus) {
-        // Ветка «вернуть на доработку»: автор должен узнать сразу, не заходя в приложение.
-        notifyRequester(db, notify, result.id, (rn) => needsRevisionMessage(rn, String(body.comment ?? '').trim()));
-      } else if (result.currentStepId && result.status !== fromStatus) {
-        // Only notify about stage progression when status actually changed
-        notifyRequester(db, notify, result.id, (rn) => approvedStageMessage(rn));
+      // Автору — о ходе ЕГО заявки, но не о его же собственных действиях
+      // (resubmit/close: автор — актор, пуш самому себе — шум).
+      if (result.requesterId !== u.id) {
+        const comment = String(body.comment ?? '').trim();
+        if (result.status === 'approved') {
+          notifyRequester(db, notify, result.id, 'approved_final', (rn) => approvedFinalMessage(rn));
+        } else if (result.status === 'closed' && fromStatus !== 'closed') {
+          notifyRequester(db, notify, result.id, 'closed', (rn) => closedMessage(rn));
+        } else if (result.status === 'rejected') {
+          notifyRequester(db, notify, result.id, 'rejected', (rn) => rejectedMessage(rn, comment));
+        } else if (result.status === 'needs_revision' && result.status !== fromStatus) {
+          // Ветка «вернуть на доработку»: автор должен узнать сразу, не заходя в приложение.
+          notifyRequester(db, notify, result.id, 'needs_revision', (rn) => needsRevisionMessage(rn, comment));
+        } else if (String(body.action) === 'reject' && stepChanged && result.currentStepId) {
+          // Политика return_step: отклонение вернуло заявку на более ранний шаг.
+          // Раньше автор получал «✅ согласована на этапе» — ровно наоборот.
+          notifyRequester(db, notify, result.id, 'returned_step', (rn) => returnedToStepMessage(rn, stepLabel, comment));
+        } else if (result.currentStepId && stepChanged && result.status !== fromStatus) {
+          notifyRequester(db, notify, result.id, 'stage_passed', (rn) => requestMovedToStepMessage(rn, stepLabel));
+        }
       }
-      res.json({ ...result, statusLabel: await statusLabelFor(db, result) });
+      res.json({ ...result, statusLabel: stepLabel });
     } catch (e) {
       next(e);
     }
@@ -1118,8 +1174,10 @@ export function buildRouter(deps: RouterDeps): Router {
         actorUserId: u.id,
         comment: body.comment,
       });
-      await notifyRequester(db, notify, result.requestId, (rn) =>
-        result.status === 'approved' ? approvedFinalMessage(rn) : approvedStageMessage(rn),
+      await notifyRequester(
+        db, notify, result.requestId,
+        result.status === 'approved' ? 'approved_final' : 'stage_passed',
+        (rn) => (result.status === 'approved' ? approvedFinalMessage(rn) : approvedStageMessage(rn)),
       );
       res.json(result);
     } catch (e) {
@@ -1140,7 +1198,7 @@ export function buildRouter(deps: RouterDeps): Router {
         actorUserId: u.id,
         comment: body.comment ?? '',
       });
-      await notifyRequester(db, notify, result.requestId, (rn) =>
+      await notifyRequester(db, notify, result.requestId, 'rejected', (rn) =>
         rejectedMessage(rn, String(body.comment ?? '').trim()),
       );
       res.json(result);

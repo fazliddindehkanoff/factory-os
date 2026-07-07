@@ -705,6 +705,9 @@ export const notifications = pgTable(
     entityId: uuid('entity_id'),
     actionUrl: text('action_url'),
     actionButtons: jsonb('action_buttons'),
+    // Тип события для тегов UI: step_pending | stage_passed | approved_final |
+    // rejected | needs_revision | returned_step | closed | security | null (legacy).
+    kind: text('kind'),
     // pending | delivered | failed | read
     status: text('status').notNull().default('pending'),
     errorMessage: text('error_message'),
