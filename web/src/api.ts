@@ -116,6 +116,13 @@ export const api = {
   cancelRequest: (id: string, reason?: string) =>
     call(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason ?? '' }) }),
   rejectReasons: (id: string) => call(`/requests/${id}/reject-reasons`),
+  // CSV — бинарный ответ мимо call(); вызывающий отзывает URL через revokeObjectURL.
+  exportRequestsUrl: async (): Promise<string> => {
+    const token = getToken();
+    const res = await fetch('/api/requests/export', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new Error('Не удалось выгрузить CSV');
+    return URL.createObjectURL(await res.blob());
+  },
   procurementAssignees: (): Promise<{ users: { id: string; fullName: string | null }[] }> => call('/procurement/assignees'),
   createRequest: (data: CreateRequestData) =>
     call('/requests', { method: 'POST', body: JSON.stringify(data) }),

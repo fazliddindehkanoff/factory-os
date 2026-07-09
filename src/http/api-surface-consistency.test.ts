@@ -71,9 +71,9 @@ function clientCalls(): Map<string, number> {
       const path = m[1].endsWith('/') ? m[1] + '{}' : m[1];
       out.set(`${m[2] ?? 'GET'} ${norm(path)}`, line);
     }
-    // Сырые fetch(`/api/...`) — бинарные ответы (blob) идут мимо call().
-    const reFetch = /fetch\(\s*`\/api([^`]+)`/g;
-    while ((m = reFetch.exec(l))) out.set(`GET ${norm(m[1])}`, line);
+    // Сырые fetch('/api/...') / fetch(`/api/...`) — бинарные ответы (blob) идут мимо call().
+    const reFetch = /fetch\(\s*(['"`])\/api((?:\\.|(?!\1).)+)\1/g;
+    while ((m = reFetch.exec(l))) out.set(`GET ${norm(m[2])}`, line);
   });
   return out;
 }

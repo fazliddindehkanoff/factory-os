@@ -41,10 +41,10 @@ const EDITABLE_STATUSES = ['draft', 'pending_approval', 'needs_revision'];
 async function userCanSeeRequest(
   db: Db,
   userId: string,
-  reqRow: { id: string; requesterId: string; workflowId: string | null },
+  reqRow: { id: string; requesterId: string; workflowId: string | null; responsibleUserId?: string | null; companyId?: string | null; factoryId?: string | null; departmentId?: string | null },
 ): Promise<boolean> {
   const vis = await getRequestVisibility(db, userId);
-  return vis.canSee({ id: reqRow.id, requesterId: reqRow.requesterId, workflowId: reqRow.workflowId ?? null });
+  return vis.canSee(reqRow);
 }
 
 export interface RouterDeps {
@@ -511,6 +511,74 @@ export function buildRouter(deps: RouterDeps): Router {
       const listMoney = await getMoneyVisibility(db, u.id);
       const items = rows.map((r: any) => (listMoney.canSee(r) ? r : { ...r, estimatedAmount: null }));
       res.json({ items, hasMore, offset, limit, total });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Экспорт списка заявок в CSV (Excel открывает напрямую; чат «Снабжение» 19.06).
+  // Та же видимость и денежный гейт, что и у списка. Только reports.view.
+  // Объявлен до /requests/:id, чтобы «export» не читался как id.
+  r.get('/requests/export', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'reports.view', u.holdingId))) {
+        res.status(403).json({ error: 'Недостаточно прав для экспорта' });
+        return;
+      }
+      const q = req.query;
+      const vis = await getRequestVisibility(db, u.id);
+      const conds: (SQL | undefined)[] = [eq(schema.requests.holdingId, u.holdingId)];
+      if (vis.scope) conds.push(vis.scope);
+      const status = String(q.status ?? '').trim();
+      if (status) conds.push(eq(schema.requests.status, status));
+      if (String(q.mine ?? '') === '1') conds.push(eq(schema.requests.requesterId, u.id));
+      const rows = await db
+        .select()
+        .from(schema.requests)
+        .where(and(...conds.filter(Boolean) as SQL[]))
+        .orderBy(desc(schema.requests.createdAt))
+        .limit(2000);
+
+      const userIds = [...new Set(rows.map((r: any) => r.requesterId).filter(Boolean))] as string[];
+      const users = userIds.length
+        ? await db.select({ id: schema.users.id, fullName: schema.users.fullName }).from(schema.users).where(inArray(schema.users.id, userIds))
+        : [];
+      const nameBy = new Map((users as { id: string; fullName: string }[]).map((x) => [x.id, x.fullName]));
+      const depts = await db.select().from(schema.departments).where(eq(schema.departments.holdingId, u.holdingId));
+      const deptBy = new Map((depts as { id: string; name: string }[]).map((d) => [d.id, d.name]));
+      const facs = await db.select().from(schema.factories).where(eq(schema.factories.holdingId, u.holdingId));
+      const facBy = new Map((facs as { id: string; name: string }[]).map((f) => [f.id, f.name]));
+      const exportMoney = await getMoneyVisibility(db, u.id);
+
+      const esc = (v: unknown): string => {
+        const t = v == null ? '' : String(v);
+        return /[";\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+      };
+      const dateStr = (d: unknown): string => (d ? new Date(d as string).toISOString().slice(0, 10) : '');
+      const header = ['Номер', 'Название', 'Статус', 'Приоритет', 'Тип', 'Отдел', 'Завод', 'Автор', 'Создана', 'Нужно к', 'Сумма', 'Валюта'];
+      const lines = [header.join(';')];
+      for (const r0 of rows as any[]) {
+        lines.push([
+          esc(r0.requestNumber),
+          esc(r0.title),
+          esc(await statusLabelFor(db, r0)),
+          esc(r0.priority),
+          esc(r0.requestType),
+          esc(r0.departmentId ? deptBy.get(r0.departmentId) ?? '' : r0.departmentName ?? ''),
+          esc(r0.factoryId ? facBy.get(r0.factoryId) ?? '' : ''),
+          esc(r0.requesterId ? nameBy.get(r0.requesterId) ?? '' : ''),
+          dateStr(r0.createdAt),
+          dateStr(r0.neededDate),
+          exportMoney.canSee(r0) && r0.estimatedAmount != null ? String(r0.estimatedAmount) : '',
+          esc(r0.currency ?? 'UZS'),
+        ].join(';'));
+      }
+      // BOM — чтобы Excel корректно открыл UTF-8 (кириллицу) без импорта.
+      const csv = '\ufeff' + lines.join('\r\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="requests-${new Date().toISOString().slice(0, 10)}.csv"`);
+      res.send(csv);
     } catch (e) {
       next(e);
     }

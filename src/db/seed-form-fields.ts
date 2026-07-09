@@ -80,6 +80,19 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     stepGroup: 1,
     orderIndex: 4,
   },
+  {
+    // Чат «Снабжение» 20.06: «местный или импорт» — происхождение закупки.
+    fieldKey: 'origin',
+    label: 'Происхождение',
+    fieldType: 'select',
+    system: false,
+    options: [
+      { value: 'local', label: 'Местный' },
+      { value: 'import', label: 'Импорт' },
+    ],
+    stepGroup: 1,
+    orderIndex: 5,
+  },
   // №6: «Степень срочности» живёт прямо над «Необходимо к дате» (шаг 2) —
   // решение владельца 2026-07-06.
   // ── Step 2: Позиция ──
