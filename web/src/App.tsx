@@ -87,6 +87,8 @@ interface RequestDetail extends RequestRow {
   actions?: LifecycleActionBtn[];
   workflowTimeline?: WorkflowTimelineStep[];
   canSeeMoney?: boolean;
+  /** Сервер: этот пользователь может править заявку на текущем этапе (PUT /requests/:id). */
+  canEdit?: boolean;
   // full-info fields (bug #9)
   requesterName?: string | null;
   responsibleName?: string | null;
@@ -102,6 +104,8 @@ interface RequestDetail extends RequestRow {
   updatedAt?: string | null;
   currency?: string | null;
 }
+const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
+
 type Screen =
   | { name: 'home' }
   // `status` — optional prefilter applied when the list opens (KPI/by-status click).
@@ -317,7 +321,7 @@ export default function App() {
             onOpen={(id) => setScreen({ name: 'detail', id, from: 'list' })}
           />
         )}
-        {screen.name === 'create' && <CreateRequest onDone={() => setScreen({ name: 'list' })} />}
+        {screen.name === 'create' && <CreateRequest onDone={() => setScreen({ name: 'list' })} onCreated={(id) => setScreen({ name: 'detail', id, from: 'list' })} />}
         {screen.name === 'detail' && (
           <RequestDetailView id={screen.id} me={me} tick={tick} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
         )}
@@ -664,13 +668,14 @@ function fmtDateTime(v: string | null): string {
 function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id: string) => void; onChanged: () => void }) {
   const [items, setItems] = useState<NotifItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  // Вкладка «Непрочитанные» убрана по фидбеку владельца (чат 03.07) — остаётся
+  // один список + «Прочитать все»; непрочитанные и так выделены визуально.
   const [markingAll, setMarkingAll] = useState(false);
 
   const load = useCallback(() => {
     setItems(null); setErr(null);
-    api.notifications(filter === 'unread').then((r: any) => setItems(r?.items ?? [])).catch((e) => setErr((e as Error).message));
-  }, [filter]);
+    api.notifications().then((r: any) => setItems(r?.items ?? [])).catch((e) => setErr((e as Error).message));
+  }, []);
   useEffect(() => { load(); }, [load]);
 
   // №9: непрочитанное = всё, что не 'read' (в т.ч. pending/failed — пуш мог не уйти,
@@ -696,13 +701,8 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
   };
 
   // In the "unread" tab, drop items just marked read locally.
-  const visible = items ? (filter === 'unread' ? items.filter((n) => n.status !== 'read') : items) : null;
+  const visible = items;
   const hasUnread = (items ?? []).some((n) => n.status !== 'read');
-
-  const pill = (active: boolean): CSSProperties => ({
-    padding: '7px 14px', borderRadius: 10, border: '1px solid var(--border)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
-    background: active ? 'var(--accent)' : 'var(--card)', color: active ? '#fff' : 'var(--fg2)',
-  });
 
   return (
     <div>
@@ -717,10 +717,6 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
             Прочитать все
           </button>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setFilter('all')} style={pill(filter === 'all')}>Все</button>
-          <button onClick={() => setFilter('unread')} style={pill(filter === 'unread')}>Непрочитанные</button>
-        </div>
       </div>
 
       <div style={{ padding: '10px 16px 24px' }}>
@@ -732,7 +728,7 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
         )}
         {visible && !err && visible.length === 0 && (
           <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '32px 16px', textAlign: 'center', fontSize: 13.5, color: 'var(--fg3)' }}>
-            {filter === 'unread' ? 'Непрочитанных уведомлений нет.' : 'Уведомлений пока нет.'}
+            Уведомлений пока нет.
           </div>
         )}
         {visible && visible.map((n) => {
@@ -1152,6 +1148,22 @@ function RequestsList({
               <Icon name="clock" size={18} />
               {selectedDate && <span style={{ position: 'absolute', top: -3, right: -3, width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)' }} />}
             </button>
+            {me.permissions.includes('reports.view') && (
+              <button
+                aria-label="Экспорт в Excel (CSV)"
+                onClick={async () => {
+                  try {
+                    const url = await api.exportRequestsUrl();
+                    const link = document.createElement('a');
+                    link.href = url; link.download = `zayavki-${new Date().toISOString().slice(0, 10)}.csv`; link.click();
+                    URL.revokeObjectURL(url);
+                  } catch { alert('Не удалось выгрузить CSV'); }
+                }}
+                style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', cursor: 'pointer' }}
+              >
+                <Icon name="file" size={17} />
+              </button>
+            )}
             {me.permissions.includes('requests.create') && (
               <button onClick={onCreate} style={{ padding: '8px 13px', borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
                 + Создать
@@ -1288,7 +1300,7 @@ interface FormField {
 }
 
 /** Create wizard rendered entirely from the admin-configured schema (/api/form/request_create). */
-function CreateRequest({ onDone }: { onDone: () => void }) {
+function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (id: string) => void }) {
   const [fields, setFields] = useState<FormField[] | null>(null);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
@@ -1298,7 +1310,6 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
   const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [submittedNo, setSubmittedNo] = useState<string | null>(null);
   const submitLock = useRef(false);
 
   useEffect(() => {
@@ -1351,7 +1362,6 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
   const steps = fields ? [...new Set(fields.map((f) => f.step))].sort((a, b) => a - b) : [];
   const total = steps.length + 1; // field steps + review
   const onReview = fields !== null && idx === steps.length;
-  const onDoneStep = fields !== null && idx === steps.length + 1;
   const stepFields = (s: number) => (fields ?? []).filter((f) => f.step === s);
 
   const filled = (f: FormField): boolean => {
@@ -1437,8 +1447,9 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
           try { await api.attachments.upload(res.id, { filename: file.name, dataBase64: file.data }); } catch { /* best-effort */ }
         }
       }
-      setSubmittedNo(res.requestNumber ?? '—');
-      setIdx(steps.length + 1);
+      // Макет 09.07: после отправки сразу открываем карточку заявки —
+      // сверху полная информация, ниже процесс согласования.
+      onCreated(res.id);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1688,11 +1699,11 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
       </div>
     );
 
-  const stepTitle = onReview ? 'Проверьте заявку' : onDoneStep ? 'Готово' : `Шаг ${idx + 1}`;
+  const stepTitle = onReview ? 'Проверьте заявку' : `Шаг ${idx + 1}`;
 
   return (
     <div style={{ padding: '18px 20px 28px' }}>
-      {!onDoneStep && (
+      {(
         <>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 13 }}>
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)' }}>{stepTitle}</span>
@@ -1706,7 +1717,7 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
         </>
       )}
 
-      {!onReview && !onDoneStep && (
+      {!onReview && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {stepFields(steps[idx]).map((f) => (
             <div key={f.key}>{renderField(f)}</div>
@@ -1725,36 +1736,22 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
         </div>
       )}
 
-      {onDoneStep && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: '34px 8px 8px' }}>
-          <span style={{ width: 84, height: 84, borderRadius: '50%', background: 'var(--success)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Icon name="check" size={40} sw={2.4} />
-          </span>
-          <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--fg)', marginTop: 18 }}>Заявка отправлена</div>
-          <div style={{ fontSize: 14, color: 'var(--fg2)', marginTop: 6, maxWidth: 270, lineHeight: 1.5 }}>Заявка передана в обработку. Вы получите уведомление на каждом этапе.</div>
-          <div style={{ marginTop: 22, padding: '16px 22px', borderRadius: 14, background: 'var(--card)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 9 }}>
-            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, fontWeight: 600, color: 'var(--fg)' }}>{submittedNo}</span>
-            <StatusPill status="pending_approval" />
-          </div>
-        </div>
-      )}
-
       {error && <Err>{error}</Err>}
 
-      {!onReview && !onDoneStep && showErrors && missingRequired.length > 0 && (
+      {!onReview && showErrors && missingRequired.length > 0 && (
         <div style={{ marginTop: 16, borderRadius: 12, background: 'var(--danger-bg)', color: 'var(--danger)', padding: '12px 14px', fontSize: 13, lineHeight: 1.45 }}>
           Заполните обязательные поля: {missingRequired.map((f) => f.label).join(', ')}.
         </div>
       )}
 
       <div style={{ display: 'flex', gap: 12, marginTop: 18 }}>
-        {idx === 0 && !onDoneStep && (
+        {idx === 0 && (
           <button onClick={onDone} style={{ flex: '0 0 auto', padding: '15px 22px', borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Отмена</button>
         )}
-        {idx > 0 && !onDoneStep && (
+        {idx > 0 && (
           <button onClick={() => { setShowErrors(false); setIdx((i) => i - 1); }} style={{ flex: '0 0 auto', padding: '15px 22px', borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Назад</button>
         )}
-        {!onReview && !onDoneStep && (
+        {!onReview && (
           <button
             onClick={() => {
               if (missingRequired.length === 0 && pastDates.length === 0) {
@@ -1772,9 +1769,6 @@ function CreateRequest({ onDone }: { onDone: () => void }) {
         {onReview && (
           <button onClick={submit} disabled={saving} style={{ flex: 1, padding: 15, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.5 : 1 }}>{saving ? '…' : 'Создать заявку'}</button>
         )}
-        {onDoneStep && (
-          <button onClick={onDone} style={{ flex: 1, padding: 15, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>Готово</button>
-        )}
       </div>
     </div>
   );
@@ -1785,12 +1779,10 @@ function ImageThumb({ attachmentId, alt }: { attachmentId: string; alt: string }
   useEffect(() => {
     let objectUrl: string | null = null;
     let cancelled = false;
-    const token = getToken();
-    fetch(`/api/attachments/${attachmentId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then((r) => r.blob())
-      .then((b) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(b);
+    api.attachments.downloadUrl(attachmentId)
+      .then((u) => {
+        if (cancelled) { URL.revokeObjectURL(u); return; }
+        objectUrl = u;
         setSrc(objectUrl);
       })
       .catch(() => {});
@@ -1881,11 +1873,7 @@ function AttachmentsSection({ requestId }: { requestId: string }) {
               </div>
               <button onClick={async () => {
                 try {
-                  const token = getToken();
-                  const res = await fetch(`/api/attachments/${a.id}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-                  if (!res.ok) throw new Error('Download failed');
-                  const blob = await res.blob();
-                  const url = URL.createObjectURL(blob);
+                  const url = await api.attachments.downloadUrl(a.id);
                   const link = document.createElement('a');
                   link.href = url; link.download = a.filename; link.click();
                   URL.revokeObjectURL(url);
@@ -1952,6 +1940,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   const [req, setReq] = useState<RequestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<LifecycleActionBtn | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const actionLock = useRef(false);
 
@@ -2024,7 +2013,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   };
 
   // Full info (bug #9): show every meaningful field, not just status.
-  const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
   const TYPE_LABEL: Record<string, string> = { material_request: 'Материалы / товар', service_request: 'Услуга', other: 'Другое' };
   const info: { k: string; v: string }[] = [];
   const pushInfo = (k: string, v: unknown) => { if (v != null && String(v).trim() !== '') info.push({ k, v: String(v) }); };
@@ -2039,9 +2027,12 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   pushInfo('Нужно к', req.neededDate ? fmtDate(req.neededDate) : null);
   pushInfo('Создана', fmtDate(req.createdAt));
   if (req.canSeeMoney && req.estimatedAmount != null) pushInfo('Сумма', `${Number(req.estimatedAmount).toLocaleString('ru-RU')} ${req.currency || 'UZS'}`);
-  pushInfo('Позиций', String(req.items.length));
-  // Custom form fields entered at creation.
+  // Макет 09.07: при одной позиции — «Количество: 1 л»; при нескольких — счётчик.
+  if (req.items.length === 1) pushInfo('Количество', `${req.items[0].quantity}${req.items[0].unit ? ' ' + req.items[0].unit : ''}`);
+  else pushInfo('Позиций', String(req.items.length));
+  // Кастомные поля формы («Назначение» и т.п.) — в общий список информации (макет 09.07).
   const customEntries = req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : [];
+  for (const [k, v] of customEntries) pushInfo(k, v == null || v === '' ? null : String(v));
 
   return (
     <div style={{ padding: '16px 16px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -2049,11 +2040,18 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--fg2)', fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
           ← Назад
         </button>
-        {canCancel && (
-          <button onClick={doCancel} style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
-            Удалить заявку
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {req.canEdit && (
+            <button onClick={() => setEditOpen(true)} style={{ background: 'none', border: '1px solid var(--border)', color: 'var(--fg2)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
+              Изменить
+            </button>
+          )}
+          {canCancel && (
+            <button onClick={doCancel} style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
+              Удалить заявку
+            </button>
+          )}
+        </div>
       </div>
 
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: 16 }}>
@@ -2062,11 +2060,14 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
           <StatusPill status={req.status} />
         </div>
         <div style={{ fontSize: 19, fontWeight: 700, color: 'var(--fg)', marginTop: 8, letterSpacing: '-.01em' }}>{req.title || 'Без названия'}</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '13px 12px', marginTop: 16 }}>
-          {info.map((i) => (
-            <div key={i.k}>
-              <div style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{i.k}</div>
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', marginTop: 3 }}>{i.v}</div>
+        <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 4 }}>Создана {fmtDateTime(req.createdAt)}</div>
+        {/* Макет 09.07: полный список информации строками «метка — значение». */}
+        <div style={{ ...SECTION_LABEL, marginTop: 16 }}>Информация о заявке</div>
+        <div>
+          {info.map((i, n) => (
+            <div key={i.k} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '9px 0', borderTop: n === 0 ? 'none' : '1px solid var(--line)' }}>
+              <span style={{ fontSize: 13, color: 'var(--fg2)', flex: 'none' }}>{i.k}</span>
+              <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', textAlign: 'right' }}>{i.v}</span>
             </div>
           ))}
         </div>
@@ -2075,7 +2076,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
       {/* Progress timeline — top of the card (#10), per-step actor/date-time (#7), correct rejected state (#4) */}
       {(req.workflowTimeline ?? []).length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Прогресс согласования</div>
+          <div style={SECTION_LABEL}>Процесс согласования</div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {(req.workflowTimeline ?? []).map((step, idx, arr) => {
               const last = idx === arr.length - 1;
@@ -2114,20 +2115,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Примечание</div>
           <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
-        </div>
-      )}
-
-      {customEntries.length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Дополнительно</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '11px 12px' }}>
-            {customEntries.map(([k, v]) => (
-              <div key={k}>
-                <div style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{k}</div>
-                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', marginTop: 3 }}>{v == null || v === '' ? '—' : String(v)}</div>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 
@@ -2251,6 +2238,85 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
           onConfirm={(vals) => run(pending.action, vals).catch(() => {})}
         />
       )}
+
+      {editOpen && (
+        <EditRequestSheet
+          req={req}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => { setEditOpen(false); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Правка заявки автором (или requests.edit) на ранних этапах — в т.ч. сценарий
+ *  «на доработке»: поправить поля перед «Отправить повторно». Кнопка появляется
+ *  только по canEdit из ответа сервера; состав полей = принимаемым PUT /requests/:id. */
+function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClose: () => void; onSaved: () => void }) {
+  const [title, setTitle] = useState(req.title ?? '');
+  const [description, setDescription] = useState(req.description ?? '');
+  const [priority, setPriority] = useState(req.priority ?? 'normal');
+  const [warehouseName, setWarehouseName] = useState(req.warehouseName ?? '');
+  const [neededDate, setNeededDate] = useState(req.neededDate ? String(req.neededDate).slice(0, 10) : '');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const inputStyle: CSSProperties = { width: '100%', padding: '12px 14px', fontSize: 14, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none' };
+
+  const save = async () => {
+    try {
+      setSaving(true);
+      setMsg(null);
+      await api.updateRequest(req.id, {
+        title: title.trim(),
+        description: description.trim(),
+        priority,
+        warehouseName: warehouseName.trim(),
+        neededDate: neededDate || null,
+      });
+      onSaved();
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)' }} />
+      <div style={{ position: 'relative', width: '100%', maxWidth: 560, background: 'var(--bg)', borderTop: '1px solid var(--edge)', borderRadius: '24px 24px 0 0', padding: '20px 20px 28px', maxHeight: '85vh', overflowY: 'auto' }}>
+        <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--fg)', marginBottom: 16 }}>Изменить заявку</div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Название</div>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Что нужно" style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Описание</div>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Подробности" style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Приоритет</div>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)} style={inputStyle}>
+            {Object.entries(PRIORITY_LABEL).map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Склад</div>
+          <input value={warehouseName} onChange={(e) => setWarehouseName(e.target.value)} placeholder="Склад назначения" style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Нужно к</div>
+          <input type="date" value={neededDate} onChange={(e) => setNeededDate(e.target.value)} style={inputStyle} />
+        </div>
+        {msg && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--danger)' }}>{msg}</div>}
+        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: 14, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Закрыть</button>
+          <button onClick={save} disabled={saving || !title.trim()} style={{ flex: 1, padding: 14, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: saving || !title.trim() ? 'not-allowed' : 'pointer', opacity: saving || !title.trim() ? 0.5 : 1 }}>{saving ? '…' : 'Сохранить'}</button>
+        </div>
+      </div>
     </div>
   );
 }

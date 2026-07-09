@@ -81,6 +81,41 @@ describe('compat P1-2: approve always needs a PIN', () => {
   });
 });
 
+describe('compat R2: approve is gated by the approvals.approve permission', () => {
+  it('a user without approvals.approve gets 403 before anything is written', async () => {
+    const { app, db } = await makeCompatApp();
+    const [h] = await db.insert(schema.holdings).values({ name: 'H' }).returning();
+    // Custom role WITHOUT approvals.approve, but named as the step's approver —
+    // the step-role match alone must not authorize the action.
+    const [role] = await db.insert(schema.roles).values({ holdingId: h.id, code: 'watcher', name: 'Watcher' }).returning();
+    const [watcher] = await db
+      .insert(schema.users)
+      .values({ holdingId: h.id, telegramId: 'wtch', fullName: 'W', status: 'active', pinHash: hashPin('123456') })
+      .returning();
+    await db.insert(schema.userRoles).values({ userId: watcher.id, roleId: role.id, holdingId: h.id });
+
+    const requester = await mkUser(db, h.id, 'req2', 'requester');
+    const [wf] = await db.insert(schema.workflows).values({ holdingId: h.id, name: 'W2', isActive: true }).returning();
+    const [step] = await db
+      .insert(schema.workflowSteps)
+      .values({ workflowId: wf.id, stepOrder: 1, stepName: 'Проверка', stepKind: 'approval', approverRoleId: role.id })
+      .returning();
+    const [req] = await db
+      .insert(schema.requests)
+      .values({ requestNumber: 'R-2', holdingId: h.id, requesterId: requester.id, workflowId: wf.id, currentStepId: step.id, status: 'pending_approval' })
+      .returning();
+    const [ap] = await db.insert(schema.approvals).values({ requestId: req.id, workflowStepId: step.id, status: 'pending' }).returning();
+
+    const res = await request(app)
+      .post(`/api/approvals/${ap.id}/approve`)
+      .set('X-Dev-User-Id', 'wtch')
+      .send({ pin: '123456' });
+    expect(res.status).toBe(403);
+    const sigRows = await db.select().from(schema.signatures).where(eq(schema.signatures.approvalId, ap.id));
+    expect(sigRows.length).toBe(0);
+  });
+});
+
 describe('compat P1-3: no privilege escalation via /admin/users', () => {
   it('a users.manage holder without high perms cannot grant the finance role', async () => {
     const { app, db } = await makeCompatApp();

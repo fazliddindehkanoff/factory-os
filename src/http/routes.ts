@@ -9,8 +9,7 @@ import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js'
 import { getRequestVisibility, getMoneyVisibility } from './request-visibility.js';
 import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
-import { approveApproval, rejectApproval } from '../services/approval.service.js';
-import { performAction, availableActions, statusLabelFor, inboxCandidates, holdingRequiresPin } from '../services/lifecycle.service.js';
+import { performAction, availableActions, statusLabelFor, inboxCandidates } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
@@ -23,7 +22,7 @@ import {
   markRead,
   markAllRead,
 } from '../services/notification.service.js';
-import { approvedStageMessage, approvedFinalMessage, rejectedMessage, needsRevisionMessage, newRequestForApproverMessage, requestMovedToStepMessage, returnedToStepMessage, confirmReceiptMessage, closedMessage } from '../bot/messages.js';
+import { approvedFinalMessage, rejectedMessage, needsRevisionMessage, newRequestForApproverMessage, requestMovedToStepMessage, returnedToStepMessage, confirmReceiptMessage, closedMessage } from '../bot/messages.js';
 import { stepActorIds } from '../services/step-actors.js';
 import { digestIntervalMinutes } from '../services/digest.service.js';
 import { buildAdminRouter } from './admin.routes.js';
@@ -31,16 +30,21 @@ import { TEST_USERNAMES, TEST_PIN } from '../db/seed-test.js';
 
 type Db = any;
 
+/** Правка заявки разрешена на ранних этапах — плюс «на доработке»: возврат
+ *  автору затем и существует, чтобы он поправил заявку перед resubmit.
+ *  Единый список для PUT /requests/:id и флага canEdit в деталях. */
+const EDITABLE_STATUSES = ['draft', 'pending_approval', 'needs_revision'];
+
 /** Oversight permissions that let a user see requests beyond their own. */
 /** A user may see a request per the visibility model (bug #2): own + involved +
  *  role-in-workflow; top roles (audit.view) see all. */
 async function userCanSeeRequest(
   db: Db,
   userId: string,
-  reqRow: { id: string; requesterId: string; workflowId: string | null },
+  reqRow: { id: string; requesterId: string; workflowId: string | null; responsibleUserId?: string | null; companyId?: string | null; factoryId?: string | null; departmentId?: string | null },
 ): Promise<boolean> {
   const vis = await getRequestVisibility(db, userId);
-  return vis.canSee({ id: reqRow.id, requesterId: reqRow.requesterId, workflowId: reqRow.workflowId ?? null });
+  return vis.canSee(reqRow);
 }
 
 export interface RouterDeps {
@@ -512,6 +516,74 @@ export function buildRouter(deps: RouterDeps): Router {
     }
   });
 
+  // Экспорт списка заявок в CSV (Excel открывает напрямую; чат «Снабжение» 19.06).
+  // Та же видимость и денежный гейт, что и у списка. Только reports.view.
+  // Объявлен до /requests/:id, чтобы «export» не читался как id.
+  r.get('/requests/export', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'reports.view', u.holdingId))) {
+        res.status(403).json({ error: 'Недостаточно прав для экспорта' });
+        return;
+      }
+      const q = req.query;
+      const vis = await getRequestVisibility(db, u.id);
+      const conds: (SQL | undefined)[] = [eq(schema.requests.holdingId, u.holdingId)];
+      if (vis.scope) conds.push(vis.scope);
+      const status = String(q.status ?? '').trim();
+      if (status) conds.push(eq(schema.requests.status, status));
+      if (String(q.mine ?? '') === '1') conds.push(eq(schema.requests.requesterId, u.id));
+      const rows = await db
+        .select()
+        .from(schema.requests)
+        .where(and(...conds.filter(Boolean) as SQL[]))
+        .orderBy(desc(schema.requests.createdAt))
+        .limit(2000);
+
+      const userIds = [...new Set(rows.map((r: any) => r.requesterId).filter(Boolean))] as string[];
+      const users = userIds.length
+        ? await db.select({ id: schema.users.id, fullName: schema.users.fullName }).from(schema.users).where(inArray(schema.users.id, userIds))
+        : [];
+      const nameBy = new Map((users as { id: string; fullName: string }[]).map((x) => [x.id, x.fullName]));
+      const depts = await db.select().from(schema.departments).where(eq(schema.departments.holdingId, u.holdingId));
+      const deptBy = new Map((depts as { id: string; name: string }[]).map((d) => [d.id, d.name]));
+      const facs = await db.select().from(schema.factories).where(eq(schema.factories.holdingId, u.holdingId));
+      const facBy = new Map((facs as { id: string; name: string }[]).map((f) => [f.id, f.name]));
+      const exportMoney = await getMoneyVisibility(db, u.id);
+
+      const esc = (v: unknown): string => {
+        const t = v == null ? '' : String(v);
+        return /[";\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+      };
+      const dateStr = (d: unknown): string => (d ? new Date(d as string).toISOString().slice(0, 10) : '');
+      const header = ['Номер', 'Название', 'Статус', 'Приоритет', 'Тип', 'Отдел', 'Завод', 'Автор', 'Создана', 'Нужно к', 'Сумма', 'Валюта'];
+      const lines = [header.join(';')];
+      for (const r0 of rows as any[]) {
+        lines.push([
+          esc(r0.requestNumber),
+          esc(r0.title),
+          esc(await statusLabelFor(db, r0)),
+          esc(r0.priority),
+          esc(r0.requestType),
+          esc(r0.departmentId ? deptBy.get(r0.departmentId) ?? '' : r0.departmentName ?? ''),
+          esc(r0.factoryId ? facBy.get(r0.factoryId) ?? '' : ''),
+          esc(r0.requesterId ? nameBy.get(r0.requesterId) ?? '' : ''),
+          dateStr(r0.createdAt),
+          dateStr(r0.neededDate),
+          exportMoney.canSee(r0) && r0.estimatedAmount != null ? String(r0.estimatedAmount) : '',
+          esc(r0.currency ?? 'UZS'),
+        ].join(';'));
+      }
+      // BOM — чтобы Excel корректно открыл UTF-8 (кириллицу) без импорта.
+      const csv = '\ufeff' + lines.join('\r\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="requests-${new Date().toISOString().slice(0, 10)}.csv"`);
+      res.send(csv);
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.post('/requests', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
@@ -845,6 +917,12 @@ export function buildRouter(deps: RouterDeps): Router {
         }));
       }
 
+      // Кнопки/поля на фронте — только из ответа сервера: canEdit повторяет
+      // ровно ту проверку, которой PUT /requests/:id пропускает правку.
+      const canEdit =
+        EDITABLE_STATUSES.includes(reqRow.status) &&
+        (reqRow.requesterId === u.id || viewerCodes.includes('requests.edit'));
+
       res.json({
         ...reqRow,
         estimatedAmount: canSeeMoney ? reqRow.estimatedAmount : null,
@@ -861,6 +939,7 @@ export function buildRouter(deps: RouterDeps): Router {
         quotations,
         canSeeMoney,
         actions,
+        canEdit,
         workflowTimeline,
       });
     } catch (e) {
@@ -1131,72 +1210,10 @@ export function buildRouter(deps: RouterDeps): Router {
     }
   });
 
-  r.post('/approvals/:id/approve', auth, async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const u = (req as AuthedRequest).user!;
-      const body = req.body ?? {};
-      // Approval is a sensitive sign-off: require the permission AND a valid PIN before
-      // anything is written (the signature is only inserted after this passes). (C1 fix)
-      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'approvals.approve', u.holdingId))) {
-        res.status(403).json({ error: 'Недостаточно прав для согласования' });
-        return;
-      }
-      // №15: PIN как подпись — только если холдинг не переключился на простое
-      // подтверждение (settings.require_pin = '0').
-      if (await holdingRequiresPin(db, u.holdingId)) {
-        if (pinLockoutRemaining(u.id) > 0) {
-          res.status(429).json({ error: 'Слишком много попыток PIN — попробуйте позже' });
-          return;
-        }
-        const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
-        if (!full?.pinHash) {
-          res.status(403).json({ error: 'PIN не задан — установите его в профиле' });
-          return;
-        }
-        if (!verifyPin(String(body.pin ?? ''), full.pinHash)) {
-          recordPinFailure(u.id);
-          res.status(403).json({ error: 'Неверный PIN' });
-          return;
-        }
-        clearPinFailures(u.id);
-      }
-      const result = await approveApproval(db, {
-        approvalId: (req.params.id as string),
-        actorUserId: u.id,
-        comment: body.comment,
-      });
-      await notifyRequester(
-        db, notify, result.requestId,
-        result.status === 'approved' ? 'approved_final' : 'stage_passed',
-        (rn) => (result.status === 'approved' ? approvedFinalMessage(rn) : approvedStageMessage(rn)),
-      );
-      res.json(result);
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  r.post('/approvals/:id/reject', auth, async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const u = (req as AuthedRequest).user!;
-      const body = req.body ?? {};
-      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'approvals.reject', u.holdingId))) {
-        res.status(403).json({ error: 'Недостаточно прав для отклонения' });
-        return;
-      }
-      const result = await rejectApproval(db, {
-        approvalId: (req.params.id as string),
-        actorUserId: u.id,
-        comment: body.comment ?? '',
-      });
-      await notifyRequester(db, notify, result.requestId, 'rejected', (rn) =>
-        rejectedMessage(rn, String(body.comment ?? '').trim()),
-      );
-      res.json(result);
-    } catch (e) {
-      next(e);
-    }
-  });
+  // POST /approvals/:id/approve|reject удалены из канонического API: мини-апп
+  // согласует только через lifecycle (POST /requests/:id/action), а второй
+  // работающий путь записи — риск рассинхрона с движком (класс C1). Легаси-дизайн
+  // (SERVE_DESIGN=1) обслуживает свой экземпляр в compat.routes.ts.
 
   // ── Edit request (6.1.3: requests.edit) ──────────────────────────────────
   r.put('/requests/:id', auth, async (req: Request, res: Response, next: NextFunction) => {
@@ -1220,10 +1237,7 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      // Only editable in early stages — плюс «на доработке»: возврат автору
-      // затем и существует, чтобы он поправил заявку перед повторной отправкой.
-      const EDITABLE = ['draft', 'pending_approval', 'needs_revision'];
-      if (!EDITABLE.includes(reqRow.status)) {
+      if (!EDITABLE_STATUSES.includes(reqRow.status)) {
         res.status(409).json({ error: 'Заявку нельзя редактировать на этом этапе' });
         return;
       }

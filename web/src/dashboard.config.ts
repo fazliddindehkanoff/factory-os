@@ -29,7 +29,9 @@ export interface ActionDef {
 }
 
 export const DASHBOARD_STATS: StatDef[] = [
-  { perm: 'requests.view', valueKey: 'myActive', label: 'Мои заявки', tint: 'accent', ic: 'file', go: 'list' },
+  // «Мои заявки» — только тем, кто заявки СОЗДАЁТ (чат 02.07: «зачем мне мои
+  // заявки, если я не создаю заявки»); requests.view оставляет «Все заявки» ниже.
+  { perm: 'requests.create', valueKey: 'myActive', label: 'Мои заявки', tint: 'accent', ic: 'file', go: 'list' },
   { perm: 'approvals.approve', valueKey: 'pendingForMe', label: 'Ожидают меня', tint: 'warning', ic: 'checkCircle', go: 'list' },
   { perm: 'reports.view', valueKey: 'totalActive', label: 'Активных всего', tint: 'success', ic: 'box', go: 'list' },
 ];

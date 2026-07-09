@@ -25,7 +25,15 @@ export interface RequestVisibility {
   /** WHERE condition to AND into a requests query (undefined when seeAll). */
   scope: SQL | undefined;
   /** In-memory predicate for a single already-loaded request row. */
-  canSee: (req: { requesterId: string; workflowId: string | null; id: string; responsibleUserId?: string | null }) => boolean;
+  canSee: (req: {
+    requesterId: string;
+    workflowId: string | null;
+    id: string;
+    responsibleUserId?: string | null;
+    companyId?: string | null;
+    factoryId?: string | null;
+    departmentId?: string | null;
+  }) => boolean;
 }
 
 /**
@@ -113,37 +121,84 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
     return { seeAll: true, scope: undefined, canSee: () => true };
   }
 
-  // Active role ids of the user.
-  const roleRows = await db
-    .select({ roleId: schema.userRoles.roleId })
+  // Active role ASSIGNMENTS of the user — with their scopes: participation
+  // visibility is granted per assignment, and a dept/factory-scoped assignment
+  // must not leak other departments' requests (QA 2026-07-09, «выбор отдела»).
+  const assigns: { roleId: string; companyId: string | null; factoryId: string | null; departmentId: string | null }[] = await db
+    .select({
+      roleId: schema.userRoles.roleId,
+      companyId: schema.userRoles.companyId,
+      factoryId: schema.userRoles.factoryId,
+      departmentId: schema.userRoles.departmentId,
+    })
     .from(schema.userRoles)
     .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
-  const myRoleIds = [...new Set(roleRows.map((r: { roleId: string }) => r.roleId))] as string[];
+  const myRoleIds = [...new Set(assigns.map((r) => r.roleId))] as string[];
+
+  // Role → workflows where it approves (enabled approval steps).
+  const roleWf = new Map<string, Set<string>>();
+  if (myRoleIds.length) {
+    const rows: { roleId: string | null; wf: string | null }[] = await db
+      .select({ roleId: schema.workflowSteps.approverRoleId, wf: schema.workflowSteps.workflowId })
+      .from(schema.workflowSteps)
+      .where(and(inArray(schema.workflowSteps.approverRoleId, myRoleIds), sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`));
+    for (const r of rows) {
+      if (!r.roleId || !r.wf) continue;
+      if (!roleWf.has(r.roleId)) roleWf.set(r.roleId, new Set());
+      roleWf.get(r.roleId)!.add(r.wf);
+    }
+  }
 
   // Action-step kinds the user can act on BY PERMISSION (not only by role match) —
   // e.g. a procurement user works the procurement step even if their role code isn't
   // literally the step's approver role. Mirrors how the inbox surfaces work.
+  // Resolved PER ROLE so the permission's visibility carries that role's scope.
   const PERM_STEP_KINDS: { perms: string[]; kinds: string[] }[] = [
     { perms: ['procurement.view', 'procurement.quote', 'procurement.select_supplier'], kinds: ['procurement'] },
     { perms: ['warehouse.view', 'warehouse.receive', 'warehouse.issue', 'warehouse.check_stock'], kinds: ['warehouse_check', 'receiving', 'issue'] },
     { perms: ['finance.view', 'finance.mark_paid'], kinds: ['finance_payment'] },
   ];
-  const myKinds = new Set<string>();
-  for (const g of PERM_STEP_KINDS) if (g.perms.some((p) => codes.includes(p))) g.kinds.forEach((k) => myKinds.add(k));
-  const kindList = [...myKinds];
-
-  // Workflows I participate in: an enabled step is either my role's approval step,
-  // or an action step of a kind I can act on by permission.
-  let roleWorkflowIds: string[] = [];
-  const participationConds: SQL[] = [];
-  if (myRoleIds.length) participationConds.push(inArray(schema.workflowSteps.approverRoleId, myRoleIds));
-  if (kindList.length) participationConds.push(inArray(schema.workflowSteps.stepKind, kindList as any));
-  if (participationConds.length) {
-    const wf = await db
-      .selectDistinct({ wf: schema.workflowSteps.workflowId })
+  const roleKinds = new Map<string, Set<string>>();
+  const allKinds = new Set<string>();
+  if (myRoleIds.length) {
+    const rp: { roleId: string; code: string }[] = await db
+      .select({ roleId: schema.rolePermissions.roleId, code: schema.permissions.code })
+      .from(schema.rolePermissions)
+      .innerJoin(schema.permissions, eq(schema.rolePermissions.permissionId, schema.permissions.id))
+      .where(inArray(schema.rolePermissions.roleId, myRoleIds));
+    const roleCodes = new Map<string, Set<string>>();
+    for (const r of rp) {
+      if (!roleCodes.has(r.roleId)) roleCodes.set(r.roleId, new Set());
+      roleCodes.get(r.roleId)!.add(r.code);
+    }
+    for (const [roleId, cs] of roleCodes) {
+      for (const g of PERM_STEP_KINDS) {
+        if (g.perms.some((p) => cs.has(p))) {
+          if (!roleKinds.has(roleId)) roleKinds.set(roleId, new Set());
+          g.kinds.forEach((k) => { roleKinds.get(roleId)!.add(k); allKinds.add(k); });
+        }
+      }
+    }
+  }
+  const kindWf = new Map<string, Set<string>>();
+  if (allKinds.size) {
+    const rows: { kind: string; wf: string | null }[] = await db
+      .select({ kind: schema.workflowSteps.stepKind, wf: schema.workflowSteps.workflowId })
       .from(schema.workflowSteps)
-      .where(and(sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`, or(...participationConds)!));
-    roleWorkflowIds = wf.map((r: { wf: string | null }) => r.wf).filter(Boolean) as string[];
+      .where(and(inArray(schema.workflowSteps.stepKind, [...allKinds] as any), sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`));
+    for (const r of rows) {
+      if (!r.wf) continue;
+      if (!kindWf.has(r.kind)) kindWf.set(r.kind, new Set());
+      kindWf.get(r.kind)!.add(r.wf);
+    }
+  }
+
+  // Per assignment: the workflows it opens + the scope it is limited to.
+  const perAssign: { wfSet: Set<string>; companyId: string | null; factoryId: string | null; departmentId: string | null }[] = [];
+  for (const a of assigns) {
+    const wfSet = new Set<string>(roleWf.get(a.roleId) ?? []);
+    for (const k of roleKinds.get(a.roleId) ?? []) for (const wf of kindWf.get(k) ?? []) wfSet.add(wf);
+    if (wfSet.size) perAssign.push({ wfSet, companyId: a.companyId, factoryId: a.factoryId, departmentId: a.departmentId });
   }
 
   // Requests I've acted on: I changed their status, or I signed an approval.
@@ -162,19 +217,28 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
   const conds: SQL[] = [eq(schema.requests.requesterId, userId)];
   // Bug #8: the assigned procurement person always sees their request.
   conds.push(eq(schema.requests.responsibleUserId, userId));
-  if (roleWorkflowIds.length) conds.push(inArray(schema.requests.workflowId, roleWorkflowIds));
+  for (const p of perAssign) {
+    const sub: SQL[] = [inArray(schema.requests.workflowId, [...p.wfSet])];
+    if (p.companyId) sub.push(eq(schema.requests.companyId, p.companyId));
+    if (p.factoryId) sub.push(eq(schema.requests.factoryId, p.factoryId));
+    if (p.departmentId) sub.push(eq(schema.requests.departmentId, p.departmentId));
+    conds.push(and(...sub)!);
+  }
   if (involvedIds.length) conds.push(inArray(schema.requests.id, involvedIds));
   const scope = or(...conds)!;
 
-  const roleWfSet = new Set(roleWorkflowIds);
   const involvedSet = new Set(involvedIds);
+  const assignCovers = (p: { companyId: string | null; factoryId: string | null; departmentId: string | null }, req: { companyId?: string | null; factoryId?: string | null; departmentId?: string | null }): boolean =>
+    (p.companyId == null || p.companyId === (req.companyId ?? null)) &&
+    (p.factoryId == null || p.factoryId === (req.factoryId ?? null)) &&
+    (p.departmentId == null || p.departmentId === (req.departmentId ?? null));
   return {
     seeAll: false,
     scope,
     canSee: (req) =>
       req.requesterId === userId ||
       req.responsibleUserId === userId ||
-      (req.workflowId != null && roleWfSet.has(req.workflowId)) ||
+      perAssign.some((p) => req.workflowId != null && p.wfSet.has(req.workflowId) && assignCovers(p, req)) ||
       involvedSet.has(req.id),
   };
 }

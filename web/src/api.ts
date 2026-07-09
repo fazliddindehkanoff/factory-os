@@ -116,14 +116,16 @@ export const api = {
   cancelRequest: (id: string, reason?: string) =>
     call(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason ?? '' }) }),
   rejectReasons: (id: string) => call(`/requests/${id}/reject-reasons`),
+  // CSV — бинарный ответ мимо call(); вызывающий отзывает URL через revokeObjectURL.
+  exportRequestsUrl: async (): Promise<string> => {
+    const token = getToken();
+    const res = await fetch('/api/requests/export', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new Error('Не удалось выгрузить CSV');
+    return URL.createObjectURL(await res.blob());
+  },
   procurementAssignees: (): Promise<{ users: { id: string; fullName: string | null }[] }> => call('/procurement/assignees'),
   createRequest: (data: CreateRequestData) =>
     call('/requests', { method: 'POST', body: JSON.stringify(data) }),
-  approve: (id: string, comment?: string) =>
-    call(`/approvals/${id}/approve`, { method: 'POST', body: JSON.stringify({ comment }) }),
-  reject: (id: string, comment: string) =>
-    call(`/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ comment }) }),
-
   // ── Edit request ──
   updateRequest: (id: string, data: Partial<{ title: string; description: string; priority: string; warehouseName: string; neededDate: string | null }>) =>
     call(`/requests/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -169,7 +171,14 @@ export const api = {
     list: (requestId: string) => call(`/requests/${requestId}/attachments`),
     upload: (requestId: string, data: { filename: string; dataBase64: string; mime?: string }) =>
       call(`/requests/${requestId}/attachments`, { method: 'POST', body: JSON.stringify(data) }),
-    download: (id: string) => call(`/attachments/${id}`),
+    // Скачивание — бинарное (blob), поэтому мимо call(): отдаёт объект-URL,
+    // вызывающий обязан отозвать его через URL.revokeObjectURL.
+    downloadUrl: async (id: string): Promise<string> => {
+      const token = getToken();
+      const res = await fetch(`/api/attachments/${id}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) throw new Error('Download failed');
+      return URL.createObjectURL(await res.blob());
+    },
     remove: (id: string) => call(`/attachments/${id}`, { method: 'DELETE' }),
   },
 
@@ -201,6 +210,8 @@ export const api = {
     invite: (telegramId: string, name: string) =>
       call('/admin/users/invite', { method: 'POST', body: JSON.stringify({ telegram_id: telegramId, name }) }),
     deleteUser: (id: string) => call('/admin/users/' + id, { method: 'DELETE' }),
+    resetPin: (id: string, reason: string) =>
+      call(`/admin/users/${id}/reset-pin`, { method: 'POST', body: JSON.stringify({ reason }) }),
     userRoles: (id: string) => call(`/admin/users/${id}/roles`),
     assignRole: (userId: string, roleId: string, scope?: { factoryId?: string; departmentId?: string }) =>
       call(`/admin/users/${userId}/roles`, { method: 'POST', body: JSON.stringify({ roleId, ...(scope ?? {}) }) }),

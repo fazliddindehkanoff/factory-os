@@ -27,6 +27,8 @@ import {
   STEP_KINDS,
   STATUS_NEEDS_REVISION,
   TERMINAL_APPROVED,
+  TERMINAL_ARCHIVED,
+  TERMINAL_CANCELLED,
   TERMINAL_CLOSED,
   TERMINAL_REJECTED,
   TERMINAL_STATUSES,
@@ -70,6 +72,8 @@ const TERMINAL_LABELS: Record<string, string> = {
   [TERMINAL_APPROVED]: 'Согласована',
   [TERMINAL_CLOSED]: 'Закрыта',
   [TERMINAL_REJECTED]: 'Отклонена',
+  [TERMINAL_CANCELLED]: 'Отменена',
+  [TERMINAL_ARCHIVED]: 'В архиве',
   [STATUS_NEEDS_REVISION]: 'На доработке',
   draft: 'Черновик',
 };

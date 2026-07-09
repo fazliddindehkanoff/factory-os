@@ -34,7 +34,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     permissions: [
       'reports.status_summary',
       'requests.view',
-      'approvals.view',
       'approvals.approve',
       'approvals.reject',
       'approvals.override',
@@ -50,7 +49,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     permissions: [
       'reports.status_summary',
       'requests.view',
-      'approvals.view',
       'approvals.approve',
       'approvals.reject',
       'finance.view',
@@ -77,7 +75,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     permissions: [
       'reports.status_summary',
       'requests.view',
-      'approvals.view',
       'approvals.approve',
       'approvals.reject',
       'warehouse.view',
@@ -93,7 +90,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'reports.status_summary',
       'requests.view',
       'requests.create',
-      'approvals.view',
       'approvals.approve',
       'approvals.reject',
     ],
@@ -121,7 +117,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'procurement.select_supplier',
       'suppliers.view',
       'suppliers.manage',
-      'approvals.view',
       'approvals.approve',
       'approvals.reject',
     ],
@@ -135,7 +130,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'reports.view',
       'finance.view',
       'finance.mark_paid',
-      'approvals.view',
       'approvals.approve',
       'approvals.reject',
     ],
@@ -148,7 +142,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'requests.view',
       'reports.view',
       'finance.view',
-      'approvals.view',
       'approvals.approve',
       'approvals.reject',
     ],
@@ -176,7 +169,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     permissions: [
       'reports.status_summary',
       'requests.view',
-      'approvals.view',
       'procurement.view',
       'procurement.quote',
       'suppliers.view',
@@ -187,7 +179,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     code: 'finance_manager',
     name: 'Финансовый менеджер',
     permissions: [
-      'reports.status_summary','requests.view', 'approvals.view', 'finance.view', 'finance.mark_paid'],
+      'reports.status_summary','requests.view', 'finance.view', 'finance.mark_paid'],
   },
   {
     code: 'accountant',
