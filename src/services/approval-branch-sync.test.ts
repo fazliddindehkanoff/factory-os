@@ -1,11 +1,12 @@
 /**
- * C1 regression — the /api/approvals/:id/approve branch must advance a request
- * EXACTLY like performAction does: the new status comes from statusForStep(next)
- * and a pending approval row is created ONLY when the next step is an approval
- * step. Before the fix, approveApproval unconditionally wrote 'pending_approval'
- * and inserted a pending approval on ANY next step kind, leaving an orphan
- * pending row that later violates approvals_one_pending_idx (23505 → HTTP 500)
- * and bricks the request forever.
+ * C1 regression — the approveApproval branch (живёт для legacy-дизайна через
+ * compat.routes.ts; из канонического API эндпоинты /approvals/:id/* удалены)
+ * must advance a request EXACTLY like performAction does: the new status comes
+ * from statusForStep(next) and a pending approval row is created ONLY when the
+ * next step is an approval step. Before the fix, approveApproval unconditionally
+ * wrote 'pending_approval' and inserted a pending approval on ANY next step kind,
+ * leaving an orphan pending row that later violates approvals_one_pending_idx
+ * (23505 → HTTP 500) and bricks the request forever.
  *
  * Also covers B2: an approval whose request already reached a terminal state
  * (currentStepId = null) must be rejected with 409, not reopen the request.
@@ -19,6 +20,8 @@ import { and, eq, isNull } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { seedSystemRolesAndPermissions } from '../db/seed.js';
 import { createRequest } from './request.service.js';
+import { approveApproval } from './approval.service.js';
+import { ConflictError } from './errors.js';
 import { hashPin } from '../auth/pin.js';
 import { createApp } from '../server/app.js';
 
@@ -87,11 +90,11 @@ describe('C1 — approveApproval must advance like performAction (statusForStep 
   it('next step is warehouse_check → status is warehouse_check and NO orphan pending approval', async () => {
     const { app, db, holding, factory } = await make();
     const requester = await userWithRoles(db, holding, ['requester'], 'req');
-    await userWithRoles(db, holding, ['director'], 'dir', PIN);
+    const dirId = await userWithRoles(db, holding, ['director'], 'dir', PIN);
     const { req, steps, approvalId } = await branchedFlow(db, holding, factory, requester);
-    const dir = await login(app, 'dir');
+    void app;
 
-    await request(app).post(`/api/approvals/${approvalId}/approve`).set('Authorization', `Bearer ${dir}`).send({ pin: PIN }).expect(200);
+    await approveApproval(db, { approvalId, actorUserId: dirId });
 
     const r = await reload(db, req.id);
     // The next step is warehouse_check — the status must be the step kind, not 'pending_approval'.
@@ -104,14 +107,13 @@ describe('C1 — approveApproval must advance like performAction (statusForStep 
   it('full chain via approveApproval then lifecycle does not violate approvals_one_pending_idx', async () => {
     const { app, db, holding, factory } = await make();
     const requester = await userWithRoles(db, holding, ['requester'], 'req');
-    await userWithRoles(db, holding, ['director'], 'dir', PIN);
+    const dirId = await userWithRoles(db, holding, ['director'], 'dir', PIN);
     await userWithRoles(db, holding, ['warehouse'], 'wh', PIN);
     await userWithRoles(db, holding, ['finance'], 'fin', PIN);
     const { req, steps, approvalId } = await branchedFlow(db, holding, factory, requester);
-    const dir = await login(app, 'dir');
     const wh = await login(app, 'wh');
 
-    await request(app).post(`/api/approvals/${approvalId}/approve`).set('Authorization', `Bearer ${dir}`).send({ pin: PIN }).expect(200);
+    await approveApproval(db, { approvalId, actorUserId: dirId });
 
     // Advancing off the warehouse_check step lands on the finance approval step:
     // enterApprovalIfNeeded inserts its pending row — the partial unique index
@@ -133,9 +135,9 @@ describe('B2 — approval on a terminal request is 409, never a reopen', () => {
   it('pending approval left on a closed request cannot flip it back', async () => {
     const { app, db, holding, factory } = await make();
     const requester = await userWithRoles(db, holding, ['requester'], 'req');
-    await userWithRoles(db, holding, ['director'], 'dir', PIN);
+    const dirId = await userWithRoles(db, holding, ['director'], 'dir', PIN);
     const { req, steps, approvalId } = await branchedFlow(db, holding, factory, requester);
-    const dir = await login(app, 'dir');
+    void app;
 
     // Force the request into a terminal state while its approval is still pending
     // (models the orphan-pending corruption C1 used to create).
@@ -145,7 +147,7 @@ describe('B2 — approval on a terminal request is 409, never a reopen', () => {
       .where(eq(schema.requests.id, req.id));
     void steps;
 
-    await request(app).post(`/api/approvals/${approvalId}/approve`).set('Authorization', `Bearer ${dir}`).send({ pin: PIN }).expect(409);
+    await expect(approveApproval(db, { approvalId, actorUserId: dirId })).rejects.toThrow(ConflictError);
 
     const r = await reload(db, req.id);
     expect(r.status).toBe('approved');

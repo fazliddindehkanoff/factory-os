@@ -935,51 +935,9 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
     }
   });
 
-  /** Revoke (soft) every active assignment of a role for a user. */
-  r.delete('/users/:id/roles/:roleId', requirePerm('users.manage'), async (req, res, next) => {
-    try {
-      const u = actor(req);
-      const id = req.params.id as string;
-      const roleId = req.params.roleId as string;
-      await loadHoldingRow(db, schema.users, id, u.holdingId as string);
-      await assertActorOutranks(u.id, u.holdingId as string, id); // R6
-      const active: { id: string }[] = await db
-        .select({ id: schema.userRoles.id })
-        .from(schema.userRoles)
-        .where(
-          and(
-            eq(schema.userRoles.userId, id),
-            eq(schema.userRoles.roleId, roleId),
-            eq(schema.userRoles.status, 'active'),
-          ),
-        );
-      if (active.length === 0) throw new NotFoundError('Назначение не найдено');
-      await db.transaction(async (tx: Db) => {
-        await tx
-          .update(schema.userRoles)
-          .set({ status: 'revoked' })
-          .where(
-            and(
-              eq(schema.userRoles.userId, id),
-              eq(schema.userRoles.roleId, roleId),
-              eq(schema.userRoles.status, 'active'),
-            ),
-          );
-        await writeAudit(tx, {
-          holdingId: u.holdingId as string,
-          userId: u.id,
-          action: 'role.revoked',
-          module: 'admin',
-          entityType: 'user',
-          entityId: id,
-          oldValue: { roleId },
-        });
-      });
-      res.json({ ok: true, revoked: active.length });
-    } catch (e) {
-      next(e);
-    }
-  });
+  // DELETE /users/:id/roles/:roleId удалён: снятие ролей идёт точечно по
+  // назначению (DELETE /users/:id/assignments/:assignmentId), которым и
+  // пользуется админка. Массовый вариант по roleId никто не вызывал.
 
   /** Revoke (soft) a single role assignment by its id — per-scope precision. */
   r.delete('/users/:id/assignments/:assignmentId', requirePerm('users.manage'), async (req, res, next) => {
@@ -1319,18 +1277,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
     }
   });
 
-  r.get('/workflows/:id/steps', requirePerm('workflows.manage'), async (req, res, next) => {
-    try {
-      const u = actor(req);
-      const id = req.params.id as string;
-      await loadHoldingRow(db, schema.workflows, id, u.holdingId as string);
-      const steps = await db.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.workflowId, id));
-      steps.sort((a: { stepOrder: number }, b: { stepOrder: number }) => a.stepOrder - b.stepOrder);
-      res.json(steps);
-    } catch (e) {
-      next(e);
-    }
-  });
+  // GET /workflows/:id/steps удалён: шаги приходят внутри GET /workflows
+  // (поле steps каждого маршрута), отдельный эндпоинт никто не вызывал.
 
   /**
    * Reorder steps. Body: [{ id, order_index }]. Blocked while requests are in flight.

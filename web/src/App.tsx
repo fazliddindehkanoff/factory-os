@@ -87,6 +87,8 @@ interface RequestDetail extends RequestRow {
   actions?: LifecycleActionBtn[];
   workflowTimeline?: WorkflowTimelineStep[];
   canSeeMoney?: boolean;
+  /** Сервер: этот пользователь может править заявку на текущем этапе (PUT /requests/:id). */
+  canEdit?: boolean;
   // full-info fields (bug #9)
   requesterName?: string | null;
   responsibleName?: string | null;
@@ -102,6 +104,8 @@ interface RequestDetail extends RequestRow {
   updatedAt?: string | null;
   currency?: string | null;
 }
+const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
+
 type Screen =
   | { name: 'home' }
   // `status` — optional prefilter applied when the list opens (KPI/by-status click).
@@ -1785,12 +1789,10 @@ function ImageThumb({ attachmentId, alt }: { attachmentId: string; alt: string }
   useEffect(() => {
     let objectUrl: string | null = null;
     let cancelled = false;
-    const token = getToken();
-    fetch(`/api/attachments/${attachmentId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then((r) => r.blob())
-      .then((b) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(b);
+    api.attachments.downloadUrl(attachmentId)
+      .then((u) => {
+        if (cancelled) { URL.revokeObjectURL(u); return; }
+        objectUrl = u;
         setSrc(objectUrl);
       })
       .catch(() => {});
@@ -1881,11 +1883,7 @@ function AttachmentsSection({ requestId }: { requestId: string }) {
               </div>
               <button onClick={async () => {
                 try {
-                  const token = getToken();
-                  const res = await fetch(`/api/attachments/${a.id}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-                  if (!res.ok) throw new Error('Download failed');
-                  const blob = await res.blob();
-                  const url = URL.createObjectURL(blob);
+                  const url = await api.attachments.downloadUrl(a.id);
                   const link = document.createElement('a');
                   link.href = url; link.download = a.filename; link.click();
                   URL.revokeObjectURL(url);
@@ -1952,6 +1950,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   const [req, setReq] = useState<RequestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<LifecycleActionBtn | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const actionLock = useRef(false);
 
@@ -2024,7 +2023,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   };
 
   // Full info (bug #9): show every meaningful field, not just status.
-  const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
   const TYPE_LABEL: Record<string, string> = { material_request: 'Материалы / товар', service_request: 'Услуга', other: 'Другое' };
   const info: { k: string; v: string }[] = [];
   const pushInfo = (k: string, v: unknown) => { if (v != null && String(v).trim() !== '') info.push({ k, v: String(v) }); };
@@ -2049,11 +2047,18 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--fg2)', fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
           ← Назад
         </button>
-        {canCancel && (
-          <button onClick={doCancel} style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
-            Удалить заявку
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {req.canEdit && (
+            <button onClick={() => setEditOpen(true)} style={{ background: 'none', border: '1px solid var(--border)', color: 'var(--fg2)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
+              Изменить
+            </button>
+          )}
+          {canCancel && (
+            <button onClick={doCancel} style={{ background: 'none', border: '1px solid var(--danger)', color: 'var(--danger)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
+              Удалить заявку
+            </button>
+          )}
+        </div>
       </div>
 
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: 16 }}>
@@ -2251,6 +2256,85 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
           onConfirm={(vals) => run(pending.action, vals).catch(() => {})}
         />
       )}
+
+      {editOpen && (
+        <EditRequestSheet
+          req={req}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => { setEditOpen(false); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Правка заявки автором (или requests.edit) на ранних этапах — в т.ч. сценарий
+ *  «на доработке»: поправить поля перед «Отправить повторно». Кнопка появляется
+ *  только по canEdit из ответа сервера; состав полей = принимаемым PUT /requests/:id. */
+function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClose: () => void; onSaved: () => void }) {
+  const [title, setTitle] = useState(req.title ?? '');
+  const [description, setDescription] = useState(req.description ?? '');
+  const [priority, setPriority] = useState(req.priority ?? 'normal');
+  const [warehouseName, setWarehouseName] = useState(req.warehouseName ?? '');
+  const [neededDate, setNeededDate] = useState(req.neededDate ? String(req.neededDate).slice(0, 10) : '');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const inputStyle: CSSProperties = { width: '100%', padding: '12px 14px', fontSize: 14, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none' };
+
+  const save = async () => {
+    try {
+      setSaving(true);
+      setMsg(null);
+      await api.updateRequest(req.id, {
+        title: title.trim(),
+        description: description.trim(),
+        priority,
+        warehouseName: warehouseName.trim(),
+        neededDate: neededDate || null,
+      });
+      onSaved();
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)' }} />
+      <div style={{ position: 'relative', width: '100%', maxWidth: 560, background: 'var(--bg)', borderTop: '1px solid var(--edge)', borderRadius: '24px 24px 0 0', padding: '20px 20px 28px', maxHeight: '85vh', overflowY: 'auto' }}>
+        <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--fg)', marginBottom: 16 }}>Изменить заявку</div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Название</div>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Что нужно" style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Описание</div>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Подробности" style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Приоритет</div>
+          <select value={priority} onChange={(e) => setPriority(e.target.value)} style={inputStyle}>
+            {Object.entries(PRIORITY_LABEL).map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Склад</div>
+          <input value={warehouseName} onChange={(e) => setWarehouseName(e.target.value)} placeholder="Склад назначения" style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Нужно к</div>
+          <input type="date" value={neededDate} onChange={(e) => setNeededDate(e.target.value)} style={inputStyle} />
+        </div>
+        {msg && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--danger)' }}>{msg}</div>}
+        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: 14, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Закрыть</button>
+          <button onClick={save} disabled={saving || !title.trim()} style={{ flex: 1, padding: 14, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: saving || !title.trim() ? 'not-allowed' : 'pointer', opacity: saving || !title.trim() ? 0.5 : 1 }}>{saving ? '…' : 'Сохранить'}</button>
+        </div>
+      </div>
     </div>
   );
 }
