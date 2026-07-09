@@ -2073,7 +2073,35 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         </div>
       </div>
 
-      {/* Progress timeline — top of the card (#10), per-step actor/date-time (#7), correct rejected state (#4) */}
+      {req.description && String(req.description).trim() !== '' && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Примечание</div>
+          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
+        </div>
+      )}
+
+      {req.items.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Позиции</div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {req.items.map((it) => (
+              <div key={it.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 0', borderTop: '1px solid var(--line)' }}>
+                <span style={{ fontSize: 14, color: 'var(--fg)', minWidth: 0 }}>
+                  {it.name} <span style={{ color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace" }}>× {it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
+                </span>
+                {req.canSeeMoney && it.totalAmount != null && (
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace", flex: 'none' }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <AttachmentsSection requestId={id} />
+
+      {/* Задача Сарвара 09.07: примечание/позиции/вложения — часть информации
+          о заявке и стоят ВЫШЕ процесса согласования. */}
       {(req.workflowTimeline ?? []).length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Процесс согласования</div>
@@ -2111,31 +2139,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         </div>
       )}
 
-      {req.description && String(req.description).trim() !== '' && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Примечание</div>
-          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
-        </div>
-      )}
-
-      {req.items.length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Позиции</div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {req.items.map((it) => (
-              <div key={it.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 0', borderTop: '1px solid var(--line)' }}>
-                <span style={{ fontSize: 14, color: 'var(--fg)', minWidth: 0 }}>
-                  {it.name} <span style={{ color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace" }}>× {it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
-                </span>
-                {req.canSeeMoney && it.totalAmount != null && (
-                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace", flex: 'none' }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {quotations.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Коммерческие предложения</div>
@@ -2155,8 +2158,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
           </div>
         </div>
       )}
-
-      <AttachmentsSection requestId={id} />
 
       {/* №12в: история — только ролям с audit.view (сервер отдаёт её лишь им),
           зато подробная: переходы статусов, источник, плюс полный аудит-лог. */}
