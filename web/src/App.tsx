@@ -89,6 +89,8 @@ interface RequestDetail extends RequestRow {
   canSeeMoney?: boolean;
   /** Сервер: этот пользователь может править заявку на текущем этапе (PUT /requests/:id). */
   canEdit?: boolean;
+  /** Кастомные поля с подписями из конструктора формы (сервер резолвит ключи и коды). */
+  customInfo?: { label: string; value: string }[];
   // full-info fields (bug #9)
   requesterName?: string | null;
   responsibleName?: string | null;
@@ -2030,9 +2032,8 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   // Макет 09.07: при одной позиции — «Количество: 1 л»; при нескольких — счётчик.
   if (req.items.length === 1) pushInfo('Количество', `${req.items[0].quantity}${req.items[0].unit ? ' ' + req.items[0].unit : ''}`);
   else pushInfo('Позиций', String(req.items.length));
-  // Кастомные поля формы («Назначение» и т.п.) — в общий список информации (макет 09.07).
-  const customEntries = req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : [];
-  for (const [k, v] of customEntries) pushInfo(k, v == null || v === '' ? null : String(v));
+  // Кастомные поля — уже с подписями формы от сервера (customInfo), не сырые ключи.
+  for (const ci of req.customInfo ?? []) pushInfo(ci.label, ci.value);
 
   return (
     <div style={{ padding: '16px 16px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>

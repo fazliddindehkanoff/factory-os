@@ -917,6 +917,32 @@ export function buildRouter(deps: RouterDeps): Router {
         }));
       }
 
+      // Кастомные поля: сырые ключи/коды («purpose: repair») резолвим в подписи
+      // конструктора формы («Назначение / цель: Ремонт оборудования») — фронт
+      // не должен знать конфиг формы (сервер — источник истины).
+      let customInfo: { label: string; value: string }[] = [];
+      const cfEntries = reqRow.customFields && typeof reqRow.customFields === 'object'
+        ? Object.entries(reqRow.customFields as Record<string, unknown>)
+        : [];
+      if (cfEntries.length) {
+        const ff = await db
+          .select()
+          .from(schema.formFields)
+          .where(and(eq(schema.formFields.holdingId, reqRow.holdingId), eq(schema.formFields.screen, 'request_create')));
+        const fieldByKey = new Map((ff as any[]).map((f) => [f.fieldKey, f]));
+        for (const [k, v] of cfEntries) {
+          if (v == null || String(v).trim() === '' || v === false) continue;
+          const f = fieldByKey.get(k);
+          let value = v === true ? 'Да' : String(v);
+          const opts = f?.options as { value: string; label: string }[] | null;
+          if (Array.isArray(opts)) {
+            const o = opts.find((x) => x.value === value);
+            if (o) value = o.label;
+          }
+          customInfo.push({ label: f?.label ?? k, value });
+        }
+      }
+
       // Кнопки/поля на фронте — только из ответа сервера: canEdit повторяет
       // ровно ту проверку, которой PUT /requests/:id пропускает правку.
       const canEdit =
@@ -940,6 +966,7 @@ export function buildRouter(deps: RouterDeps): Router {
         canSeeMoney,
         actions,
         canEdit,
+        customInfo,
         workflowTimeline,
       });
     } catch (e) {
