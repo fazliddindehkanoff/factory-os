@@ -1307,6 +1307,13 @@ type DraftRequestItem = {
 
 const emptyRequestItem = (): DraftRequestItem => ({ values: {}, files: {} });
 
+// Клик по любому месту поля даты открывает нативный date picker (а не только по
+// иконке-календарю). showPicker() требует пользовательского жеста — onClick подходит.
+const openDatePicker = (e: { currentTarget: HTMLInputElement & { showPicker?: () => void } }) => {
+  if (e.currentTarget.type !== 'date') return;
+  try { e.currentTarget.showPicker?.(); } catch { /* showPicker не поддержан — остаётся обычный фокус */ }
+};
+
 // ── Помощники превью (шаг «Проверьте заявку») ───────────────────────────────
 const isImageName = (name: string) => /\.(png|jpe?g|gif|webp)$/i.test(name);
 // Черновые файлы позиции хранятся как base64 без префикса — собираем data-URL,
@@ -1862,6 +1869,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
                 aria-label={pf.label}
                 value={String(v ?? '')}
                 onChange={(e) => updateRequestItemValue(itemIndex, pf.key, e.target.value)}
+                onClick={openDatePicker}
                 type="date"
                 min={new Date().toISOString().slice(0, 10)}
                 style={{ ...input, color: hasValue ? 'var(--fg)' : 'transparent' }}
@@ -1990,6 +1998,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
         <input
           value={String(values[f.key] ?? '')}
           onChange={(e) => set(f.key, e.target.value)}
+          onClick={openDatePicker}
           type={f.type === 'date' ? 'date' : 'text'}
           // №5: прошлые даты выбрать нельзя — минимум сегодня (сервер дублирует проверку).
           min={f.type === 'date' ? new Date().toISOString().slice(0, 10) : undefined}
@@ -2785,7 +2794,7 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
         </div>
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Нужно к</div>
-          <input type="date" value={neededDate} onChange={(e) => setNeededDate(e.target.value)} style={inputStyle} />
+          <input type="date" value={neededDate} onChange={(e) => setNeededDate(e.target.value)} onClick={openDatePicker} style={inputStyle} />
         </div>
         {msg && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--danger)' }}>{msg}</div>}
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
