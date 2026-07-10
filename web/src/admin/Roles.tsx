@@ -240,7 +240,7 @@ function RoleEditor({
 
       <BottomSheet open={renameOpen} title="Переименовать набор прав" onClose={() => setRenameOpen(false)}>
         <Label>Название</Label>
-        <Field autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+        <Field value={name} onChange={(e) => setName(e.target.value)} />
         <div className="mt-5 flex gap-2.5">
           <GhostBtn className="flex-1" onClick={() => setRenameOpen(false)}>
             Отмена

@@ -220,7 +220,6 @@ export function Structure() {
           <div>
             <Label>Название</Label>
             <Field
-              autoFocus
               value={sheet.name}
               onChange={(e) => setSheet({ ...sheet, name: e.target.value })}
               placeholder={sheet.kind === 'factory' ? 'напр. Главный завод' : sheet.kind === 'department' ? 'напр. Снабжение' : 'напр. Главный склад'}

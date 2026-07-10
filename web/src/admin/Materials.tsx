@@ -115,7 +115,7 @@ function AddMaterialSheet({
   return (
     <BottomSheet open={open} title="Новый материал" onClose={onClose}>
       <Label>Название</Label>
-      <Field autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="напр. Болт М8×40" />
+      <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="напр. Болт М8×40" />
       <div className="mt-4">
         <Label>Артикул / SKU (необязательно)</Label>
         <Field value={sku} onChange={(e) => setSku(e.target.value)} placeholder="напр. BLT-M8-40" />
@@ -164,7 +164,7 @@ function EditMaterialSheet({
   return (
     <BottomSheet open title={`Материал: ${material.name}`} onClose={onClose}>
       <Label>Название</Label>
-      <Field autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+      <Field value={name} onChange={(e) => setName(e.target.value)} />
       <div className="mt-4">
         <Label>Артикул / SKU</Label>
         <Field value={sku} onChange={(e) => setSku(e.target.value)} placeholder="SKU" />

@@ -292,7 +292,7 @@ function AddFieldSheet({
   return (
     <BottomSheet open={open} title="Новое поле" onClose={onClose}>
       <Label>Название поля</Label>
-      <Field value={label} onChange={(e) => setLabel(e.target.value)} placeholder="напр. Артикул поставщика" autoFocus />
+      <Field value={label} onChange={(e) => setLabel(e.target.value)} placeholder="напр. Артикул поставщика" />
       <div className="mt-4">
         <Label>Тип поля</Label>
         <Select value={type} onChange={(e) => setType(e.target.value)}>
@@ -387,7 +387,7 @@ function EditFieldSheet({
   return (
     <BottomSheet open title={`Поле: ${field.label}`} onClose={onClose}>
       <Label>Название</Label>
-      <Field value={label} onChange={(e) => setLabel(e.target.value)} autoFocus />
+      <Field value={label} onChange={(e) => setLabel(e.target.value)} />
       <div className="mt-4">
         <Label>Шаг</Label>
         <Select value={String(step)} onChange={(e) => setStep(Number(e.target.value))}>

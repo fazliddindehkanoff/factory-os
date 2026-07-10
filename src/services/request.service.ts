@@ -18,6 +18,7 @@ export interface CreateRequestItem {
   quantity: number;
   unitPrice: number;
   unit?: string | null;
+  description?: string | null;
 }
 
 export interface CreateRequestInput {
@@ -194,6 +195,7 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
         requestId: req.id,
         materialId: it.materialId ?? null,
         name: it.name.trim(),
+        description: it.description ?? null,
         quantity: String(it.quantity),
         unit: it.unit ?? null,
         estimatedPrice: Math.round(it.unitPrice),

@@ -60,6 +60,22 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     orderIndex: 3,
   },
   {
+    // «Объект» — настраиваемый список объектов (стройплощадка / цех / площадка).
+    // Значения задаёт админ в конструкторе формы; это лишь стартовые примеры,
+    // которые заменяются под реальные объекты холдинга. Хранится в custom_fields
+    // по ключу `obyekt`; на карточке заявки выводится в основной сетке.
+    fieldKey: 'obyekt',
+    label: 'Объект',
+    fieldType: 'select',
+    system: false,
+    options: [
+      { value: 'Объект №1', label: 'Объект №1' },
+      { value: 'Объект №2', label: 'Объект №2' },
+    ],
+    stepGroup: 1,
+    orderIndex: 4,
+  },
+  {
     fieldKey: 'purpose',
     label: 'Назначение / цель',
     fieldType: 'select',
@@ -78,7 +94,7 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
       { value: 'other', label: 'Прочее' },
     ],
     stepGroup: 1,
-    orderIndex: 4,
+    orderIndex: 5,
   },
   // №6: «Степень срочности» живёт прямо над «Необходимо к дате» (шаг 2) —
   // решение владельца 2026-07-06.

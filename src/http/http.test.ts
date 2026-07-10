@@ -117,10 +117,17 @@ describe('HTTP API', () => {
     const created = await request(app)
       .post('/api/requests')
       .set('Authorization', `Bearer ${token}`)
-      .send({ items: [{ name: 'Cotton', quantity: 2, unitPrice: 1000 }] })
+      .send({
+        items: [
+          { name: 'Cotton', quantity: 2, unitPrice: 1000 },
+          { name: 'Dye', quantity: 1, unitPrice: 500 },
+        ],
+      })
       .expect(201);
     expect(created.body.status).toBe('pending_approval');
-    expect(created.body.estimatedAmount).toBe(2000);
+    expect(created.body.estimatedAmount).toBe(2500);
+    const storedItems = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, created.body.id));
+    expect(storedItems.map((it) => it.name).sort()).toEqual(['Cotton', 'Dye']);
 
     // It shows up in the list.
     const list = await request(app)

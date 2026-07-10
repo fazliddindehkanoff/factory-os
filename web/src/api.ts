@@ -69,6 +69,7 @@ export interface RequestItemInput {
   quantity: number;
   unitPrice: number;
   unit?: string;
+  description?: string;
 }
 
 export interface CreateRequestData {

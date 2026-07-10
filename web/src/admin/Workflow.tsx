@@ -334,7 +334,7 @@ export function WorkflowPage() {
       {/* New chain */}
       <BottomSheet open={newOpen} title="Новая цепочка" onClose={() => setNewOpen(false)}>
         <Label>Название</Label>
-        <Field autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="напр. Закупка оборудования" />
+        <Field value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="напр. Закупка оборудования" />
         <div className="mt-5 flex gap-2.5">
           <GhostBtn className="flex-1" onClick={() => setNewOpen(false)}>
             Отмена
@@ -350,7 +350,7 @@ export function WorkflowPage() {
         {stepSheet && (
           <div>
             <Label>Название шага</Label>
-            <Field autoFocus value={stepSheet.name} onChange={(e) => setStepSheet({ ...stepSheet, name: e.target.value })} placeholder="напр. Финансы" />
+            <Field value={stepSheet.name} onChange={(e) => setStepSheet({ ...stepSheet, name: e.target.value })} placeholder="напр. Финансы" />
             <div className="mt-4">
               <Label>Тип шага</Label>
               <Select value={stepSheet.kind} onChange={(e) => setStepSheet({ ...stepSheet, kind: (e.target as HTMLSelectElement).value })}>

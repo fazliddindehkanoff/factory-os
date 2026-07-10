@@ -174,7 +174,7 @@ function SupplierSheet({
   return (
     <BottomSheet open={supplier ? true : !!open} title={supplier ? `Поставщик: ${supplier.name}` : 'Новый поставщик'} onClose={onClose}>
       <Label>Название</Label>
-      <Field autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="напр. ООО Поставка" />
+      <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="напр. ООО Поставка" />
       <div className="mt-4">
         <Label>ИНН</Label>
         <Field value={inn} onChange={(e) => setInn(e.target.value)} placeholder="необязательно" />

@@ -127,6 +127,13 @@
       "when": 1783468800000,
       "tag": "0017_notification_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783555200000,
+      "tag": "0018_obyekt_field",
+      "breakpoints": true
     }
   ]
 }
