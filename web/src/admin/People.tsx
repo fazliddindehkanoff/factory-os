@@ -254,6 +254,10 @@ function UserDetail({
   const [roleId, setRoleId] = useState('');
   const [deptId, setDeptId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pinOpen, setPinOpen] = useState(false);
+  const [pinReason, setPinReason] = useState('');
+  const [pinBusy, setPinBusy] = useState(false);
+  const [pinDone, setPinDone] = useState(false);
 
   const load = useCallback(() => {
     api.admin
@@ -270,6 +274,22 @@ function UserDetail({
       load();
     } catch (e) {
       setError((e as Error).message);
+    }
+  };
+
+  // P2-2: сброс PIN — сервер требует причину, стирает PIN (не задаёт новый),
+  // пишет аудит и уведомляет пользователя; пользователь задаёт PIN заново сам.
+  const resetPin = async () => {
+    if (!pinReason.trim()) return;
+    setPinBusy(true);
+    try {
+      await api.admin.resetPin(user.id, pinReason.trim());
+      setPinDone(true);
+    } catch (e) {
+      setError((e as Error).message);
+      setPinOpen(false);
+    } finally {
+      setPinBusy(false);
     }
   };
 
@@ -342,7 +362,13 @@ function UserDetail({
         ))}
       </div>
 
-      <button onClick={removeUser} className="mt-6 w-full rounded-xl bg-danger/15 py-3 text-sm font-semibold text-danger active:scale-95">
+      <button
+        onClick={() => { setPinReason(''); setPinDone(false); setPinOpen(true); }}
+        className="mt-6 w-full rounded-xl bg-warning/15 py-3 text-sm font-semibold text-warning active:scale-95"
+      >
+        Сбросить PIN
+      </button>
+      <button onClick={removeUser} className="mt-3 w-full rounded-xl bg-danger/15 py-3 text-sm font-semibold text-danger active:scale-95">
         Удалить пользователя
       </button>
 
@@ -377,6 +403,39 @@ function UserDetail({
             {busy ? '…' : 'Назначить'}
           </PrimaryBtn>
         </div>
+      </BottomSheet>
+
+      <BottomSheet open={pinOpen} title="Сбросить PIN" onClose={() => setPinOpen(false)}>
+        {pinDone ? (
+          <>
+            <div className="text-sm text-fg2">
+              PIN сброшен. {user.fullName} получит уведомление и задаст новый PIN в своём профиле.
+            </div>
+            <PrimaryBtn className="mt-5 w-full" onClick={() => setPinOpen(false)}>
+              Готово
+            </PrimaryBtn>
+          </>
+        ) : (
+          <>
+            <div className="mb-3 text-sm text-fg2">
+              PIN будет стёрт (новый не назначается) — пользователь задаст его заново сам. Действие попадёт в аудит.
+            </div>
+            <Label>Причина</Label>
+            <Field
+              value={pinReason}
+              onChange={(e) => setPinReason((e.target as HTMLInputElement).value)}
+              placeholder="напр. Сотрудник забыл PIN"
+            />
+            <div className="mt-5 flex gap-2.5">
+              <GhostBtn className="flex-1" onClick={() => setPinOpen(false)}>
+                Отмена
+              </GhostBtn>
+              <PrimaryBtn className="flex-1" disabled={pinBusy || !pinReason.trim()} onClick={resetPin}>
+                {pinBusy ? '…' : 'Сбросить'}
+              </PrimaryBtn>
+            </div>
+          </>
+        )}
       </BottomSheet>
     </div>
   );

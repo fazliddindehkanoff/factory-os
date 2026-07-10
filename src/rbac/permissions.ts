@@ -19,7 +19,8 @@ export const PERMISSIONS: PermissionDef[] = [
   // with the feature so the catalog never promises unenforced capabilities.
   { code: 'requests.upload_attachment', name: 'Загрузка вложений', module: 'requests' },
   // approvals
-  { code: 'approvals.view', name: 'Просмотр согласований', module: 'approvals' },
+  // 'approvals.view' removed (QA 2026-07-09): granted everywhere, checked nowhere —
+  // видимость согласований определяется назначением на шаг, а не этим правом.
   { code: 'approvals.approve', name: 'Согласование', module: 'approvals' },
   { code: 'approvals.reject', name: 'Отклонение', module: 'approvals' },
   { code: 'approvals.override', name: 'Override (учредитель)', module: 'approvals' },

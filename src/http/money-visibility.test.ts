@@ -38,7 +38,7 @@ async function make() {
   const perms = await db
     .select()
     .from(schema.permissions)
-    .where(inArray(schema.permissions.code, ['approvals.approve', 'approvals.view', 'requests.view']));
+    .where(inArray(schema.permissions.code, ['approvals.approve', 'requests.view']));
   for (const p of perms) await db.insert(schema.rolePermissions).values({ roleId: execRole.id, permissionId: p.id });
 
   const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W', isActive: true }).returning();

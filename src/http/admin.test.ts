@@ -38,7 +38,7 @@ describe('constructor / admin API', () => {
     const token = await login(app, '999');
 
     const perms = await request(app).get('/api/admin/permissions').set('Authorization', `Bearer ${token}`).expect(200);
-    expect(perms.body.length).toBe(27); // M5 −7 dead; 2026-07-06 +reports.status_summary (№14)
+    expect(perms.body.length).toBe(26); // M5 −7 dead; 2026-07-06 +reports.status_summary (№14); 2026-07-09 −approvals.view (фантом)
 
     const roles = await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(200);
     expect(roles.body.some((r: any) => r.code === 'owner')).toBe(true);
@@ -345,8 +345,11 @@ describe('admin: people (Block B)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     expect(got.body.some((x: any) => x.roleCode === 'requester')).toBe(true);
+    // Снятие — точечно по назначению (единственный канонический способ; массовый
+    // DELETE /roles/:roleId удалён как невызываемый дубль).
+    const assignmentId = got.body.find((x: any) => x.roleCode === 'requester').assignmentId;
     await request(app)
-      .delete(`/api/admin/users/${target.id}/roles/${rid}`)
+      .delete(`/api/admin/users/${target.id}/assignments/${assignmentId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     const after = await request(app)
@@ -472,20 +475,16 @@ describe('admin: workflow (Block D)', () => {
         { id: s2.body.id, order_index: 1 },
       ])
       .expect(200);
-    const steps = await request(app)
-      .get(`/api/admin/workflows/${wf.body.id}/steps`)
-      .set('Authorization', `Bearer ${token}`)
-      .expect(200);
-    expect(steps.body[0].id).toBe(s2.body.id);
+    // Шаги читаются из GET /workflows (отдельный GET /steps удалён как дубль).
+    const wfs = await request(app).get('/api/admin/workflows').set('Authorization', `Bearer ${token}`).expect(200);
+    const steps = wfs.body.find((w: any) => w.id === wf.body.id).steps;
+    expect(steps[0].id).toBe(s2.body.id);
     await request(app)
       .delete(`/api/admin/workflows/${wf.body.id}/steps/${s1.body.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    const steps2 = await request(app)
-      .get(`/api/admin/workflows/${wf.body.id}/steps`)
-      .set('Authorization', `Bearer ${token}`)
-      .expect(200);
-    expect(steps2.body.length).toBe(1);
+    const wfs2 = await request(app).get('/api/admin/workflows').set('Authorization', `Bearer ${token}`).expect(200);
+    expect(wfs2.body.find((w: any) => w.id === wf.body.id).steps.length).toBe(1);
   });
 
   it('blocks step changes while the chain has in-flight requests (Г2)', async () => {
@@ -705,7 +704,7 @@ describe('admin: предупреждения о «мёртвых» шагах �
     await request(app)
       .put(`/api/admin/roles/${rid}/permissions`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ codes: ['requests.view', 'approvals.view', 'approvals.approve', 'approvals.reject'] })
+      .send({ codes: ['requests.view', 'approvals.approve', 'approvals.reject'] })
       .expect(200);
     const [u2] = await db.insert(schema.users).values({ holdingId: holding.id, fullName: 'ED', telegramId: 'ed1' }).returning();
     await request(app).post(`/api/admin/users/${u2.id}/roles`).set('Authorization', `Bearer ${token}`).send({ roleId: rid }).expect(201);
