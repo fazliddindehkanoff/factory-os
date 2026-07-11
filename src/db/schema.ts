@@ -425,6 +425,12 @@ export const requests = pgTable(
     currency: text('currency').notNull().default('UZS'),
     neededDate: timestamp('needed_date', { withTimezone: true }),
     source: text('source'),
+    // Split orders (2026-07-11): when the warehouse marks a multi-item order as
+    // partially in stock, the out-of-stock items spin into a NEW order that points
+    // back here. FK enforced in migration 0022 (self-reference).
+    parentRequestId: uuid('parent_request_id'),
+    // Ordering step (#10) sub-state: null | ordered | sent | delivered | problem.
+    orderStatus: text('order_status'),
     // Values for admin-defined custom (non-system) form fields: { fieldKey: value }.
     customFields: jsonb('custom_fields'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -455,7 +461,11 @@ export const requestItems = pgTable(
     unit: text('unit'),
     estimatedPrice: bigint('estimated_price', { mode: 'number' }).notNull().default(0),
     totalAmount: bigint('total_amount', { mode: 'number' }).notNull().default(0),
+    // Per-item state machine (2026-07-11, multi-item + per-product actions):
+    // pending | in_stock | out_of_stock | ordered | received | short | issued.
     status: text('status').notNull().default('pending'),
+    // Actual quantity received at приёмка (#11) — may be < quantity (расхождение).
+    receivedQty: numeric('received_qty').notNull().default('0'),
   },
   (t) => ({ reqIdx: index('request_items_request_idx').on(t.requestId) }),
 );

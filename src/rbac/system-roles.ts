@@ -147,6 +147,19 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
     ],
   },
   {
+    // Исполнительный директор — согласующий уровня цены/поставщика перед директором.
+    code: 'executive_director',
+    name: 'Исполнительный директор',
+    permissions: [
+      'reports.status_summary',
+      'requests.view',
+      'reports.view',
+      'finance.view',
+      'approvals.approve',
+      'approvals.reject',
+    ],
+  },
+  {
     code: 'operations_lead',
     name: 'Руководитель внедрения',
     permissions: [
