@@ -80,7 +80,7 @@ interface WorkflowTimelineStep {
   action?: string | null;
 }
 interface RequestDetail extends RequestRow {
-  items: { id: string; name: string; description?: string | null; quantity: string; unit?: string | null; estimatedPrice?: number | null; totalAmount: number | null }[];
+  items: { id: string; name: string; description?: string | null; quantity: string; unit?: string | null; estimatedPrice?: number | null; totalAmount: number | null; status?: string | null; receivedQty?: string | null }[];
   approvals: ApprovalRow[];
   statusLabel?: string;
   statusHistory?: StatusHistoryRow[];
@@ -2365,6 +2365,8 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   // грузит их как вложения заявки с именем «<Позиция> - <файл>», по этому
   // префиксу и сопоставляем фото конкретной позиции.
   const [atts, setAtts] = useState<{ id: string; filename: string; mime: string | null; size: number }[]>([]);
+  // #11 приёмка по позициям: фактически принятое количество на позицию (itemId → qty).
+  const [itemReceipts, setItemReceipts] = useState<Record<string, string>>({});
   const actionLock = useRef(false);
 
   useEffect(() => {
@@ -2391,7 +2393,15 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
     try {
       setBusy(true);
       setError(null);
-      const res = await api.requestAction(id, { action, ...vals });
+      const body: Parameters<typeof api.requestAction>[1] = { action, ...vals };
+      // #11 приёмка частично/с расхождением — прикладываем принятое кол-во по позициям.
+      if (action === 'receive_partial' || action === 'receive_discrepancy') {
+        body.receipts = (req?.items ?? []).map((i) => ({
+          itemId: i.id,
+          receivedQty: Number(itemReceipts[i.id] ?? i.quantity),
+        }));
+      }
+      const res = await api.requestAction(id, body);
       setPending(null);
       load();
       if (res?.warnings?.length) {
@@ -2415,6 +2425,13 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   if (!req) return <div style={{ padding: 16 }}><Skeleton /></div>;
 
   const actions = req.actions ?? [];
+  // #3/#11 действия по каждому продукту показываем, когда пользователь — ответственный
+  // за текущий склад-шаг (в его actions есть соответствующее действие).
+  const canMarkStock = req.status === 'warehouse_check' && actions.some((a) => a.action === 'wh_partial' || a.action === 'wh_in_stock');
+  const canReceiveItems = req.status === 'receiving' && actions.some((a) => a.action.startsWith('receive_'));
+  const markStock = async (itemId: string, inStock: boolean) => {
+    try { await api.markItemStock(id, itemId, inStock); load(); } catch (e) { setError((e as Error).message); }
+  };
   const history = req.statusHistory ?? [];
   // КП фильтрует сервер (getMoneyVisibility) — согласующие после шага закупки
   // (напр. «Исп дир») видят их без procurement.*-прав.
@@ -2547,6 +2564,31 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                         </div>
                       )}
                     </div>
+                    {/* Действия/статус по каждому продукту (#3 наличие, #11 приёмка). */}
+                    {(canMarkStock || canReceiveItems || it.status === 'in_stock' || it.status === 'out_of_stock' || Number(it.receivedQty) > 0) && (
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                        {it.status === 'in_stock' && !canMarkStock && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--success)' }}>✓ В наличии</span>}
+                        {it.status === 'out_of_stock' && !canMarkStock && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>✗ Нет — в закупку</span>}
+                        {Number(it.receivedQty) > 0 && (
+                          <span style={{ fontSize: 12, fontWeight: 700, color: Number(it.receivedQty) < Number(it.quantity) ? 'var(--warning)' : 'var(--success)' }}>
+                            Принято {Number(it.receivedQty)} из {it.quantity}
+                          </span>
+                        )}
+                        {canMarkStock && (
+                          <>
+                            <button onClick={() => markStock(it.id, true)} disabled={busy} style={{ fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 12px', borderRadius: 9, border: `1.5px solid ${it.status === 'in_stock' ? 'var(--success)' : 'var(--border)'}`, background: it.status === 'in_stock' ? 'var(--success-bg)' : 'var(--card)', color: it.status === 'in_stock' ? 'var(--success)' : 'var(--fg2)' }}>В наличии</button>
+                            <button onClick={() => markStock(it.id, false)} disabled={busy} style={{ fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: '6px 12px', borderRadius: 9, border: `1.5px solid ${it.status === 'out_of_stock' ? 'var(--danger)' : 'var(--border)'}`, background: it.status === 'out_of_stock' ? 'var(--danger-bg)' : 'var(--card)', color: it.status === 'out_of_stock' ? 'var(--danger)' : 'var(--fg2)' }}>Нет</button>
+                          </>
+                        )}
+                        {canReceiveItems && (
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--fg2)' }}>
+                            Принято:
+                            <input type="number" min={0} value={itemReceipts[it.id] ?? String(it.quantity)} onChange={(e) => setItemReceipts((p) => ({ ...p, [it.id]: e.target.value }))} style={{ width: 72, padding: '5px 8px', fontSize: 13, border: '1.5px solid var(--border)', borderRadius: 8, background: 'var(--card)', color: 'var(--fg)' }} />
+                            <span style={{ color: 'var(--fg3)' }}>из {it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
+                          </label>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {photos.length > 0 && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 'none' }}>
@@ -2826,7 +2868,8 @@ function ActionModal({
   const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
   // Bug #3: role-based rejection reasons + «Другое» → free text.
-  const isReject = action.action === 'reject';
+  // Пресеты причин — для отклонений И возвратов (директор/исп.дир/снабжение выбирают причину).
+  const isReject = action.action === 'reject' || action.action.startsWith('reject_') || action.action.startsWith('return_');
   const [reasons, setReasons] = useState<string[]>([]);
   const [reasonChoice, setReasonChoice] = useState('');
   useEffect(() => {

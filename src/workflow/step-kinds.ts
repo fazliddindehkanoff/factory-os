@@ -15,8 +15,11 @@ import type { StepLike } from './engine.js';
 export type StepKind =
   | 'approval'
   | 'warehouse_check'
+  | 'procurement_intake'
   | 'procurement'
+  | 'price_approval'
   | 'finance_payment'
+  | 'ordering'
   | 'delivery'
   | 'receiving'
   | 'issue'
@@ -72,6 +75,21 @@ export interface StepActionDef {
    * закупки не имел для него ни одного продвигающего действия и заявка вставала.
    */
   needsSelectedQuote?: boolean;
+  /**
+   * Возврат на БОЛЕЕ РАННИЙ применимый шаг (step.onRejectStepOrder) — как ветка
+   * on_reject='return_step', но отдельным действием (не «Отклонить»). Для #7/#8/#9:
+   * «Вернуть на повторный поиск / пересмотр цены / пересмотр». Требует комментарий.
+   */
+  returnStep?: boolean;
+  /** Предлагать выбор причины из пресетов (reject_reasons) вместо/вместе с комментарием. */
+  reason?: boolean;
+  /** Записать requests.order_status (#10: ordered/sent/delivered/problem). */
+  setOrderStatus?: string;
+  /**
+   * Действие выполняется по КАЖДОМУ продукту заявки (кнопки в карточке позиции):
+   * склад отмечает наличие/приёмку каждой позиции. UI шлёт per-item payload.
+   */
+  perItem?: boolean;
 }
 
 /**
@@ -100,41 +118,93 @@ const REVISE: StepActionDef = {
   advance: true,
 };
 
+/**
+ * Возврат на более ранний шаг (цена/поиск), с причиной. Используется директором /
+ * исп. директором / руководителем снабжения. Цель — step.onRejectStepOrder.
+ */
+const RETURN_STEP: StepActionDef = {
+  action: 'return_step',
+  label: 'Вернуть на пересмотр',
+  perm: 'approvals.reject',
+  comment: true,
+  reason: true,
+  returnStep: true,
+  advance: true,
+};
+
+/** «Вернуть на уточнение» — вариант REVISE с формулировкой для склада/снабжения. */
+const REVISE_CLARIFY: StepActionDef = { ...REVISE, label: 'Вернуть на уточнение' };
+
 export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
+  // #2 Руководитель отдела / #4 Заместитель директора / #8 Исп. директор / #9 Директор.
+  // RETURN_STEP («Вернуть на пересмотр») показывается только когда у шага задан
+  // on_reject_step_order (директорские тиры) — см. availableActions.
   approval: [
     { action: 'approve', label: 'Согласовать', perm: 'approvals.approve', pin: true, advance: true },
     // Bug #8: only surfaced when the NEXT step is procurement (see availableActions).
     { action: 'assign_procurement', label: 'Передать снабженцу', perm: 'approvals.approve', pin: true, assign: true, advance: true },
     REVISE,
+    RETURN_STEP,
     REJECT,
   ],
+  // #3 Склад: наличие по каждому продукту. wh_partial дробит заявку (split).
   warehouse_check: [
-    { action: 'wh_in_stock', label: 'В наличии', perm: 'warehouse.check_stock', setInStock: true, sod: true, advance: true },
+    { action: 'wh_in_stock', label: 'Есть в наличии', perm: 'warehouse.check_stock', setInStock: true, sod: true, advance: true },
+    { action: 'wh_partial', label: 'Частично в наличии', perm: 'warehouse.check_stock', perItem: true, sod: true, advance: true },
     { action: 'wh_out_of_stock', label: 'Нет в наличии', perm: 'warehouse.check_stock', setInStock: false, sod: true, advance: true },
-    REVISE,
+    REVISE_CLARIFY,
     REJECT,
   ],
-  procurement: [
-    { action: 'add_quotation', label: 'Добавить КП', perm: 'procurement.quote', amount: true, quote: 'add', advance: false },
-    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: true },
-    // Повторный шаг закупки (поставщик уже выбран): снабженец закупает и двигает
-    // заявку дальше. Без этого действия шаг вставал — см. needsSelectedQuote.
-    { action: 'mark_purchased', label: 'Закуплено — передать дальше', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, advance: true },
-    REVISE,
+  // #5 Руководитель снабжения — принятие заявки в работу.
+  procurement_intake: [
+    { action: 'accept_to_work', label: 'Принять в работу', perm: 'procurement.view', advance: true },
+    { action: 'assign_procurement', label: 'Назначить снабженца', perm: 'procurement.view', assign: true, advance: true },
+    REVISE_CLARIFY,
     REJECT,
+  ],
+  // #6 Менеджер по снабжению — поиск поставщика.
+  procurement: [
+    { action: 'add_quotation', label: 'Добавить предложения', perm: 'procurement.quote', amount: true, quote: 'add', advance: false },
+    // Классический одношаговый выбор поставщика (руководитель снабжения, сразу дальше).
+    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: true },
+    // Двухшаговый поток: менеджер выбирает рекомендуемого (без продвижения) …
+    { action: 'recommend_supplier', label: 'Выбрать рекомендуемого поставщика', perm: 'procurement.quote', quote: 'select', sod: true, advance: false },
+    // … и передаёт руководителю на проверку цены (#7).
+    { action: 'submit_for_approval', label: 'Передать на согласование', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, advance: true },
+    // Повторный шаг закупки (поставщик уже выбран): закупить и двигать дальше.
+    { action: 'mark_purchased', label: 'Закуплено — передать дальше', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, advance: true },
+    REVISE_CLARIFY,
+    REJECT,
+  ],
+  // #7 Руководитель снабжения — проверка цены и поставщика.
+  price_approval: [
+    { action: 'approve_price', label: 'Согласовать цену и поставщика', perm: 'procurement.select_supplier', advance: true },
+    { action: 'return_research', label: 'Вернуть на повторный поиск', perm: 'procurement.select_supplier', comment: true, returnStep: true, advance: true },
+    { action: 'reject_purchase', label: 'Отклонить закупку', perm: 'procurement.select_supplier', comment: true, reject: true, advance: true },
   ],
   finance_payment: [
     { action: 'mark_paid', label: 'Отметить оплату', perm: 'finance.mark_paid', pin: true, sod: true, advance: true },
     REVISE,
     REJECT,
   ],
+  // #10 Менеджер по снабжению — оформление и отправка заказа. Под-статусы в order_status.
+  ordering: [
+    { action: 'place_order', label: 'Оформить заказ', perm: 'procurement.quote', setOrderStatus: 'ordered', advance: false },
+    { action: 'mark_sent', label: 'Отметить заказ отправленным', perm: 'procurement.quote', setOrderStatus: 'sent', advance: false },
+    { action: 'mark_delivered', label: 'Отметить поставку', perm: 'procurement.quote', setOrderStatus: 'delivered', advance: true },
+    { action: 'report_problem', label: 'Сообщить о проблеме', perm: 'procurement.quote', comment: true, setOrderStatus: 'problem', advance: false },
+    REJECT,
+  ],
   delivery: [
     { action: 'mark_arrived', label: 'Прибыло на склад', perm: 'warehouse.receive', advance: true },
     REJECT,
   ],
+  // #11 Склад — приёмка по каждому продукту (фактическое количество, расхождения).
   receiving: [
-    { action: 'receive_goods', label: 'Принять товар', perm: 'warehouse.receive', advance: true },
-    REJECT,
+    { action: 'receive_full', label: 'Принять полностью', perm: 'warehouse.receive', advance: true },
+    { action: 'receive_partial', label: 'Принять частично', perm: 'warehouse.receive', perItem: true, advance: true },
+    { action: 'receive_discrepancy', label: 'Принять с расхождением', perm: 'warehouse.receive', perItem: true, comment: true, advance: true },
+    { action: 'reject_receiving', label: 'Отказать в приёмке', perm: 'warehouse.receive', comment: true, reject: true, advance: true },
   ],
   issue: [
     { action: 'issue', label: 'Выдать в отдел', perm: 'warehouse.issue', advance: true },
@@ -151,8 +221,11 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
 export const STEP_KIND_LABELS: Record<StepKind, string> = {
   approval: 'Согласование',
   warehouse_check: 'Проверка склада',
-  procurement: 'Закупка',
+  procurement_intake: 'Принятие заявки (снабжение)',
+  procurement: 'Поиск поставщика',
+  price_approval: 'Проверка цены',
   finance_payment: 'Оплата',
+  ordering: 'Оформление заказа',
   delivery: 'Доставка',
   receiving: 'Приёмка на склад',
   issue: 'Выдача в отдел',

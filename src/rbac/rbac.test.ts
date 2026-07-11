@@ -43,7 +43,7 @@ describe('RBAC seeding + enforcement', () => {
     const perms = await db.select().from(schema.permissions);
     const roles = await db.select().from(schema.roles);
     expect(perms.length).toBe(26); // catalog size (M5 −7 dead; +reports.status_summary №14; 2026-07-09 −approvals.view фантом)
-    expect(roles.length).toBe(18); // system roles, no duplicates
+    expect(roles.length).toBe(19); // system roles, no duplicates (+executive_director 2026-07-11)
   });
 
   it('grants a permission within scope and denies it outside scope', async () => {

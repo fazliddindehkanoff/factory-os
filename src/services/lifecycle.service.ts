@@ -11,7 +11,7 @@
  * the new status, a status-history row, approval/signature bookkeeping and a DNA
  * audit log.
  */
-import { and, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, like, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
 import { verifyPin } from '../auth/pin.js';
@@ -41,6 +41,8 @@ type Db = any;
 
 interface RequestRow {
   id: string;
+  requestNumber: string;
+  title: string | null;
   holdingId: string;
   companyId: string | null;
   factoryId: string | null;
@@ -239,7 +241,7 @@ async function actorMayAct(
     step.stepKind === 'procurement' &&
     req.responsibleUserId &&
     req.responsibleUserId !== userId &&
-    def.quote !== 'select'
+    def.action !== 'select_supplier' // только выбор поставщика руководителем не запирается назначением
   ) {
     return false;
   }
@@ -410,11 +412,14 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   // Bug #8: the "assign to procurement" action is offered on an approval step only
   // when the NEXT step is a procurement step (i.e. the procurement head hands off).
   let nextIsProcurement = false;
+  let nextIsDirectProcurement = false;
   if (req.workflowId) {
     const steps = await loadKindSteps(db, req.workflowId);
     const ctx = reqContext({ estimatedAmount: req.estimatedAmount, inStock: req.inStock, requestType: req.requestType });
     const nxt = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
-    nextIsProcurement = nxt?.stepKind === 'procurement';
+    nextIsDirectProcurement = nxt?.stepKind === 'procurement';
+    // Assign-handoff is offered before either procurement-family entry step.
+    nextIsProcurement = nextIsDirectProcurement || nxt?.stepKind === 'procurement_intake';
   }
   const requirePin = await holdingRequiresPin(db, req.holdingId);
   const defs = actionsForKind(step.stepKind);
@@ -428,12 +433,16 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   let isHandler = false;
   for (const a of defs) {
     if (a.reject || a.revision) continue;
-    if (a.assign && !nextIsProcurement) continue; // assign only before a procurement step
-    if (a.needsSelectedQuote && !supplierChosen) continue; // «Закуплено» — только когда поставщик выбран
-    // №16б: перед шагом закупки простое «Согласовать» скрыто — начальник обязан
-    // передать заявку конкретному снабженцу (assign_procurement). Если исполнитель
-    // УЖЕ назначен ранее (второй проход закупки/доставки), approve остаётся (F1).
-    if (a.action === 'approve' && step.stepKind === 'approval' && nextIsProcurement && !req.responsibleUserId) continue;
+    // Assign-handoff on an APPROVAL step only before procurement; on procurement_intake
+    // «Назначить снабженца» is a first-class action always available.
+    if (a.assign && step.stepKind === 'approval' && !nextIsProcurement) continue;
+    // «Вернуть на пересмотр/поиск» — только когда у шага настроен шаг возврата.
+    if (a.returnStep && step.onRejectStepOrder == null) continue;
+    if (a.needsSelectedQuote && !supplierChosen) continue; // «Закуплено»/«Передать» — только когда поставщик выбран
+    // №16б: перед ПРЯМЫМ шагом закупки простое «Согласовать» скрыто — начальник обязан
+    // передать заявку конкретному снабженцу. С шагом «Принятие заявки» (procurement_intake)
+    // назначение делается там, поэтому approve на согласовании остаётся.
+    if (a.action === 'approve' && step.stepKind === 'approval' && nextIsDirectProcurement && !req.responsibleUserId) continue;
     // Self-service on money/routing decisions is forbidden (separation of duties).
     if (sodBlocked(a, req, userId)) continue;
     if (a.requesterOnly && req.requesterId !== userId) continue;
@@ -472,6 +481,8 @@ export interface PerformInput {
   leadTime?: string;
   quotationId?: string;
   assigneeId?: string;
+  /** #11 приёмка по позициям: фактически принятое количество на позицию. */
+  receipts?: { itemId: string; receivedQty: number }[];
 }
 
 /** Create the pending approval row a step needs when it is an approval step. */
@@ -479,6 +490,141 @@ async function enterApprovalIfNeeded(tx: Db, requestId: string, step: KindStep):
   if (step.stepKind === 'approval') {
     await tx.insert(schema.approvals).values({ requestId, workflowStepId: step.id });
   }
+}
+
+/** Next REQ-<year>-NNNNN for a holding (inlined to avoid a request.service cycle). */
+async function nextRequestNumber(tx: Db, holdingId: string): Promise<string> {
+  const year = new Date().getFullYear();
+  const prefix = `REQ-${year}-`;
+  const rows: { rn: string }[] = await tx
+    .select({ rn: schema.requests.requestNumber })
+    .from(schema.requests)
+    .where(and(eq(schema.requests.holdingId, holdingId), like(schema.requests.requestNumber, `${prefix}%`)));
+  let max = 0;
+  for (const r of rows) {
+    const m = /-(\d+)$/.exec(r.rn);
+    if (m) { const seq = parseInt(m[1], 10); if (Number.isFinite(seq) && seq > max) max = seq; }
+  }
+  return `${prefix}${String(max + 1).padStart(5, '0')}`;
+}
+
+/**
+ * #3 Частичное наличие: делит заявку по статусу позиций.
+ * - все in-stock → { parentInStock:true } (без дробления, как «Есть в наличии»);
+ * - все out-of-stock → { parentInStock:false } (вся заявка идёт в закупку);
+ * - смешанно → out-of-stock позиции переносятся в НОВУЮ связанную заявку
+ *   (parent_request_id), которая встаёт на закупочный шаг; исходная остаётся с
+ *   in-stock позициями и как in-stock идёт на выдачу.
+ */
+async function applyPartialStockSplit(
+  tx: Db,
+  req: RequestRow,
+  step: KindStep,
+  actorId: string,
+): Promise<{ parentInStock: boolean; childId: string | null; childNumber: string | null }> {
+  const items = await tx.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
+  const outItems = items.filter((i: any) => i.status === 'out_of_stock');
+  const inItems = items.filter((i: any) => i.status !== 'out_of_stock');
+  for (const it of inItems) {
+    if ((it as any).status !== 'in_stock') {
+      await tx.update(schema.requestItems).set({ status: 'in_stock' }).where(eq(schema.requestItems.id, (it as any).id));
+    }
+  }
+  if (outItems.length === 0) return { parentInStock: true, childId: null, childNumber: null };
+  if (inItems.length === 0) return { parentInStock: false, childId: null, childNumber: null };
+
+  // Where a fully out-of-stock order would go right after warehouse_check.
+  const steps = await loadKindSteps(tx, req.workflowId!);
+  const childCtx = reqContext({ estimatedAmount: req.estimatedAmount, inStock: false, requestType: req.requestType });
+  const childStep = nextStep(steps, childCtx, step.stepOrder) as KindStep | null;
+
+  const number = await nextRequestNumber(tx, req.holdingId);
+  const childEstimated = outItems.reduce((s: number, i: any) => s + Number(i.totalAmount || 0), 0);
+  const [child] = await tx
+    .insert(schema.requests)
+    .values({
+      requestNumber: number,
+      holdingId: req.holdingId,
+      companyId: (req as any).companyId ?? null,
+      factoryId: req.factoryId ?? null,
+      departmentId: (req as any).departmentId ?? null,
+      requesterId: req.requesterId,
+      requestType: req.requestType,
+      title: req.title ? `${req.title} — докупка` : 'Докупка (нехватка на складе)',
+      description: (req as any).description ?? null,
+      priority: (req as any).priority ?? 'normal',
+      departmentName: (req as any).departmentName ?? null,
+      warehouseName: (req as any).warehouseName ?? null,
+      status: childStep ? statusForStep(childStep) : TERMINAL_APPROVED,
+      workflowId: req.workflowId,
+      currentStepId: childStep?.id ?? null,
+      inStock: false,
+      estimatedAmount: childEstimated,
+      currency: (req as any).currency ?? 'UZS',
+      neededDate: (req as any).neededDate ?? null,
+      source: 'split',
+      parentRequestId: req.id,
+      customFields: (req as any).customFields ?? null,
+      closedAt: childStep ? null : new Date(),
+    })
+    .returning();
+  if (childStep) await enterApprovalIfNeeded(tx, child.id, childStep);
+  for (const it of outItems) {
+    await tx
+      .update(schema.requestItems)
+      .set({ requestId: child.id, status: 'out_of_stock', receivedQty: '0' })
+      .where(eq(schema.requestItems.id, (it as any).id));
+  }
+  await tx.update(schema.requests).set({ estimatedAmount: inItems.reduce((s: number, i: any) => s + Number(i.totalAmount || 0), 0) }).where(eq(schema.requests.id, req.id));
+  await tx.insert(schema.requestStatusHistory).values({
+    requestId: child.id,
+    oldStatus: null,
+    newStatus: child.status,
+    changedBy: actorId,
+    source: 'split',
+    comment: `Выделено из заявки ${req.requestNumber}: недостающие позиции`,
+  });
+  await tx.insert(schema.auditLogs).values({
+    holdingId: req.holdingId,
+    factoryId: req.factoryId ?? null,
+    userId: actorId,
+    action: 'request.split',
+    module: 'lifecycle',
+    entityType: 'request',
+    entityId: child.id,
+    newValue: { parentRequestId: req.id, requestNumber: number, items: outItems.length },
+    source: 'lifecycle',
+  });
+  return { parentInStock: true, childId: child.id, childNumber: number };
+}
+
+/**
+ * #3 Кнопки «В наличии / Нет» у каждой позиции на шаге склада. Отмечает наличие
+ * одной позиции (request_items.status); дробление затем делает действие wh_partial.
+ */
+export async function markItemStock(
+  db: Db,
+  input: { requestId: string; itemId: string; inStock: boolean; actor: { id: string; holdingId: string | null } },
+) {
+  return db.transaction(async (tx: Db) => {
+    const [req] = (await tx.select().from(schema.requests).where(eq(schema.requests.id, input.requestId))) as RequestRow[];
+    if (!req || req.holdingId !== input.actor.holdingId) throw new NotFoundError('Заявка не найдена');
+    if (!req.currentStepId) throw new ConflictError('Заявка не на активном шаге');
+    const step = await loadStep(tx, req.currentStepId);
+    if (!step || step.stepKind !== 'warehouse_check') throw new ConflictError('Отметить наличие можно только на шаге проверки склада');
+    if (req.requesterId === input.actor.id) throw new ForbiddenError('Нельзя проверять наличие по собственной заявке');
+    if (!(await hasPermission(tx, input.actor.id, 'warehouse.check_stock', reqScope(req)))) {
+      throw new ForbiddenError('Недостаточно прав для проверки наличия');
+    }
+    const [item] = await tx
+      .select()
+      .from(schema.requestItems)
+      .where(and(eq(schema.requestItems.id, input.itemId), eq(schema.requestItems.requestId, req.id)));
+    if (!item) throw new NotFoundError('Позиция не найдена');
+    const status = input.inStock ? 'in_stock' : 'out_of_stock';
+    await tx.update(schema.requestItems).set({ status }).where(eq(schema.requestItems.id, item.id));
+    return { itemId: item.id, status };
+  });
 }
 
 export async function performAction(db: Db, input: PerformInput) {
@@ -617,11 +763,23 @@ export async function performAction(db: Db, input: PerformInput) {
     }
 
     const patch: Record<string, unknown> = { updatedAt: new Date() };
+    const warnings: string[] = [];
 
     if (def.setInStock !== undefined) patch.inStock = def.setInStock;
+    // #10 «Оформление заказа» — под-статус (ordered/sent/delivered/problem).
+    if (def.setOrderStatus) patch.orderStatus = def.setOrderStatus;
+
+    // #3 «Частично в наличии»: делим заявку — out-of-stock позиции уходят в новую
+    // связанную заявку в закупку, исходная остаётся с in-stock и идёт на выдачу.
+    if (def.perItem && step.stepKind === 'warehouse_check' && input.action === 'wh_partial') {
+      const split = await applyPartialStockSplit(tx, req, step, input.actor.id);
+      patch.inStock = split.parentInStock;
+      if (split.childId) warnings.push(`Недостающие позиции вынесены в новую заявку ${split.childNumber}`);
+      // If nothing was out of stock the split degrades to a plain in-stock verdict;
+      // if EVERYTHING was out of stock, parentInStock=false routes the whole order on.
+    }
 
     // Procurement: 'add' records a real КП; 'select' picks one and locks the amount.
-    const warnings: string[] = [];
     if (def.quote === 'add') {
       const amt = Math.max(0, Math.round(Number(input.amount) || 0));
       if (!amt) throw new ValidationError('Укажите сумму КП');
@@ -774,6 +932,18 @@ export async function performAction(db: Db, input: PerformInput) {
       // №11: назад к автору на доработку — независимо от политики on_reject шага.
       to = STATUS_NEEDS_REVISION;
       newCurrentStepId = null;
+    } else if (def.returnStep) {
+      // #7/#8/#9 «Вернуть на пересмотр/поиск»: назад на более ранний применимый шаг
+      // (step.onRejectStepOrder). Вперёд/на себя нельзя — это ошибка настройки.
+      if (!req.workflowId || step.onRejectStepOrder == null) throw new ConflictError('Шаг возврата не настроен');
+      const steps = await loadKindSteps(tx, req.workflowId);
+      const target = (applicableSteps(steps, ctx) as KindStep[]).find(
+        (s) => s.stepOrder === step.onRejectStepOrder && s.stepOrder < step.stepOrder,
+      );
+      if (!target) throw new ConflictError('Некорректный шаг возврата');
+      to = statusForStep(target);
+      newCurrentStepId = target.id;
+      await enterApprovalIfNeeded(tx, req.id, target);
     } else if (def.reject) {
       // Ветка «Если отклонил» шага: отменить / вернуть автору / вернуть на шаг N.
       const policy = (step.onReject ?? 'cancel') as OnRejectPolicy;
@@ -842,14 +1012,37 @@ export async function performAction(db: Db, input: PerformInput) {
     // service keeps a given (request, material, type) from being applied twice.
     if (!def.reject && def.advance && (step.stepKind === 'receiving' || step.stepKind === 'issue')) {
       const items = await tx.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
+      // #11 приёмка: фиксируем фактически принятое количество на каждую позицию —
+      // «полностью» = заказанное, «частично/с расхождением» = из payload receipts.
+      if (step.stepKind === 'receiving') {
+        const receipts = new Map<string, number>((input.receipts ?? []).map((r) => [r.itemId, Math.max(0, Number(r.receivedQty) || 0)]));
+        for (const item of items) {
+          const rq = def.perItem && receipts.has(item.id) ? receipts.get(item.id)! : Number(item.quantity);
+          item.receivedQty = String(rq) as any;
+          await tx
+            .update(schema.requestItems)
+            .set({ receivedQty: String(rq), status: rq >= Number(item.quantity) ? 'received' : 'short' })
+            .where(eq(schema.requestItems.id, item.id));
+          if (def.perItem && rq < Number(item.quantity)) warnings.push(`«${item.name}»: принято ${rq} из ${Number(item.quantity)}`);
+        }
+      }
+      // Per-item quantity that moves stock: on receiving we credit what actually
+      // arrived (received_qty); on issue we draw what's on hand for the item
+      // (received_qty if it was received, else the ordered quantity for in-stock).
+      const itemQty = (item: { quantity: unknown; receivedQty: unknown }): number => {
+        if (step.stepKind === 'receiving') return Number(item.receivedQty);
+        const rec = Number(item.receivedQty);
+        return rec > 0 ? rec : Number(item.quantity);
+      };
       // Aggregate quantities by materialId so duplicate rows don't cause
       // multiple independent stock ops for the same material.
       const byMaterial = new Map<string, number>();
       const skipped: string[] = [];
       for (const item of items) {
-        const qty = Number(item.quantity);
+        const qty = itemQty(item);
         if (!item.materialId || !qty || qty <= 0) {
-          skipped.push(item.name);
+          if (item.materialId && qty <= 0) continue; // received 0 → nothing to book, not an error
+          if (!item.materialId) skipped.push(item.name);
           continue;
         }
         byMaterial.set(item.materialId, (byMaterial.get(item.materialId) ?? 0) + qty);

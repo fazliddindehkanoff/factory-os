@@ -28,11 +28,14 @@ const requestTypeLabel = (v: string) => REQUEST_TYPE_OPTIONS.find((o) => o.value
 // What each step DOES — drives the request through the lifecycle (data-driven).
 const KIND_OPTIONS: { value: string; label: string }[] = [
   { value: 'approval', label: 'Согласование (подпись, PIN)' },
-  { value: 'warehouse_check', label: 'Проверка склада (в наличии / нет)' },
-  { value: 'procurement', label: 'Закупка (КП + поставщик)' },
+  { value: 'warehouse_check', label: 'Проверка склада (есть / частично / нет)' },
+  { value: 'procurement_intake', label: 'Принятие заявки снабжением' },
+  { value: 'procurement', label: 'Поиск поставщика (КП)' },
+  { value: 'price_approval', label: 'Проверка цены и поставщика' },
   { value: 'finance_payment', label: 'Оплата (PIN)' },
+  { value: 'ordering', label: 'Оформление заказа (заказ / отправка / поставка)' },
   { value: 'delivery', label: 'Доставка' },
-  { value: 'receiving', label: 'Приёмка на склад' },
+  { value: 'receiving', label: 'Приёмка на склад (по позициям)' },
   { value: 'issue', label: 'Выдача в отдел' },
   { value: 'close', label: 'Подтверждение получения (закрытие)' },
 ];

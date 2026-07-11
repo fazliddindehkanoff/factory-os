@@ -61,7 +61,7 @@ describe('seedTest', () => {
     await act('gendir_01', id, 'approve');
     await act('founder_01', id, 'approve');
     await act('sklad_01', id, 'mark_arrived');
-    await act('sklad_01', id, 'receive_goods');
+    await act('sklad_01', id, 'receive_full');
     await act('sklad_01', id, 'close');
 
     const [done] = await db.select().from(schema.requests).where(eq(schema.requests.id, id));

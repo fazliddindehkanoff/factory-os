@@ -42,7 +42,7 @@ function assertFiniteNonNeg(n: number, message: string): void {
   if (!Number.isFinite(n) || n < 0) throw new ValidationError(message);
 }
 
-async function generateRequestNumber(tx: Db, holdingId: string, year: number): Promise<string> {
+export async function generateRequestNumber(tx: Db, holdingId: string, year: number): Promise<string> {
   const prefix = `REQ-${year}-`;
   const rows: { rn: string }[] = await tx
     .select({ rn: schema.requests.requestNumber })

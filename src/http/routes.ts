@@ -9,7 +9,7 @@ import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js'
 import { getRequestVisibility, getMoneyVisibility } from './request-visibility.js';
 import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
-import { performAction, availableActions, statusLabelFor, inboxCandidates } from '../services/lifecycle.service.js';
+import { performAction, availableActions, statusLabelFor, inboxCandidates, markItemStock } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
 import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
@@ -1046,6 +1046,22 @@ export function buildRouter(deps: RouterDeps): Router {
     }
   });
 
+  // #3 Пер-позиционная отметка наличия на шаге склада (кнопки в карточке позиции).
+  r.post('/requests/:id/items/:itemId/stock', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const out = await markItemStock(db, {
+        requestId: req.params.id as string,
+        itemId: req.params.itemId as string,
+        inStock: (req.body ?? {}).inStock === true,
+        actor: { id: u.id, holdingId: u.holdingId },
+      });
+      res.json(out);
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.post('/requests/:id/action', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
@@ -1069,6 +1085,7 @@ export function buildRouter(deps: RouterDeps): Router {
         leadTime: body.leadTime,
         quotationId: body.quotationId,
         assigneeId: body.assigneeId,
+        receipts: Array.isArray(body.receipts) ? body.receipts : undefined,
       });
       const stepLabel = await statusLabelFor(db, result);
       // Ответственные следующего шага — ТОЛЬКО когда шаг реально сменился.

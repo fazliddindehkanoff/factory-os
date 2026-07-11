@@ -134,8 +134,11 @@ export const api = {
   // ── Lifecycle ──
   requestAction: (
     id: string,
-    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string },
+    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; receipts?: { itemId: string; receivedQty: number }[] },
   ) => call(`/requests/${id}/action`, { method: 'POST', body: JSON.stringify(body) }),
+  // #3 Пер-позиционная отметка наличия (кнопки в карточке позиции на шаге склада).
+  markItemStock: (id: string, itemId: string, inStock: boolean) =>
+    call(`/requests/${id}/items/${itemId}/stock`, { method: 'POST', body: JSON.stringify({ inStock }) }),
   setPin: (pin: string) => call('/me/pin', { method: 'POST', body: JSON.stringify({ pin }) }),
   updateProfile: (data: { fullName?: string; phone?: string; email?: string; position?: string }) =>
     call('/me/profile', { method: 'PUT', body: JSON.stringify(data) }),

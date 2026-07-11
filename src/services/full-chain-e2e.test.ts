@@ -1,7 +1,7 @@
 /**
  * Full out-of-stock chain e2e — previously untested links included:
  * approval → warehouse_check(out of stock) → procurement (КП + supplier) →
- * finance_payment → delivery (mark_arrived) → receiving (receive_goods, stock
+ * finance_payment → delivery (mark_arrived) → receiving (receive_full, stock
  * income) → issue (stock outcome) → close.
  *
  * At every link it checks the integrity invariants: status ↔ currentStepId,
@@ -109,7 +109,7 @@ describe('full 8-link out-of-stock chain', () => {
     expect(r5.status).toBe('receiving');
 
     // 6 → 7: receiving books the income exactly once (previously untested link).
-    const r6 = await act('receive_goods', wh);
+    const r6 = await act('receive_full', wh);
     expect(r6.status).toBe('issue');
     const incomes = await db
       .select()

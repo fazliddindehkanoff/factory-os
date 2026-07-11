@@ -294,11 +294,14 @@ export const approverType = pgEnum('approver_type', [
 // the whole request path is configured in the admin constructor — not hardcoded.
 export const stepKind = pgEnum('step_kind', [
   'approval', // role sign-off (PIN); advances when approved, terminal-rejects on reject
-  'warehouse_check', // склад: «в наличии / нет» — sets request.inStock, branches downstream
-  'procurement', // снабжение: add quotations (КП) + select supplier (locks amount)
+  'warehouse_check', // склад: «в наличии / частично / нет» — sets request.inStock, splits on partial
+  'procurement_intake', // снабжение: принятие заявки в работу + назначение снабженца (#5)
+  'procurement', // снабжение: add quotations (КП) + select/recommend supplier (#6)
+  'price_approval', // руководитель снабжения: проверка цены и поставщика (#7)
   'finance_payment', // финансы: mark paid (PIN)
+  'ordering', // снабжение: оформление/отправка заказа — order_status (#10)
   'delivery', // доставка: mark arrived
-  'receiving', // приёмка на склад
+  'receiving', // приёмка на склад — по позициям, received_qty (#11)
   'issue', // выдача в отдел
   'close', // подтверждение получения — terminal (closed)
 ]);

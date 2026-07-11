@@ -162,6 +162,13 @@
       "when": 1783821600000,
       "tag": "0022_split_orders_per_item",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1783825200000,
+      "tag": "0023_step_kind_enum",
+      "breakpoints": true
     }
   ]
 }

@@ -189,7 +189,7 @@ describe('multi-item request — full lifecycle across roles', () => {
     expect((await act('select_supplier', procHead, { quotationId: q.id })).status).toBe('finance_payment');
     expect((await act('mark_paid', fin, { pin: PIN })).status).toBe('delivery');
     expect((await act('mark_arrived', wh)).status).toBe('receiving');
-    expect((await act('receive_goods', wh)).status).toBe('issue');
+    expect((await act('receive_full', wh)).status).toBe('issue');
 
     // Receiving credited BOTH materials (income), one movement each.
     const incomes = await db
