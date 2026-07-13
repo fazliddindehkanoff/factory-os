@@ -107,6 +107,10 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+* {
+  box-sizing: border-box;
 }
 ::-webkit-scrollbar {
   width: 0;

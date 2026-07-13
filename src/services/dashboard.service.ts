@@ -5,7 +5,7 @@
  *
  * Optimized: uses SQL-level filtering instead of loading all requests into memory.
  */
-import { and, count, desc, eq, isNotNull, notInArray, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility } from '../http/request-visibility.js';
@@ -20,10 +20,18 @@ export interface DashboardActivity {
   status: string;
   title: string | null;
   updatedAt: unknown;
+  // Лист Excel №5: лента событий показывает сведения о заявке (объект, отдел
+  // снабжения, даты), а не наименование товара.
+  obyekt: string | null;
+  departmentName: string | null;
+  neededDate: unknown;
+  createdAt: unknown;
 }
 
 export interface Dashboard {
   myActive: number;
+  // Лист Excel №14: свои заявки, возвращённые автору на доработку (needs_revision).
+  myReturned: number;
   pendingForMe: number;
   totalActive: number;
   activity: DashboardActivity[];
@@ -41,6 +49,7 @@ const INACTIVE = [...TERMINAL_STATUSES, 'draft'];
 
 const EMPTY_DASHBOARD: Dashboard = {
   myActive: 0,
+  myReturned: 0,
   pendingForMe: 0,
   totalActive: 0,
   activity: [],
@@ -102,7 +111,7 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   const activityWhere = baseWhere;
 
   // Run count queries and activity in parallel — each touches only the rows it needs.
-  const [myActiveRows, totalActiveRows, activity] = await Promise.all([
+  const [myActiveRows, myReturnedRows, totalActiveRows, activity] = await Promise.all([
     // "Мои заявки" = my in-flight requests (own, excluding drafts and terminal).
     db
       .select({ id: schema.requests.id })
@@ -114,6 +123,18 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
           notInArray(schema.requests.status, INACTIVE),
         ),
       ),
+    // Лист Excel №14: свои заявки, возвращённые на доработку (needs_revision) —
+    // ждут именно автора, поэтому отдельная плитка перед «Созданные мной».
+    db
+      .select({ id: schema.requests.id })
+      .from(schema.requests)
+      .where(
+        and(
+          eq(schema.requests.holdingId, holdingId),
+          eq(schema.requests.requesterId, userId),
+          eq(schema.requests.status, 'needs_revision'),
+        ),
+      ),
     // "Активных всего" = visible in-flight requests (holding-wide for top roles).
     db.select({ id: schema.requests.id }).from(schema.requests).where(and(baseWhere, notInArray(schema.requests.status, INACTIVE))),
     db
@@ -123,12 +144,29 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
         status: schema.requests.status,
         title: schema.requests.title,
         updatedAt: schema.requests.updatedAt,
+        createdAt: schema.requests.createdAt,
+        neededDate: schema.requests.neededDate,
+        departmentId: schema.requests.departmentId,
+        departmentName: schema.requests.departmentName,
+        customFields: schema.requests.customFields,
       })
       .from(schema.requests)
       .where(activityWhere)
       .orderBy(desc(schema.requests.updatedAt))
       .limit(5),
   ]);
+
+  // Лист Excel №5: резолвим имена отделов для ленты событий (заявка адресуется
+  // отделу по id — имя в строке не хранится).
+  const actDeptIds = [...new Set(activity.map((r: any) => r.departmentId).filter(Boolean))] as string[];
+  const actDeptName = new Map<string, string>();
+  if (actDeptIds.length) {
+    const deps = await db
+      .select({ id: schema.departments.id, name: schema.departments.name })
+      .from(schema.departments)
+      .where(inArray(schema.departments.id, actDeptIds));
+    for (const d of deps as { id: string; name: string }[]) actDeptName.set(d.id, d.name);
+  }
 
   // "Ожидают меня" must match the inbox ("Ждут моего решения"): count in-flight
   // requests the user can currently ACT on — approval steps AND action steps
@@ -155,14 +193,21 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
 
   return {
     myActive: myActiveRows.length,
+    myReturned: myReturnedRows.length,
     pendingForMe,
     totalActive: totalActiveRows.length,
-    activity: activity.map((r: { id: string; requestNumber: string; status: string; title: string | null; updatedAt: unknown }) => ({
+    activity: activity.map((r: any) => ({
       id: r.id,
       requestNumber: r.requestNumber,
       status: r.status,
       title: r.title,
       updatedAt: r.updatedAt,
+      createdAt: r.createdAt,
+      neededDate: r.neededDate,
+      departmentName: r.departmentId ? actDeptName.get(r.departmentId) ?? r.departmentName ?? null : r.departmentName ?? null,
+      obyekt: r.customFields && typeof r.customFields === 'object' && (r.customFields as Record<string, unknown>).obyekt != null
+        ? String((r.customFields as Record<string, unknown>).obyekt)
+        : null,
     })),
     awaitingPayment,
     inProcurement,

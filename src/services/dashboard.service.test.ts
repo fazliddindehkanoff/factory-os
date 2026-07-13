@@ -88,6 +88,7 @@ describe('getDashboard', () => {
     const d = await getDashboard(db, '00000000-0000-0000-0000-000000000000', null);
     expect(d).toEqual({
       myActive: 0,
+      myReturned: 0,
       pendingForMe: 0,
       totalActive: 0,
       activity: [],

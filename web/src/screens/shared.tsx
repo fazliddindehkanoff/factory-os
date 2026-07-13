@@ -95,6 +95,9 @@ export function statusMeta(status: string): { label: string; color: string; bg: 
     case 'partially_available': return { label: 'Частично в наличии', color: 'var(--warning)', bg: 'var(--warning-bg)' };
     case 'out_of_stock': return { label: 'Нет в наличии', color: 'var(--danger)', bg: 'var(--danger-bg)' };
     case 'procurement': return { label: 'В закупке', color: 'var(--accent)', bg: 'var(--accent-bg)' };
+    case 'procurement_intake': return { label: 'Назначение снабженца', color: 'var(--accent)', bg: 'var(--accent-bg)' };
+    case 'price_approval': return { label: 'В процессе оплаты', color: 'var(--warning)', bg: 'var(--warning-bg)' };
+    case 'ordering': return { label: 'Оформление заказа', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'quotation_received': return { label: 'Получены КП', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'approval_pending': case 'pending_approval': return { label: 'На согласовании', color: 'var(--warning)', bg: 'var(--warning-bg)' };
     case 'needs_revision': return { label: 'На доработке', color: 'var(--warning)', bg: 'var(--warning-bg)' };

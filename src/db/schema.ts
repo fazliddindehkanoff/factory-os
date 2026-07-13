@@ -464,13 +464,21 @@ export const requestItems = pgTable(
     unit: text('unit'),
     estimatedPrice: bigint('estimated_price', { mode: 'number' }).notNull().default(0),
     totalAmount: bigint('total_amount', { mode: 'number' }).notNull().default(0),
+    supplierName: text('supplier_name'),
+    supplierId: uuid('supplier_id').references(() => suppliers.id),
+    ndsIncluded: boolean('nds_included').notNull().default(false),
+    paymentType: text('payment_type'),
+    sortOrder: integer('sort_order').notNull().default(0),
     // Per-item state machine (2026-07-11, multi-item + per-product actions):
     // pending | in_stock | out_of_stock | ordered | received | short | issued.
     status: text('status').notNull().default('pending'),
     // Actual quantity received at приёмка (#11) — may be < quantity (расхождение).
     receivedQty: numeric('received_qty').notNull().default('0'),
   },
-  (t) => ({ reqIdx: index('request_items_request_idx').on(t.requestId) }),
+  (t) => ({
+    reqIdx: index('request_items_request_idx').on(t.requestId),
+    requestSortIdx: index('request_items_request_sort_idx').on(t.requestId, t.sortOrder),
+  }),
 );
 
 export const requestStatusHistory = pgTable(
@@ -641,6 +649,8 @@ export const quotations = pgTable(
     supplierName: text('supplier_name').notNull(),
     supplierId: uuid('supplier_id').references(() => suppliers.id),
     amount: bigint('amount', { mode: 'number' }).notNull().default(0),
+    ndsIncluded: boolean('nds_included').notNull().default(false),
+    paymentType: text('payment_type'),
     leadTime: text('lead_time'),
     note: text('note'),
     selected: boolean('selected').notNull().default(false),

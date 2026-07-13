@@ -16,14 +16,14 @@ async function freshDb() {
 }
 
 describe('setupTenant', () => {
-  it('creates holding/factory/workflow with 11 data-driven steps, idempotently', async () => {
+  it('creates holding/factory/workflow with 12 data-driven steps, idempotently', async () => {
     const db = await freshDb();
     const a = await setupTenant(db, { holdingName: 'Zelal' });
     const steps1 = await db
       .select()
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.workflowId, a.workflow.id));
-    expect(steps1.length).toBe(11);
+    expect(steps1.length).toBe(12);
 
     // Re-run: no duplicate holdings / workflows / steps.
     const b = await setupTenant(db, { holdingName: 'Zelal' });
@@ -33,7 +33,7 @@ describe('setupTenant', () => {
       .select()
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.workflowId, a.workflow.id));
-    expect(steps2.length).toBe(11);
+    expect(steps2.length).toBe(12);
     const holdings = await db.select().from(schema.holdings);
     expect(holdings.length).toBe(1);
   });

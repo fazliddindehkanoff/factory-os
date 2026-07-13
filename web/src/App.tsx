@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { api, clearToken, getToken, setToken, getTestUser, setTestUser, type CreateRequestData } from './api';
-import { getTelegram, confirmDialog, alertDialog } from './telegram';
+import { getTelegram, confirmDialog } from './telegram';
 import { AdminPanel } from './admin/AdminPanel';
 import { WarehouseScreen } from './screens/Warehouse';
 import { InboxScreen } from './screens/Inbox';
@@ -11,7 +11,7 @@ import { applyTheme, getTheme, type Theme } from './theme';
 import { DASHBOARD_ACTIONS } from './dashboard.config';
 // Single source of truth for status labels/progress (covers every workflow-driven
 // status incl. finance_payment/delivery/receiving/issue) — see screens/shared.tsx.
-import { statusMeta, progressOf } from './screens/shared';
+import { statusMeta } from './screens/shared';
 
 const ADMIN_PERMS = ['roles.manage', 'users.manage', 'workflows.manage', 'settings.manage'];
 // Perms that let a user act on a request somewhere in the lifecycle → they get the inbox tab.
@@ -24,6 +24,9 @@ const INBOX_ACTOR_PERMS = [
   'procurement.select_supplier',
   'finance.mark_paid',
 ];
+const WAREHOUSE_STOCK_ACTIONS = new Set(['wh_in_stock', 'wh_partial', 'wh_out_of_stock']);
+const isHiddenProcurementTransfer = (a: { action: string; label: string }) => a.action === 'assign_procurement' && a.label === 'Передать снабженцу';
+const isHiddenProcurementIntake = (a: { action: string; label: string }) => a.action === 'accept_to_work' && a.label === 'Принять в работу';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Me {
@@ -38,6 +41,11 @@ interface RequestRow {
   title: string | null;
   createdAt: string;
   requesterId?: string;
+  // Лист Excel №5: поля карточки списка «как раньше».
+  departmentNameResolved?: string | null;
+  departmentName?: string | null;
+  neededDate?: string | null;
+  customFields?: Record<string, unknown> | null;
 }
 interface ApprovalRow {
   id: string;
@@ -52,14 +60,27 @@ interface LifecycleActionBtn {
   quote?: 'add' | 'select' | null;
   assign?: boolean;
 }
+
+function displayLifecycleActions(status: string, actions: LifecycleActionBtn[]): LifecycleActionBtn[] {
+  const visible = actions.filter((a) => !isHiddenProcurementTransfer(a) && !isHiddenProcurementIntake(a));
+  if (status !== 'warehouse_check' || !visible.some((a) => WAREHOUSE_STOCK_ACTIONS.has(a.action))) return visible;
+  const next = visible.find((a) => a.action === 'wh_in_stock') ?? visible.find((a) => WAREHOUSE_STOCK_ACTIONS.has(a.action));
+  return [
+    ...(next ? [{ ...next, action: 'wh_in_stock', label: 'Далее', pin: false, comment: false, amount: false, quote: null, assign: false }] : []),
+    ...visible.filter((a) => !WAREHOUSE_STOCK_ACTIONS.has(a.action)),
+  ];
+}
 interface QuotationRow {
   id: string;
   supplierName: string;
   amount: number;
+  ndsIncluded?: boolean | null;
+  paymentType?: string | null;
   leadTime: string | null;
   note: string | null;
   selected: boolean;
 }
+type DetailItem = RequestDetail['items'][number];
 interface StatusHistoryRow {
   id: string;
   oldStatus: string | null;
@@ -73,14 +94,14 @@ interface WorkflowTimelineStep {
   stepId?: string;
   stepName: string;
   stepKind: string;
-  state: 'completed' | 'current' | 'future' | 'rejected';
+  state: 'completed' | 'current' | 'future' | 'rejected' | 'cancelled';
   actorName?: string | null;
   actorRole?: string | null;
   at?: string | null;
   action?: string | null;
 }
 interface RequestDetail extends RequestRow {
-  items: { id: string; name: string; description?: string | null; quantity: string; unit?: string | null; estimatedPrice?: number | null; totalAmount: number | null; status?: string | null; receivedQty?: string | null }[];
+  items: { id: string; name: string; description?: string | null; quantity: string; unit?: string | null; estimatedPrice?: number | null; totalAmount: number | null; supplierName?: string | null; ndsIncluded?: boolean | null; paymentType?: string | null; status?: string | null; receivedQty?: string | null }[];
   approvals: ApprovalRow[];
   statusLabel?: string;
   statusHistory?: StatusHistoryRow[];
@@ -96,17 +117,17 @@ interface RequestDetail extends RequestRow {
   factoryName?: string | null;
   departmentNameResolved?: string | null;
   departmentName?: string | null;
+  departmentId?: string | null;
   warehouseName?: string | null;
   priority?: string | null;
   requestType?: string | null;
   neededDate?: string | null;
+  orderStatus?: string | null;
   description?: string | null;
   customFields?: Record<string, unknown> | null;
   updatedAt?: string | null;
   currency?: string | null;
 }
-const PRIORITY_LABEL: Record<string, string> = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: 'Срочный', critical: 'Критичный' };
-
 type Screen =
   | { name: 'home' }
   // `status` — optional prefilter applied when the list opens (KPI/by-status click).
@@ -123,9 +144,10 @@ type Screen =
 
 interface DashboardData {
   myActive: number;
+  myReturned: number;
   pendingForMe: number;
   totalActive: number;
-  activity: { id: string; requestNumber: string; status: string; title: string | null }[];
+  activity: { id: string; requestNumber: string; status: string; title: string | null; obyekt?: string | null; departmentName?: string | null; neededDate?: string | null; createdAt?: string | null }[];
   // Sprint 1 additive aggregates. null = no permission → card hidden.
   awaitingPayment: number | null;
   inProcurement: number | null;
@@ -522,19 +544,6 @@ function roleLabel(perms: string[], roleName?: string | null): string {
   return 'Сотрудник';
 }
 
-function actTint(status: string): { tint: string; ic: string } {
-  switch (status) {
-    case 'approved':
-      return { tint: 'success', ic: 'check' };
-    case 'rejected':
-      return { tint: 'danger', ic: 'x' };
-    case 'pending_approval':
-      return { tint: 'warning', ic: 'checkCircle' };
-    default:
-      return { tint: 'accent', ic: 'file' };
-  }
-}
-
 const SECTION_LABEL: CSSProperties = {
   fontSize: 12,
   fontWeight: 600,
@@ -544,29 +553,59 @@ const SECTION_LABEL: CSSProperties = {
   marginBottom: 12,
 };
 
-// A compact request row shared by the recent-activity feed and the queue previews.
-function RequestRowButton({ id, title, requestNumber, status, onOpen, first }: {
-  id: string; title: string | null; requestNumber: string; status: string; onOpen: (id: string) => void; first: boolean;
+// A compact request card shared by the recent-activity feed and the queue previews.
+// Лист Excel №5: когда переданы сведения о заявке (объект/отдел/даты), строка
+// показывает № заявки и эти сведения, а не наименование товара.
+function RequestRowButton({ id, title, requestNumber, status, onOpen, obyekt, departmentName, createdAt }: {
+  id: string; title: string | null; requestNumber: string; status: string; onOpen: (id: string) => void;
+  obyekt?: string | null; departmentName?: string | null; neededDate?: string | null; createdAt?: string | null;
 }) {
-  const t = actTint(status);
+  const rows: { k: string; v: string }[] = [];
+  if (obyekt) rows.push({ k: 'Объект', v: obyekt });
+  if (departmentName) rows.push({ k: 'Отдел снабжения', v: departmentName });
+  if (createdAt) rows.push({ k: 'Создана', v: fmtDate(createdAt) });
   return (
     <button
       onClick={() => onOpen(id)}
-      style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 13, padding: '13px 15px', border: 'none', borderTop: first ? 'none' : '1px solid var(--line)', background: 'none', cursor: 'pointer' }}
+      style={{ width: '100%', textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: 'var(--shadowSm)', padding: '12px 13px', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 8 }}
     >
-      <span style={{ width: 36, height: 36, flex: 'none', borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[t.tint], color: TINT_FG[t.tint] }}>
-        <Icon name={t.ic} size={18} />
-      </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title || requestNumber}</div>
-        <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{statusMeta(status).label} · {requestNumber}</div>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700, color: 'var(--fg)', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{requestNumber}</div>
+          {!obyekt && title && <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--fg)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>}
+        </div>
+        <StatusPill status={status} />
       </div>
+      {rows.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {rows.map((r) => (
+            <div key={r.k} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+              <span style={{ fontSize: 11.5, color: 'var(--fg3)', fontWeight: 500, flex: 'none' }}>{r.k}</span>
+              <span style={{ fontSize: 12.5, color: 'var(--fg)', fontWeight: 600, textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.v}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: 'var(--fg2)' }}>{statusMeta(status).label}</div>
+      )}
     </button>
   );
 }
 
-type QueueItem = { id: string; title: string | null; requestNumber: string; status: string };
-const normalizeReq = (x: any): QueueItem => ({ id: x.id, title: x.title ?? null, requestNumber: x.requestNumber ?? '', status: x.status ?? '' });
+type QueueItem = { id: string; title: string | null; requestNumber: string; status: string; obyekt?: string | null; departmentName?: string | null; neededDate?: string | null; createdAt?: string | null };
+// Лист Excel №5: очереди на главной показывают те же сведения, что и карточки
+// списка (объект/отдел/даты) — вытягиваем их из inbox (obyekt) и из сырой заявки
+// (customFields.obyekt, departmentNameResolved).
+const normalizeReq = (x: any): QueueItem => ({
+  id: x.id,
+  title: x.title ?? null,
+  requestNumber: x.requestNumber ?? '',
+  status: x.status ?? '',
+  obyekt: x.obyekt ?? (x.customFields && typeof x.customFields === 'object' ? (x.customFields.obyekt ?? null) : null),
+  departmentName: x.departmentNameResolved ?? x.departmentName ?? null,
+  neededDate: x.neededDate ?? null,
+  createdAt: x.createdAt ?? null,
+});
 const pickItems = (res: any): QueueItem[] => (Array.isArray(res) ? res : res?.items ?? []).map(normalizeReq);
 
 // Role-aware queue preview: fetches a list endpoint, shows top items with
@@ -609,8 +648,8 @@ function QueuePreview({ title, load, onOpen, onSeeAll, emptyText, tick = 0 }: {
         <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '20px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>{emptyText}</div>
       )}
       {rows && rows.length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', overflow: 'hidden' }}>
-          {top.map((r, i) => <RequestRowButton key={r.id} {...r} onOpen={onOpen} first={i === 0} />)}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+          {top.map((r) => <RequestRowButton key={r.id} {...r} onOpen={onOpen} />)}
         </div>
       )}
     </div>
@@ -801,8 +840,12 @@ function Home({
   // KPI cards — permission-gated; the new aggregates are hidden unless the backend
   // returned a non-null value (permission-hiding driven by GET /dashboard).
   const cards: KpiCard[] = [];
-  // №8: «Мои заявки» → «Созданные мной», чтобы плитка не читалась как «ждут меня».
-  if (can('requests.view')) cards.push({ key: 'myActive', label: 'Созданные мной', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
+  // Лист Excel №14: возвращённые автору на доработку — отдельная плитка ПЕРЕД
+  // «Созданные мной» (показываем только когда есть что дорабатывать).
+  if (can('requests.create') && dash && dash.myReturned > 0) cards.push({ key: 'returned', label: 'Возвращённые', value: dash.myReturned, tint: 'warning', ic: 'alert', onClick: () => onNav({ name: 'list', status: 'needs_revision' }) });
+  // Only request authors need author-centric cards. Operational roles often have
+  // requests.view for visibility but do not create заявки.
+  if (can('requests.create')) cards.push({ key: 'myActive', label: 'Созданные мной', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
   if (can('approvals.approve')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
   if (oversight) cards.push({ key: 'total', label: 'Активных всего', value: dash?.totalActive ?? null, tint: 'success', ic: 'box', onClick: () => onNav({ name: 'list' }) });
   if (dash && dash.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
@@ -851,7 +894,7 @@ function Home({
       {/* KPI cards — overlap up into the navy block */}
       {!err && cards.length > 0 && (
         <div style={{ position: 'relative', marginTop: -32 }}>
-          <div style={{ display: 'flex', gap: 12, overflowX: 'auto', padding: '0 20px 4px', scrollSnapType: 'x mandatory' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))', gap: 12, padding: '0 16px 4px' }}>
             {cards.map((c) => {
               const inner = (
                 <>
@@ -865,7 +908,7 @@ function Home({
                   <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{c.label}</div>
                 </>
               );
-              const base: CSSProperties = { scrollSnapAlign: 'start', flex: '0 0 auto', width: 166, textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '14px 15px', display: 'flex', flexDirection: 'column', gap: 9 };
+              const base: CSSProperties = { minWidth: 0, width: '100%', minHeight: 118, textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '14px 15px', display: 'flex', flexDirection: 'column', gap: 9 };
               return c.onClick
                 ? <button key={c.key} onClick={c.onClick} style={{ ...base, cursor: 'pointer' }}>{inner}</button>
                 : <div key={c.key} style={base}>{inner}</div>;
@@ -977,9 +1020,9 @@ function Home({
           </div>
         )}
         {dash && dash.activity.length > 0 && (
-          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', overflow: 'hidden' }}>
-            {dash.activity.map((e, idx) => (
-              <RequestRowButton key={e.id} id={e.id} title={e.title} requestNumber={e.requestNumber} status={e.status} onOpen={onOpen} first={idx === 0} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+            {dash.activity.map((e) => (
+              <RequestRowButton key={e.id} id={e.id} title={e.title} requestNumber={e.requestNumber} status={e.status} obyekt={e.obyekt} departmentName={e.departmentName} createdAt={e.createdAt} onOpen={onOpen} />
             ))}
           </div>
         )}
@@ -1239,6 +1282,15 @@ function RequestsList({
               {g.items.map((r) => {
             const s = statusMeta(r.status);
             const isMine = r.requesterId === me.user.id;
+            // Лист Excel №5: карточка «как раньше» — номер, статус, объект,
+            // отдел снабжения и дата создания (а не наименование товара).
+            const cf = r.customFields && typeof r.customFields === 'object' ? (r.customFields as Record<string, unknown>) : {};
+            const obyekt = cf.obyekt != null && String(cf.obyekt).trim() !== '' ? String(cf.obyekt) : null;
+            const dept = r.departmentNameResolved ?? r.departmentName ?? null;
+            const cardRows: { k: string; v: string }[] = [];
+            if (obyekt) cardRows.push({ k: 'Объект', v: obyekt });
+            if (dept) cardRows.push({ k: 'Отдел снабжения', v: dept });
+            cardRows.push({ k: 'Создана', v: r.createdAt ? fmtDate(r.createdAt) : '—' });
             return (
               <button
                 key={r.id}
@@ -1246,27 +1298,24 @@ function RequestsList({
                 style={{ textAlign: 'left', background: isMine ? 'var(--accent-bg)' : 'var(--card)', border: `1px solid ${isMine ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 15, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 11 }}
               >
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: s.color }} />
-                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: 'var(--fg2)', fontWeight: 500 }}>{r.requestNumber}</span>
-                      {isMine && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-bg)', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 6px' }}>Создано мной</span>}
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)', marginTop: 5, letterSpacing: '-.01em' }}>{r.title || 'Без названия'}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: s.color }} />
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: 'var(--fg)', fontWeight: 600 }}>{r.requestNumber}</span>
+                    {isMine && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-bg)', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 6px' }}>Создано мной</span>}
                   </div>
                   <StatusPill status={r.status} />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {cardRows.map((cr) => (
+                    <div key={cr.k} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                      <span style={{ fontSize: 12, color: 'var(--fg3)', fontWeight: 500, flex: 'none' }}>{cr.k}</span>
+                      <span style={{ fontSize: 13, color: 'var(--fg)', fontWeight: 600, textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cr.v}</span>
+                    </div>
+                  ))}
                 </div>
                 {/* Сумму решает СЕРВЕР (getMoneyVisibility): null → скрыта. Клиентский
                     гейт по procurement.* прятал цену у директора/зам.дира (finance/audit). */}
                 {r.estimatedAmount != null && <div style={{ fontSize: 12, color: 'var(--fg2)', fontFamily: "'IBM Plex Mono', monospace" }}>{money(r.estimatedAmount)} UZS</div>}
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--fg3)', fontWeight: 600, marginBottom: 5 }}>
-                    <span>{s.label}</span>
-                  </div>
-                  <div style={{ height: 5, borderRadius: 3, background: 'var(--chip)', overflow: 'hidden' }}>
-                    <span style={{ display: 'block', height: '100%', borderRadius: 3, width: progressOf(r.status), background: s.color }} />
-                  </div>
-                </div>
               </button>
             );
           })}
@@ -2253,17 +2302,7 @@ function AttachmentsSection({ requestId }: { requestId: string }) {
     }
   };
 
-  if (!atts || (atts.length === 0 && !uploading)) {
-    return (
-      <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={{ fontSize: 13, color: 'var(--fg3)' }}>Нет вложений</span>
-        <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', cursor: 'pointer' }}>
-          + Добавить
-          <input type="file" style={{ display: 'none' }} onChange={upload} />
-        </label>
-      </div>
-    );
-  }
+  if (!atts || (atts.length === 0 && !uploading)) return null;
 
   return (
     <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
@@ -2386,7 +2425,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
   const run = async (
     action: string,
-    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
+    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[]; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
   ) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -2404,8 +2443,8 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
       const res = await api.requestAction(id, body);
       setPending(null);
       load();
-      if (res?.warnings?.length) {
-        alertDialog((res.warnings as string[]).join('\n'));
+      if (res?.warnings?.length && !WAREHOUSE_STOCK_ACTIONS.has(action)) {
+        setError((res.warnings as string[]).join('\n'));
       }
     } catch (e) {
       setError((e as Error).message);
@@ -2416,23 +2455,32 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
     }
   };
   const onAction = (a: LifecycleActionBtn) => {
-    if (a.pin || a.comment || a.amount || a.quote || a.assign) setPending(a);
-    // №15: без PIN действие всё равно подтверждается явно — «Вы уверены?».
-    else confirmDialog(`${a.label} — вы уверены?`).then((yes) => { if (yes) run(a.action).catch(() => {}); });
+    setPending(a);
   };
 
   if (error && !req) return <div style={{ padding: 16 }}><Err>{error}</Err></div>;
   if (!req) return <div style={{ padding: 16 }}><Skeleton /></div>;
 
-  const actions = req.actions ?? [];
-  // #3/#11 действия по каждому продукту показываем, когда пользователь — ответственный
-  // за текущий склад-шаг (в его actions есть соответствующее действие).
-  const canMarkStock = req.status === 'warehouse_check' && actions.some((a) => a.action === 'wh_partial' || a.action === 'wh_in_stock');
-  const canReceiveItems = req.status === 'receiving' && actions.some((a) => a.action.startsWith('receive_'));
+  const rawActions = req.actions ?? [];
+  const actions = displayLifecycleActions(req.status, rawActions);
+  // На складском шаге итоговое действие одно («Далее»), но наличие отмечается
+  // по каждой позиции прямо в карточке продукта.
+  const canMarkStock = req.status === 'warehouse_check' && rawActions.some((a) => a.action === 'wh_partial' || a.action === 'wh_in_stock');
+  const canReceiveItems = req.status === 'receiving' && rawActions.some((a) => a.action.startsWith('receive_'));
   const markStock = async (itemId: string, inStock: boolean) => {
     try { await api.markItemStock(id, itemId, inStock); load(); } catch (e) { setError((e as Error).message); }
   };
-  const history = req.statusHistory ?? [];
+  const warehouseStockActionFromItems = (): string | null => {
+    const statuses = req.items.map((it) => it.status);
+    const unmarked = statuses.some((s) => s !== 'in_stock' && s !== 'out_of_stock');
+    if (unmarked) {
+      setError('Отметьте наличие по каждой позиции перед нажатием «Далее».');
+      return null;
+    }
+    if (statuses.every((s) => s === 'in_stock')) return 'wh_in_stock';
+    if (statuses.every((s) => s === 'out_of_stock')) return 'wh_out_of_stock';
+    return 'wh_partial';
+  };
   // КП фильтрует сервер (getMoneyVisibility) — согласующие после шага закупки
   // (напр. «Исп дир») видят их без procurement.*-прав.
   const quotations = req.quotations ?? [];
@@ -2465,12 +2513,28 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   // как полноценную строку в основной сетке, а не в блоке «Дополнительно».
   const cfObj = req.customFields && typeof req.customFields === 'object' ? (req.customFields as Record<string, unknown>) : {};
   pushInfo('Объект', cfObj.obyekt);
+  // Лист Excel №2/№3: «происхождение закупки» (origin) — сразу после «Объект»,
+  // в основной сетке (а не внизу в «Дополнительно»), с подписью «Место закупа»
+  // и человекочитаемым значением Местный/Импорт.
+  const ORIGIN_LABEL: Record<string, string> = { local: 'Местный', import: 'Импорт' };
+  pushInfo('Место закупа', cfObj.origin ? (ORIGIN_LABEL[String(cfObj.origin)] ?? cfObj.origin) : null);
   pushInfo('Ответственный', req.responsibleName);
+  const ORDER_STATUS_LABEL: Record<string, string> = {
+    started: 'Я начал',
+    payment_in_progress: 'В процессе оплаты',
+    delivery_in_progress: 'В процессе доставки',
+    ordered: 'Заказ оформлен',
+    sent: 'Заказ отправлен',
+    delivered: 'Поставка доставлена',
+    problem: 'Проблема',
+  };
+  pushInfo('Статус снабжения', req.orderStatus ? (ORDER_STATUS_LABEL[req.orderStatus] ?? req.orderStatus) : null);
   pushInfo('Нужно к', req.neededDate ? fmtDate(req.neededDate) : null);
   if (req.canSeeMoney && req.estimatedAmount != null) pushInfo('Сумма', `${Number(req.estimatedAmount).toLocaleString('ru-RU')} ${req.currency || 'UZS'}`);
   // Custom form fields entered at creation. `obyekt` is promoted to the main
   // info grid above, so exclude it here to avoid showing it twice.
-  const customEntries = (req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : []).filter(([k]) => k !== 'obyekt');
+  // `obyekt` и `origin` подняты в основную сетку выше — не дублируем их в «Дополнительно».
+  const customEntries = (req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : []).filter(([k]) => k !== 'obyekt' && k !== 'origin');
 
   // Фото позиции: мастер грузит вложения именем «<Позиция> - <файл>», по этому
   // префиксу и находим картинки конкретной позиции (mime может быть пуст —
@@ -2558,10 +2622,30 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                         </div>
                       ))}
                       {req.canSeeMoney && it.totalAmount != null && (
-                        <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                          <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Сумма:</span>
-                          <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
-                        </div>
+                        <>
+                          {it.supplierName && (
+                            <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Поставщик:</span>
+                              <span style={{ fontWeight: 600, color: 'var(--fg)', minWidth: 0 }}>{it.supplierName}</span>
+                            </div>
+                          )}
+                          {(it.paymentType || it.ndsIncluded) && (
+                            <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Условия:</span>
+                              <span style={{ fontWeight: 600, color: 'var(--fg)', minWidth: 0 }}>{[it.paymentType, it.ndsIncluded ? 'НДС' : null].filter(Boolean).join(' · ')}</span>
+                            </div>
+                          )}
+                          {it.estimatedPrice != null && Number(it.estimatedPrice) > 0 && (
+                            <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Цена за 1:</span>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.estimatedPrice).toLocaleString('ru-RU')}</span>
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
+                            <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Сумма:</span>
+                            <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
+                          </div>
+                        </>
                       )}
                     </div>
                     {/* Действия/статус по каждому продукту (#3 наличие, #11 приёмка). */}
@@ -2614,9 +2698,11 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
               const done = step.state === 'completed';
               const cur = step.state === 'current';
               const rej = step.state === 'rejected';
+              // Лист Excel №13: возврат на доработку — шаг «Отменено» серым.
+              const cancelled = step.state === 'cancelled';
               const color = rej ? 'var(--danger)' : done ? 'var(--success)' : cur ? 'var(--warning)' : 'var(--fg3)';
-              const mark = rej ? '✕' : done ? '✓' : cur ? '●' : '';
-              const lineColor = rej ? 'var(--danger)' : step.state === 'future' ? 'var(--line)' : color;
+              const mark = rej ? '✕' : cancelled ? '✕' : done ? '✓' : cur ? '●' : '';
+              const lineColor = rej ? 'var(--danger)' : step.state === 'future' || cancelled ? 'var(--line)' : color;
               return (
                 <div key={step.stepId ?? idx} style={{ display: 'flex', gap: 13 }}>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 'none' }}>
@@ -2624,9 +2710,9 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                     {!last && <span style={{ width: 2, flex: 1, minHeight: 26, background: lineColor }} />}
                   </div>
                   <div style={{ paddingBottom: 16, flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: step.state === 'future' ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: step.state === 'future' || cancelled ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
                     <div style={{ fontSize: 11.5, marginTop: 2, fontWeight: cur || rej ? 600 : 500, color: rej ? 'var(--danger)' : cur ? 'var(--warning)' : done ? 'var(--success)' : 'var(--fg3)' }}>
-                      {step.action === 'created' ? 'Создана' : rej ? 'Отклонено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
+                      {step.action === 'created' ? 'Создана' : rej ? 'Отклонено' : cancelled ? 'Отменено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
                     </div>
                     {(step.actorName || step.at) && (
                       <div style={{ fontSize: 11, color: 'var(--fg3)', marginTop: 3, fontFamily: "'IBM Plex Mono', monospace" }}>
@@ -2674,6 +2760,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                     {q.supplierName}
                     {q.selected && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--success)' }}>✓ выбран</span>}
                   </div>
+                  {(q.paymentType || q.ndsIncluded) && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>{[q.paymentType, q.ndsIncluded ? 'НДС 12%' : null].filter(Boolean).join(' · ')}</div>}
                   {q.leadTime && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>срок: {q.leadTime}</div>}
                 </div>
                 <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>{q.amount.toLocaleString('ru-RU')}</div>
@@ -2684,63 +2771,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
       )}
 
       <AttachmentsSection requestId={id} />
-
-      {/* №12в: история — только ролям с audit.view (сервер отдаёт её лишь им),
-          зато подробная: переходы статусов, источник, плюс полный аудит-лог. */}
-      {history.length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>История действий (аудит)</div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {history.map((h, idx) => {
-              const m = statusMeta(h.newStatus);
-              const last = idx === history.length - 1;
-              return (
-                <div key={h.id} style={{ display: 'flex', gap: 13 }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 'none' }}>
-                    <span style={{ width: 12, height: 12, borderRadius: '50%', marginTop: 4, flex: 'none', background: m.color }} />
-                    {!last && <span style={{ width: 2, flex: 1, minHeight: 18, background: 'var(--line)' }} />}
-                  </div>
-                  <div style={{ paddingBottom: 14, paddingTop: 1 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)' }}>
-                      {h.oldStatus ? `${statusMeta(h.oldStatus).label} → ` : ''}{m.label}
-                    </div>
-                    {h.changedByName && (
-                      <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>
-                        {h.changedByName}
-                        {h.changedByRole ? ` · ${h.changedByRole}` : ''}
-                      </div>
-                    )}
-                    {h.comment && <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{h.comment}</div>}
-                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>
-                      {fmtDateTime(h.createdAt)}{(h as any).source ? ` · ${(h as any).source}` : ''}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {((req as any).auditTrail ?? []).length > 0 && (
-            <>
-              <div style={{ ...SECTION_LABEL, marginTop: 14 }}>Аудит-лог</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {((req as any).auditTrail as any[]).map((t) => (
-                  <div key={t.id} style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{t.action}</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--fg2)', marginTop: 2 }}>
-                      {t.userName ?? 'система'} · {t.module}{t.source ? ` · ${t.source}` : ''} · {fmtDateTime(t.createdAt)}
-                    </div>
-                    {(t.oldValue || t.newValue) && (
-                      <div style={{ fontSize: 10.5, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 3, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                        {t.oldValue ? `− ${JSON.stringify(t.oldValue)}\n` : ''}{t.newValue ? `+ ${JSON.stringify(t.newValue)}` : ''}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
 
       {error && <Err>{error}</Err>}
 
@@ -2758,11 +2788,19 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         <ActionModal
           action={pending}
           requestId={id}
+          requesterId={req.requesterId}
           busy={busy}
           error={error}
           quotations={quotations}
+          items={req.items}
           onCancel={() => { setPending(null); setError(null); }}
-          onConfirm={(vals) => run(pending.action, vals).catch(() => {})}
+          onConfirm={(vals) => {
+            const action = pending.action === 'wh_in_stock' && req.status === 'warehouse_check'
+              ? warehouseStockActionFromItems()
+              : pending.action;
+            if (!action) return;
+            run(action, vals).catch(() => {});
+          }}
         />
       )}
 
@@ -2781,26 +2819,292 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
  *  «на доработке»: поправить поля перед «Отправить повторно». Кнопка появляется
  *  только по canEdit из ответа сервера; состав полей = принимаемым PUT /requests/:id. */
 function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClose: () => void; onSaved: () => void }) {
-  const [title, setTitle] = useState(req.title ?? '');
-  const [description, setDescription] = useState(req.description ?? '');
-  const [priority, setPriority] = useState(req.priority ?? 'normal');
-  const [warehouseName, setWarehouseName] = useState(req.warehouseName ?? '');
-  const [neededDate, setNeededDate] = useState(req.neededDate ? String(req.neededDate).slice(0, 10) : '');
+  const cf0 = req.customFields && typeof req.customFields === 'object' ? (req.customFields as Record<string, unknown>) : {};
+  // Лист Excel №1: полная правка — тип, отдел и настраиваемые поля (объект, место закупа).
+  const [requestType, setRequestType] = useState(req.requestType ?? '');
+  const [departmentId, setDepartmentId] = useState(req.departmentId ?? '');
+  const [customValues, setCustomValues] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const [k, v] of Object.entries(cf0)) init[k] = v == null ? '' : String(v);
+    return init;
+  });
+  type EditDraftItem = DraftRequestItem & { id?: string; unitPrice?: number };
+  const baseEditItems = (req.items.length ? req.items : [{ id: '', name: '', quantity: '1', unit: '', description: '', estimatedPrice: null }]).map((it): EditDraftItem => ({
+    id: it.id,
+    unitPrice: it.estimatedPrice ?? undefined,
+    values: {
+      itemName: it.name ?? '',
+      quantity: String(it.quantity ?? '1'),
+      unit: it.unit ?? '',
+      note: it.description ?? '',
+    },
+    files: {},
+  }));
+  const [itemEdits, setItemEdits] = useState<EditDraftItem[]>(baseEditItems);
+  // Настраиваемые (non-system) select-поля из конструктора формы + список отделов.
+  const [customFieldDefs, setCustomFieldDefs] = useState<FormField[]>([]);
+  const [productFieldDefs, setProductFieldDefs] = useState<FormField[]>([]);
+  const [typeOptions, setTypeOptions] = useState<{ value: string; label: string }[]>([]);
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
+  const [configUsers, setConfigUsers] = useState<{ id: string; fullName: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.form('request_create').then(async (f: { fields?: FormField[] }) => {
+      let whs: { id: string; name: string }[] = [];
+      let depts: { id: string; name: string }[] = [];
+      let usrs: { id: string; fullName: string }[] = [];
+      try {
+        const c = (await api.config()) as { warehouses?: { id: string; name: string }[]; departments?: { id: string; name: string }[]; users?: { id: string; fullName: string }[] };
+        whs = c.warehouses ?? [];
+        depts = c.departments ?? [];
+        usrs = c.users ?? [];
+      } catch {
+        /* config is optional */
+      }
+      const fs = Array.isArray(f.fields) ? f.fields : [];
+      const PRODUCT_LEVEL = new Set(['warehouse', 'purpose', 'priority', 'neededDate', 'note', 'attachment']);
+      setCustomFieldDefs(fs.filter((x) => !x.system && !PRODUCT_LEVEL.has(x.key) && Array.isArray(x.options) && x.options.length > 0));
+      const order = ['itemName', 'itemCode', 'quantity', 'unit', 'warehouse', 'purpose', 'priority', 'neededDate', 'note', 'attachment'];
+      const pfs = order.map((key) => fs.find((x) => x.key === key)).filter(Boolean) as FormField[];
+      setProductFieldDefs(pfs);
+      setWarehouses(whs);
+      setDepartments(depts);
+      setConfigUsers(usrs);
+      const optionsForLoaded = (field: FormField) =>
+        field.key === 'warehouse'
+          ? whs.map((w) => ({ value: w.name, label: w.name }))
+          : field.key === 'cf_dept_head'
+            ? usrs.map((u) => ({ value: u.fullName, label: u.fullName }))
+            : Array.isArray(field.options)
+              ? field.options
+              : [];
+      setItemEdits(baseEditItems.map((item, itemIndex) => {
+        const source = req.items[itemIndex];
+        const values: Record<string, string | boolean> = { ...item.values };
+        const unmatched: string[] = [];
+        for (const rawLine of String(source?.description ?? '').split('\n')) {
+          const line = rawLine.trim();
+          if (!line || line.startsWith('Вложения:')) continue;
+          const split = line.indexOf(': ');
+          if (split <= 0) {
+            unmatched.push(line);
+            continue;
+          }
+          const label = line.slice(0, split);
+          const value = line.slice(split + 2);
+          const field = pfs.find((pf) => pf.label === label || pf.key === label);
+          if (!field || ['itemName', 'quantity', 'unit', 'attachment'].includes(field.key)) {
+            unmatched.push(line);
+            continue;
+          }
+          if (field.type === 'select') {
+            const opt = optionsForLoaded(field).find((o) => o.label === value || o.value === value);
+            values[field.key] = opt?.value ?? value;
+          } else {
+            values[field.key] = value;
+          }
+        }
+        if (unmatched.length && !values.note) values.note = unmatched.join('\n');
+        return { ...item, values };
+      }));
+      const rt = fs.find((x) => x.system && x.key === 'requestType');
+      if (rt && Array.isArray(rt.options)) setTypeOptions(rt.options.map((o) => ({ value: o.value, label: o.label })));
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const inputStyle: CSSProperties = { width: '100%', padding: '12px 14px', fontSize: 14, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none' };
+  const labelStyle: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 };
+  const optionsForEdit = (f: FormField): { value: string; label: string; meta?: string }[] =>
+    f.key === 'cf_department'
+      ? departments.map((d) => ({ value: d.name, label: d.name }))
+      : f.key === 'department'
+        ? departments.map((d) => ({ value: d.id, label: d.name }))
+        : f.key === 'cf_dept_head'
+          ? configUsers.map((u) => ({ value: u.fullName, label: u.fullName }))
+          : f.key === 'warehouse'
+            ? warehouses.map((w) => ({ value: w.name, label: w.name }))
+            : Array.isArray(f.options)
+              ? f.options
+              : [];
+  const setItemEdit = (index: number, key: string, value: string | boolean) => {
+    setItemEdits((prev) => prev.map((it, i) => (i === index ? { ...it, values: { ...it.values, [key]: value } } : it)));
+  };
+  const addItemEdit = (index: number) => {
+    setItemEdits((prev) => {
+      const next = [...prev];
+      next.splice(index + 1, 0, { id: '', values: { quantity: '1' }, files: {}, unitPrice: undefined });
+      return next;
+    });
+  };
+  const removeItemEdit = (index: number) => {
+    setItemEdits((prev) => (prev.length === 1 ? [{ id: '', values: { quantity: '1' }, files: {}, unitPrice: undefined }] : prev.filter((_, i) => i !== index)));
+  };
+  const updateItemFiles = (index: number, key: string, updater: (files: { name: string; size: number; data: string }[]) => { name: string; size: number; data: string }[]) => {
+    setItemEdits((prev) => prev.map((it, i) => (i === index ? { ...it, files: { ...it.files, [key]: updater(it.files[key] ?? []) } } : it)));
+  };
+  const productOptionLabelEdit = (key: string, value: unknown): string => {
+    const f = productFieldDefs.find((x) => x.key === key);
+    if (!f) return String(value ?? '');
+    return optionsForEdit(f).find((o) => o.value === value)?.label ?? String(value ?? '');
+  };
+  const productDescriptionEdit = (it: EditDraftItem): string | undefined => {
+    const labels = new Map(productFieldDefs.map((f) => [f.key, f.label]));
+    const lines: string[] = [];
+    const push = (key: string, value: unknown, display?: string) => {
+      if (value == null || value === '' || value === false) return;
+      lines.push(`${labels.get(key) ?? key}: ${display ?? String(value)}`);
+    };
+    push('itemCode', it.values.itemCode);
+    push('warehouse', it.values.warehouse, productOptionLabelEdit('warehouse', it.values.warehouse));
+    push('purpose', it.values.purpose, productOptionLabelEdit('purpose', it.values.purpose));
+    push('priority', it.values.priority, productOptionLabelEdit('priority', it.values.priority));
+    push('neededDate', it.values.neededDate);
+    push('note', it.values.note);
+    const files = Object.values(it.files).flat();
+    if (files.length) lines.push(`Вложения: ${files.map((f) => f.name).join(', ')}`);
+    return lines.length ? lines.join('\n') : undefined;
+  };
+  const normalizedItemEdits = () =>
+    itemEdits
+      .map((it) => ({
+        id: it.id || undefined,
+        name: String(it.values.itemName ?? '').trim(),
+        quantity: Number(it.values.quantity),
+        unit: String(it.values.unit ?? '').trim() || undefined,
+        description: productDescriptionEdit(it),
+        unitPrice: it.unitPrice,
+      }))
+      .filter((it) => it.name);
+  const renderEditProductField = (pf: FormField, item: EditDraftItem, itemIndex: number) => {
+    const v = item.values[pf.key];
+    const placeholder = pf.type === 'select' ? `Выберите: ${pf.label}` : pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
+    if (pf.type === 'select') {
+      const opts = optionsForEdit(pf);
+      return (
+        <div style={{ position: 'relative' }}>
+          <select aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, e.target.value)} style={{ ...inputStyle, appearance: 'none', WebkitAppearance: 'none', color: v ? 'var(--fg)' : 'var(--fg3)', paddingRight: 38 }}>
+            <option value="">{placeholder}</option>
+            {opts.map((o) => <option key={o.value} value={o.value}>{o.label}{o.meta ? ` · ${o.meta}` : ''}</option>)}
+          </select>
+          <span style={{ position: 'absolute', right: 14, top: '50%', marginTop: -8, pointerEvents: 'none', color: 'var(--fg3)', transform: 'rotate(90deg)' }}><Icon name="chev" size={16} sw={2.2} /></span>
+        </div>
+      );
+    }
+    if (pf.type === 'textarea') {
+      return <textarea aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, e.target.value)} placeholder={placeholder} rows={3} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.45 }} />;
+    }
+    if (pf.type === 'date') {
+      const hasValue = String(v ?? '').trim().length > 0;
+      return (
+        <div style={{ position: 'relative' }}>
+          <input aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, e.target.value)} onClick={openDatePicker} type="date" min={new Date().toISOString().slice(0, 10)} style={{ ...inputStyle, color: hasValue ? 'var(--fg)' : 'transparent' }} />
+          {!hasValue && <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--fg3)', fontSize: 14, background: 'var(--card)', paddingRight: 8 }}>{placeholder}</span>}
+        </div>
+      );
+    }
+    if (pf.type === 'file') {
+      const files = item.files[pf.key] ?? [];
+      return (
+        <div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 13, borderRadius: 11, border: '1.5px dashed var(--border)', background: 'var(--card2)', cursor: 'pointer' }}>
+            <span style={{ width: 36, height: 36, borderRadius: 10, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-bg)', color: 'var(--accent)' }}><Icon name="camera" size={19} /></span>
+            <div style={{ fontSize: 13, color: files.length ? 'var(--fg)' : 'var(--fg3)', fontWeight: 600 }}>{files.length ? `${files.length} файл(ов) выбрано` : placeholder}</div>
+            <input aria-label={pf.label} type="file" multiple style={{ display: 'none' }} onChange={(e) => {
+              const selected = e.target.files;
+              if (!selected) return;
+              const newFiles: { name: string; size: number; data: string }[] = [];
+              let pending = selected.length;
+              for (let x = 0; x < selected.length; x++) {
+                const file = selected[x];
+                if (file.size > 2 * 1024 * 1024) {
+                  setMsg('Файл ' + file.name + ' больше 2 МБ');
+                  pending--;
+                  if (pending <= 0) updateItemFiles(itemIndex, pf.key, (old) => [...old, ...newFiles]);
+                  continue;
+                }
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const base64 = (reader.result as string).split(',')[1] || '';
+                  newFiles.push({ name: file.name, size: file.size, data: base64 });
+                  pending--;
+                  if (pending <= 0) updateItemFiles(itemIndex, pf.key, (old) => [...old, ...newFiles]);
+                };
+                reader.readAsDataURL(file);
+              }
+            }} />
+          </label>
+          {files.length > 0 && <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>{files.map((file, fileIndex) => (
+            <div key={fileIndex} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderRadius: 8, background: 'var(--chip)', fontSize: 12 }}>
+              <span style={{ color: 'var(--fg)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{file.name}</span>
+              <button onClick={() => updateItemFiles(itemIndex, pf.key, (old) => old.filter((_, j) => j !== fileIndex))} style={{ border: 'none', background: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '2px 6px' }}>x</button>
+            </div>
+          ))}</div>}
+        </div>
+      );
+    }
+    return <input aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, pf.type === 'number' ? e.target.value.replace(/[^\d.]/g, '') : e.target.value)} inputMode={pf.type === 'number' ? 'decimal' : undefined} placeholder={placeholder} style={{ ...inputStyle, fontFamily: pf.type === 'number' ? "'IBM Plex Mono', monospace" : undefined, color: String(v ?? '') ? 'var(--fg)' : 'var(--fg3)' }} />;
+  };
+  const renderEditProductFields = (item: EditDraftItem, itemIndex: number) => {
+    const fields = productFieldDefs.length > 0
+      ? productFieldDefs
+      : [
+          { key: 'itemName', label: 'Наименование', type: 'text', system: true, required: true, placeholder: 'Название продукта', options: [], step: 1 },
+          { key: 'quantity', label: 'Количество', type: 'number', system: true, required: true, placeholder: '0', options: [], step: 1 },
+          { key: 'unit', label: 'Ед. изм.', type: 'text', system: true, required: false, placeholder: 'шт, кг...', options: [], step: 1 },
+          { key: 'note', label: 'Примечание', type: 'textarea', system: true, required: false, placeholder: 'Назначение, склад, срочность, примечания...', options: [], step: 1 },
+        ] as FormField[];
+    const rendered: ReactNode[] = [];
+    for (let n = 0; n < fields.length; n++) {
+      const pf = fields[n];
+      if (pf.key === 'quantity') {
+        const unitField = fields.find((x) => x.key === 'unit');
+        rendered.push(<div key="quantity-unit" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 10 }}><div>{renderEditProductField(pf, item, itemIndex)}</div>{unitField && <div>{renderEditProductField(unitField, item, itemIndex)}</div>}</div>);
+        if (fields[n + 1]?.key === 'unit') n++;
+      } else if (pf.key === 'priority') {
+        const dateField = fields.find((x) => x.key === 'neededDate');
+        rendered.push(<div key="priority-date" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 10 }}><div>{renderEditProductField(pf, item, itemIndex)}</div>{dateField && <div>{renderEditProductField(dateField, item, itemIndex)}</div>}</div>);
+        if (fields[n + 1]?.key === 'neededDate') n++;
+      } else if (pf.key === 'neededDate' || pf.key === 'unit') {
+        continue;
+      } else {
+        rendered.push(<div key={pf.key}>{renderEditProductField(pf, item, itemIndex)}</div>);
+      }
+    }
+    return rendered;
+  };
 
   const save = async () => {
     try {
       setSaving(true);
       setMsg(null);
+      // Отправляем только те настраиваемые поля, что есть в конструкторе (+ уже
+      // заданные ранее), чтобы не потерять значения, которых нет среди select-ов.
+      const cfPayload: Record<string, unknown> = { ...customValues };
+      const itemsPayload = normalizedItemEdits();
+      if (itemsPayload.length === 0) throw new Error('Добавьте хотя бы один продукт');
+      if (itemsPayload.some((it) => !Number.isFinite(it.quantity) || it.quantity <= 0)) {
+        throw new Error('Укажите количество больше нуля для каждого продукта');
+      }
       await api.updateRequest(req.id, {
-        title: title.trim(),
-        description: description.trim(),
-        priority,
-        warehouseName: warehouseName.trim(),
-        neededDate: neededDate || null,
+        title: itemsPayload[0]?.name ?? req.title ?? '',
+        requestType: requestType || undefined,
+        departmentId: departmentId || null,
+        customFields: cfPayload,
+        items: itemsPayload,
       });
+      for (const item of itemEdits) {
+        const itemName = String(item.values.itemName ?? '').trim();
+        for (const files of Object.values(item.files)) {
+          for (const file of files) {
+            const filename = itemName ? `${itemName} - ${file.name}` : file.name;
+            try { await api.attachments.upload(req.id, { filename, dataBase64: file.data }); } catch { /* best-effort */ }
+          }
+        }
+      }
       onSaved();
     } catch (e) {
       setMsg((e as Error).message);
@@ -2814,34 +3118,51 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
       <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)' }} />
       <div style={{ position: 'relative', width: '100%', maxWidth: 560, background: 'var(--bg)', borderTop: '1px solid var(--edge)', borderRadius: '24px 24px 0 0', padding: '20px 20px 28px', maxHeight: '85vh', overflowY: 'auto' }}>
         <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--fg)', marginBottom: 16 }}>Изменить заявку</div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Название</div>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Что нужно" style={inputStyle} />
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Описание</div>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Подробности" style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Приоритет</div>
-          <select value={priority} onChange={(e) => setPriority(e.target.value)} style={inputStyle}>
-            {Object.entries(PRIORITY_LABEL).map(([v, l]) => (
-              <option key={v} value={v}>{l}</option>
+        {typeOptions.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={labelStyle}>Тип заявки</div>
+            <select value={requestType} onChange={(e) => setRequestType(e.target.value)} style={inputStyle}>
+              {typeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        )}
+        {departments.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={labelStyle}>Отдел</div>
+            <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} style={inputStyle}>
+              <option value="">— не выбран —</option>
+              {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+        )}
+        {customFieldDefs.map((f) => (
+          <div key={f.key} style={{ marginBottom: 12 }}>
+            <div style={labelStyle}>{f.key === 'origin' ? 'Место закупа' : f.label}</div>
+            <select value={customValues[f.key] ?? ''} onChange={(e) => setCustomValues((p) => ({ ...p, [f.key]: e.target.value }))} style={inputStyle}>
+              <option value="">— не выбрано —</option>
+              {f.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        ))}
+        <div style={{ marginTop: 18, marginBottom: 12 }}>
+          <div style={{ ...labelStyle, marginBottom: 10 }}>Продукты</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {itemEdits.map((it, i) => (
+              <div key={`${it.id || 'new'}-${i}`} style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 12, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--card)' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg3)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Позиция {i + 1}</div>
+                {renderEditProductFields(it, i)}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <button onClick={() => addItemEdit(i)} style={{ minHeight: 40, border: 'none', borderRadius: 10, background: 'var(--accent-bg)', color: 'var(--accent)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Добавить</button>
+                  <button onClick={() => removeItemEdit(i)} style={{ minHeight: 40, border: 'none', borderRadius: 10, background: 'var(--danger-bg)', color: 'var(--danger)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Удалить</button>
+                </div>
+              </div>
             ))}
-          </select>
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Склад</div>
-          <input value={warehouseName} onChange={(e) => setWarehouseName(e.target.value)} placeholder="Склад назначения" style={inputStyle} />
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 }}>Нужно к</div>
-          <input type="date" value={neededDate} onChange={(e) => setNeededDate(e.target.value)} onClick={openDatePicker} style={inputStyle} />
+          </div>
         </div>
         {msg && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--danger)' }}>{msg}</div>}
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
           <button onClick={onClose} style={{ flex: 1, padding: 14, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Закрыть</button>
-          <button onClick={save} disabled={saving || !title.trim()} style={{ flex: 1, padding: 14, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: saving || !title.trim() ? 'not-allowed' : 'pointer', opacity: saving || !title.trim() ? 0.5 : 1 }}>{saving ? '…' : 'Сохранить'}</button>
+          <button onClick={save} disabled={saving} style={{ flex: 1, padding: 14, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.5 : 1 }}>{saving ? '…' : 'Сохранить'}</button>
         </div>
       </div>
     </div>
@@ -2851,19 +3172,23 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
 function ActionModal({
   action,
   requestId,
+  requesterId,
   busy,
   error,
   quotations,
+  items,
   onCancel,
   onConfirm,
 }: {
   action: LifecycleActionBtn;
   requestId: string;
+  requesterId?: string;
   busy: boolean;
   error: string | null;
   quotations: QuotationRow[];
+  items: DetailItem[];
   onCancel: () => void;
-  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
+  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[]; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
 }) {
   const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
@@ -2882,12 +3207,20 @@ function ActionModal({
   const [assignees, setAssignees] = useState<{ id: string; fullName: string | null }[]>([]);
   const [assigneeId, setAssigneeId] = useState('');
   useEffect(() => {
-    if (isAssign) api.procurementAssignees().then((r) => setAssignees(r?.users ?? [])).catch(() => setAssignees([]));
-  }, [isAssign]);
+    if (isAssign) {
+      api.procurementAssignees()
+        .then((r) => setAssignees((r?.users ?? []).filter((u) => u.id !== requesterId && u.fullName !== 'Учредитель' && u.fullName !== 'Руководитель снабжения')))
+        .catch(() => setAssignees([]));
+    }
+  }, [isAssign, requesterId]);
   const [amount, setAmount] = useState('');
-  const [supplier, setSupplier] = useState('');
-  const [supplierId, setSupplierId] = useState('');
   const [suppliers, setSuppliers] = useState<{ id: string; name: string }[]>([]);
+  const [itemSupplierIds, setItemSupplierIds] = useState<Record<string, string>>({});
+  const [itemSuppliers, setItemSuppliers] = useState<Record<string, string>>(() => Object.fromEntries(items.map((it) => [it.id, it.supplierName ?? ''])));
+  const [paymentTypes, setPaymentTypes] = useState<string[]>([]);
+  const [paymentType, setPaymentType] = useState('');
+  const [itemNds, setItemNds] = useState<Record<string, boolean>>(() => Object.fromEntries(items.map((it) => [it.id, !!it.ndsIncluded])));
+  const [unitPrices, setUnitPrices] = useState<Record<string, string>>(() => Object.fromEntries(items.map((it) => [it.id, it.estimatedPrice != null && it.estimatedPrice > 0 ? String(it.estimatedPrice) : ''])));
   const [leadTime, setLeadTime] = useState('');
   const [quotationId, setQuotationId] = useState(quotations.find((q) => q.selected)?.id ?? '');
   const isAdd = action.quote === 'add';
@@ -2895,8 +3228,26 @@ function ActionModal({
   useEffect(() => {
     if (isAdd) api.suppliers.list().then(setSuppliers).catch(() => {});
   }, [isAdd]);
+  useEffect(() => {
+    if (isAdd) {
+      api.procurement.settings().then((r) => {
+        const opts = r.paymentTypes ?? [];
+        setPaymentTypes(opts);
+        if (!paymentType && opts.length > 0) setPaymentType(opts[0]);
+      }).catch(() => setPaymentTypes([]));
+    }
+  }, [isAdd, paymentType]);
   const inputStyle: CSSProperties = { width: '100%', padding: '13px 15px', fontSize: 15, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
   const lbl: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 8 };
+  const quoteLines = items.map((it) => {
+    const unitPrice = Number(unitPrices[it.id] || 0);
+    const base = Number(it.quantity) * unitPrice;
+    const supplierIdForItem = itemSupplierIds[it.id] || '';
+    const pickedSupplier = suppliers.find((s) => s.id === supplierIdForItem);
+    const supplierNameForItem = pickedSupplier?.name ?? (itemSuppliers[it.id] || '').trim();
+    return { item: it, unitPrice, supplierId: supplierIdForItem || null, supplierName: supplierNameForItem, ndsIncluded: !!itemNds[it.id], total: Math.round(base) };
+  });
+  const quoteTotal = quoteLines.reduce((sum, l) => sum + l.total, 0);
   // Effective reject comment: chosen preset, or free text when «Другое».
   const effectiveComment = isReject && reasons.length > 0
     ? (reasonChoice === OTHER ? comment.trim() : reasonChoice)
@@ -2904,8 +3255,8 @@ function ActionModal({
   const ok =
     (!action.pin || pin.length >= 4) &&
     (!action.comment || effectiveComment.length > 0) &&
-    (!action.amount || (amount !== '' && Number(amount) > 0)) &&
-    (!isAdd || ((supplierId !== '' || supplier.trim().length > 0) && amount !== '' && Number(amount) > 0)) &&
+    (!action.amount || isAdd || (amount !== '' && Number(amount) > 0)) &&
+    (!isAdd || (quoteLines.length > 0 && quoteLines.every((l) => Number.isFinite(l.unitPrice) && l.unitPrice > 0) && quoteTotal > 0 && paymentType.trim().length > 0)) &&
     (!isSelect || quotationId !== '') &&
     (!isAssign || assigneeId !== '');
 
@@ -2927,35 +3278,65 @@ function ActionModal({
         {isAdd && (
           <>
             <div style={{ marginBottom: 12 }}>
-              <div style={lbl}>Поставщик</div>
-              {suppliers.length > 0 && (
-                <select
-                  value={supplierId}
-                  onChange={(e) => {
-                    setSupplierId(e.target.value);
-                    const s = suppliers.find((x) => x.id === e.target.value);
-                    if (s) setSupplier(s.name);
-                  }}
-                  style={inputStyle}
-                >
-                  <option value="">— выберите из справочника —</option>
-                  {suppliers.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              )}
-              {!supplierId && (
-                <input
-                  value={supplier}
-                  onChange={(e) => setSupplier(e.target.value)}
-                  placeholder={suppliers.length > 0 ? 'или впишите вручную' : 'напр. ООО «Метизы»'}
-                  style={{ ...inputStyle, marginTop: suppliers.length > 0 ? 8 : 0 }}
-                />
-              )}
+              <div style={lbl}>Цены по позициям</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {quoteLines.map(({ item, total }) => (
+                  <div key={item.id} style={{ border: '1px solid var(--border)', borderRadius: 11, background: 'var(--card)', padding: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div>
+                        <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>{Number(item.quantity)}{item.unit ? ` ${item.unit}` : ''}</div>
+                      </div>
+                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>{total.toLocaleString('ru-RU')}</div>
+                    </div>
+                    <input
+                      value={unitPrices[item.id] ?? ''}
+                      onChange={(e) => setUnitPrices((prev) => ({ ...prev, [item.id]: e.target.value.replace(/[^\d.]/g, '') }))}
+                      inputMode="decimal"
+                      placeholder="Цена за 1"
+                      style={{ ...inputStyle, padding: '10px 12px', fontFamily: "'IBM Plex Mono', monospace" }}
+                    />
+                    {suppliers.length > 0 && (
+                      <select
+                        value={itemSupplierIds[item.id] ?? ''}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setItemSupplierIds((prev) => ({ ...prev, [item.id]: value }));
+                          const s = suppliers.find((x) => x.id === value);
+                          if (s) setItemSuppliers((prev) => ({ ...prev, [item.id]: s.name }));
+                        }}
+                        style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
+                      >
+                        <option value="">— выберите поставщика —</option>
+                        {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    )}
+                    {!(itemSupplierIds[item.id]) && (
+                      <input
+                        value={itemSuppliers[item.id] ?? ''}
+                        onChange={(e) => setItemSuppliers((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                        placeholder={suppliers.length > 0 ? 'или поставщик вручную' : 'Поставщик'}
+                        style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
+                      />
+                    )}
+                    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 8, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg)', cursor: 'pointer' }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)' }}>НДС 12%</span>
+                      <input type="checkbox" checked={!!itemNds[item.id]} onChange={(e) => setItemNds((prev) => ({ ...prev, [item.id]: e.target.checked }))} />
+                    </label>
+                  </div>
+                ))}
+              </div>
             </div>
             <div style={{ marginBottom: 12 }}>
-              <div style={lbl}>Сумма КП (UZS)</div>
-              <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" style={{ ...inputStyle, fontFamily: "'IBM Plex Mono', monospace" }} />
+              <div style={lbl}>Тип оплаты</div>
+              <select value={paymentType} onChange={(e) => setPaymentType(e.target.value)} style={inputStyle}>
+                <option value="" disabled>Выберите тип оплаты…</option>
+                {(paymentTypes.length ? paymentTypes : ['Перечисление', 'Наличные', 'Предоплата', 'Постоплата']).map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div style={{ marginBottom: 12, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '12px 13px', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)' }}>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>Итого</span>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 800 }}>{quoteTotal.toLocaleString('ru-RU')} UZS</span>
             </div>
             <div style={{ marginBottom: 12 }}>
               <div style={lbl}>Срок поставки (необязательно)</div>
@@ -2976,6 +3357,7 @@ function ActionModal({
                     <button key={q.id} onClick={() => setQuotationId(q.id)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 13px', borderRadius: 11, border: `1.5px solid ${sel ? 'var(--accent)' : 'var(--border)'}`, background: sel ? 'var(--accent-bg)' : 'var(--card)', cursor: 'pointer', textAlign: 'left' }}>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{q.supplierName}</div>
+                        {(q.paymentType || q.ndsIncluded) && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>{[q.paymentType, q.ndsIncluded ? 'НДС 12%' : null].filter(Boolean).join(' · ')}</div>}
                         {q.leadTime && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>срок: {q.leadTime}</div>}
                       </div>
                       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: sel ? 'var(--accent)' : 'var(--fg)', flex: 'none' }}>{q.amount.toLocaleString('ru-RU')}</div>
@@ -3025,9 +3407,16 @@ function ActionModal({
               onConfirm({
                 pin: action.pin ? pin : undefined,
                 comment: action.comment ? effectiveComment : undefined,
-                amount: action.amount || isAdd ? Number(amount) : undefined,
-                supplierId: isAdd && supplierId ? supplierId : undefined,
-                supplierName: isAdd ? supplier.trim() || undefined : undefined,
+                amount: isAdd ? quoteTotal : (action.amount ? Number(amount) : undefined),
+                supplierName: isAdd ? (() => {
+                  const names = [...new Set(quoteLines.map((l) => l.supplierName).filter(Boolean))];
+                  if (names.length === 1) return names[0];
+                  if (names.length > 1) return 'По позициям';
+                  return 'Не указан';
+                })() : undefined,
+                ndsIncluded: isAdd ? quoteLines.some((l) => l.ndsIncluded) : undefined,
+                paymentType: isAdd ? paymentType : undefined,
+                quoteItems: isAdd ? quoteLines.map((l) => ({ itemId: l.item.id, unitPrice: l.unitPrice, supplierName: l.supplierName, supplierId: l.supplierId, ndsIncluded: l.ndsIncluded })) : undefined,
                 leadTime: isAdd && leadTime.trim() ? leadTime.trim() : undefined,
                 quotationId: isSelect ? quotationId : undefined,
                 assigneeId: isAssign ? assigneeId : undefined,

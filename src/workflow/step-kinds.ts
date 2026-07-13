@@ -140,7 +140,9 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   // RETURN_STEP («Вернуть на пересмотр») показывается только когда у шага задан
   // on_reject_step_order (директорские тиры) — см. availableActions.
   approval: [
-    { action: 'approve', label: 'Согласовать', perm: 'approvals.approve', pin: true, advance: true },
+    // Лист Excel №12: согласующий «одобряет» заявку — кнопка «Одобрить», не
+    // «Согласовать» (этап в целом называется «Согласование», действие — одобрение).
+    { action: 'approve', label: 'Одобрить', perm: 'approvals.approve', pin: true, advance: true },
     // Bug #8: only surfaced when the NEXT step is procurement (see availableActions).
     { action: 'assign_procurement', label: 'Передать снабженцу', perm: 'approvals.approve', pin: true, assign: true, advance: true },
     REVISE,
@@ -164,21 +166,18 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   ],
   // #6 Менеджер по снабжению — поиск поставщика.
   procurement: [
-    { action: 'add_quotation', label: 'Добавить предложения', perm: 'procurement.quote', amount: true, quote: 'add', advance: false },
-    // Классический одношаговый выбор поставщика (руководитель снабжения, сразу дальше).
-    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: true },
-    // Двухшаговый поток: менеджер выбирает рекомендуемого (без продвижения) …
-    { action: 'recommend_supplier', label: 'Выбрать рекомендуемого поставщика', perm: 'procurement.quote', quote: 'select', sod: true, advance: false },
-    // … и передаёт руководителю на проверку цены (#7).
-    { action: 'submit_for_approval', label: 'Передать на согласование', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, advance: true },
+    { action: 'start_procurement', label: 'Я начал', perm: 'procurement.quote', setOrderStatus: 'started', advance: false },
+    { action: 'add_quotation', label: 'Добавить предложение', perm: 'procurement.quote', amount: true, quote: 'add', advance: true },
+    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.quote', quote: 'select', sod: true, advance: false },
+    { action: 'submit_for_approval', label: 'В процессе оплаты', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, setOrderStatus: 'payment_in_progress', advance: true },
     // Повторный шаг закупки (поставщик уже выбран): закупить и двигать дальше.
     { action: 'mark_purchased', label: 'Закуплено — передать дальше', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, advance: true },
     REVISE_CLARIFY,
     REJECT,
   ],
-  // #7 Руководитель снабжения — проверка цены и поставщика.
+  // #7 Операционная проверка цены/переход дальше — у назначенного снабженца.
   price_approval: [
-    { action: 'approve_price', label: 'Согласовать цену и поставщика', perm: 'procurement.select_supplier', advance: true },
+    { action: 'approve_price', label: 'Отправить предложение', perm: 'procurement.quote', setOrderStatus: 'payment_in_progress', advance: true },
     { action: 'return_research', label: 'Вернуть на повторный поиск', perm: 'procurement.select_supplier', comment: true, returnStep: true, advance: true },
     { action: 'reject_purchase', label: 'Отклонить закупку', perm: 'procurement.select_supplier', comment: true, reject: true, advance: true },
   ],
@@ -196,12 +195,12 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
     REJECT,
   ],
   delivery: [
-    { action: 'mark_arrived', label: 'Прибыло на склад', perm: 'warehouse.receive', advance: true },
+    { action: 'mark_arrived', label: 'В процессе доставки', perm: 'procurement.quote', setOrderStatus: 'delivery_in_progress', advance: true },
     REJECT,
   ],
   // #11 Склад — приёмка по каждому продукту (фактическое количество, расхождения).
   receiving: [
-    { action: 'receive_full', label: 'Принять полностью', perm: 'warehouse.receive', advance: true },
+    { action: 'receive_full', label: 'Подтвердить приёмку', perm: 'warehouse.receive', advance: true },
     { action: 'receive_partial', label: 'Принять частично', perm: 'warehouse.receive', perItem: true, advance: true },
     { action: 'receive_discrepancy', label: 'Принять с расхождением', perm: 'warehouse.receive', perItem: true, comment: true, advance: true },
     { action: 'reject_receiving', label: 'Отказать в приёмке', perm: 'warehouse.receive', comment: true, reject: true, advance: true },

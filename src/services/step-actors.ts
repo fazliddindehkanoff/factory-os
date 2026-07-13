@@ -32,7 +32,7 @@ export async function stepActorIds(db: Db, reqRow: StepActorsRequest, step: Step
   if (step.stepKind === 'close') {
     return reqRow.requesterId ? [reqRow.requesterId] : [];
   }
-  if (step.stepKind === 'procurement' && reqRow.responsibleUserId) {
+  if (['procurement', 'ordering', 'delivery'].includes(step.stepKind) && reqRow.responsibleUserId) {
     return [reqRow.responsibleUserId];
   }
   if (!step.approverRoleId) return [];

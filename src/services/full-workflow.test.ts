@@ -136,14 +136,8 @@ describe('new step-kinds: intake → price approval → ordering → per-item re
     expect((await act(req.id, 'approve', dh, { pin: PIN })).status).toBe('procurement_intake');
     // #5 руководитель снабжения: назначает снабженца → поиск.
     expect((await act(req.id, 'assign_procurement', phead, { assigneeId: pman })).status).toBe('procurement');
-    // #6 менеджер: КП → выбрать рекомендуемого → передать на согласование.
-    await act(req.id, 'add_quotation', pman, { supplierName: 'ООО Металл', amount: 9000 });
-    const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    expect((await act(req.id, 'recommend_supplier', pman, { quotationId: q.id })).status).toBe('procurement'); // stays
-    expect((await act(req.id, 'submit_for_approval', pman)).status).toBe('price_approval');
-    // #7 руководитель снабжения: вернуть на повторный поиск → назад в закупку, затем согласовать.
-    expect((await act(req.id, 'return_research', phead, { comment: 'дорого' })).status).toBe('procurement');
-    expect((await act(req.id, 'submit_for_approval', pman)).status).toBe('price_approval');
+    // #6 назначенный снабженец: одно предложение сразу уходит на одобрение менеджеру.
+    expect((await act(req.id, 'add_quotation', pman, { supplierName: 'ООО Металл', amount: 9000 })).status).toBe('price_approval');
     expect((await act(req.id, 'approve_price', phead)).status).toBe('ordering');
     // #10 менеджер: оформление и отправка (order_status), затем поставка → приёмка.
     expect((await act(req.id, 'place_order', pman)).orderStatus).toBe('ordered');

@@ -107,7 +107,7 @@ describe('procurement lite — queue + quotation flow', () => {
     expect(q.body.length).toBe(1);
   });
 
-  it('procurement_manager adds a supplier-linked quotation; it stays on the procurement step', async () => {
+  it('procurement_manager adds one supplier-linked proposal; it auto-selects and advances', async () => {
     const { db, holding, factory } = await make();
     const requester = await userWithRole(db, holding, 'requester', 'r2');
     const proc = await userWithRole(db, holding, 'procurement_manager', 'p2');
@@ -122,10 +122,12 @@ describe('procurement lite — queue + quotation flow', () => {
       supplierId: sup.id,
       amount: 5000,
     });
-    expect(r.status).toBe('procurement'); // add stays on the step
+    expect(r.status).toBe('close');
+    expect(r.estimatedAmount).toBe(5000);
     const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
     expect(q.supplierId).toBe(sup.id);
     expect(q.supplierName).toBe(sup.name); // snapshot
+    expect(q.selected).toBe(true);
   });
 
   it('add_quotation rejects a supplier from another holding (scope guard)', async () => {
@@ -153,41 +155,4 @@ describe('procurement lite — queue + quotation flow', () => {
     ).rejects.toThrow();
   });
 
-  it('select_supplier advances the workflow, keeps one selected, warns on a single quotation', async () => {
-    const { db, holding, factory } = await make();
-    const requester = await userWithRole(db, holding, 'requester', 'r5');
-    const proc = await userWithRole(db, holding, 'procurement_head', 'p5');
-    const req = await procurementRequest(db, holding, factory, requester);
-    const sup = await supplier(db, holding.id);
-
-    await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: holding.id }, supplierId: sup.id, amount: 5000 });
-    const [q1] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-
-    const sel = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: proc, holdingId: holding.id }, quotationId: q1.id });
-    expect(sel.status).toBe('close'); // advanced past procurement
-    expect(sel.warnings).toContain('Только одно КП по заявке — сравнение цен невозможно');
-    const quotes = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    expect(quotes.filter((q: { selected: boolean }) => q.selected).length).toBe(1); // exactly one selected
-  });
-
-  it('with two quotations the selected one is unique and no single-quotation warning fires', async () => {
-    const { db, holding, factory } = await make();
-    const requester = await userWithRole(db, holding, 'requester', 'r6');
-    const proc = await userWithRole(db, holding, 'procurement_head', 'p6');
-    const req = await procurementRequest(db, holding, factory, requester);
-    const supA = await supplier(db, holding.id, 'A');
-    const supB = await supplier(db, holding.id, 'B');
-
-    await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: holding.id }, supplierId: supA.id, amount: 5000 });
-    await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: holding.id }, supplierId: supB.id, amount: 4000 });
-    const quotes = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    const pick = quotes.find((q: { supplierId: string }) => q.supplierId === supB.id);
-
-    const sel = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: proc, holdingId: holding.id }, quotationId: pick.id });
-    expect(sel.warnings).not.toContain('Только одно КП по заявке — сравнение цен невозможно');
-    const after = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    const selected = after.filter((q: { selected: boolean }) => q.selected);
-    expect(selected.length).toBe(1);
-    expect(selected[0].supplierId).toBe(supB.id);
-  });
 });

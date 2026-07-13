@@ -1,7 +1,6 @@
 /**
  * Аудит уведомлений 2026-07-07 — адресаты и триггеры:
- *  1. «Требуется действие» уходит ТОЛЬКО при смене шага (не на каждое действие —
- *     раньше add_quotation спамил всех согласующих дублями);
+ *  1. «Требуется действие» уходит при смене шага, not for stale repeated actions;
  *  2. procurement-шаг с назначенным исполнителем → уведомляется только он;
  *  3. close-шаг → «Подтвердите получение» уходит АВТОРУ, а не роли шага;
  *  4. автор не получает уведомлений о своих же действиях;
@@ -39,8 +38,9 @@ async function make(opts: { onRejectStep2?: { onReject: string; onRejectStepOrde
   await db.insert(schema.workflowSteps).values([
     { workflowId: wf.id, stepOrder: 1, stepName: 'РОС', stepKind: 'approval', approverRoleId: await roleId('procurement_head') },
     { workflowId: wf.id, stepOrder: 2, stepName: 'Закупка', stepKind: 'procurement', approverRoleId: await roleId('procurement_manager') },
-    { workflowId: wf.id, stepOrder: 3, stepName: 'Директор', stepKind: 'approval', approverRoleId: await roleId('director'), ...(opts.onRejectStep2 ? { onReject: opts.onRejectStep2.onReject, onRejectStepOrder: opts.onRejectStep2.onRejectStepOrder } : {}) },
-    { workflowId: wf.id, stepOrder: 4, stepName: 'Закрытие', stepKind: 'close', approverRoleId: await roleId('requester') },
+    { workflowId: wf.id, stepOrder: 3, stepName: 'Снабжение — менеджер', stepKind: 'price_approval', approverRoleId: await roleId('procurement_head') },
+    { workflowId: wf.id, stepOrder: 4, stepName: 'Директор', stepKind: 'approval', approverRoleId: await roleId('director'), ...(opts.onRejectStep2 ? { onReject: opts.onRejectStep2.onReject, onRejectStepOrder: opts.onRejectStep2.onRejectStepOrder } : {}) },
+    { workflowId: wf.id, stepOrder: 5, stepName: 'Закрытие', stepKind: 'close', approverRoleId: await roleId('requester') },
   ]);
 
   const user = async (codes: string[], tg: string): Promise<string> => {
@@ -62,7 +62,7 @@ async function make(opts: { onRejectStep2?: { onReject: string; onRejectStepOrde
 }
 
 describe('уведомления — адресаты и триггеры', () => {
-  it('add_quotation не спамит; назначенный снабженец получает один «Ждёт вас»; close уходит автору', async () => {
+  it('proposal approval routes to the next actor; close notification goes to the author', async () => {
     const { db, holding, factory, user, act, notifsFor } = await make();
     const requester = await user(['requester'], 'author');
     const ph = await user(['procurement_head'], 'ph');
@@ -78,15 +78,13 @@ describe('уведомления — адресаты и триггеры', () =
     // Второй снабженец заперт назначением — его не дёргаем.
     expect(await notifsFor(snab2)).toHaveLength(0);
 
-    // КП не двигает шаг → НИКАКИХ новых «step_pending» никому.
+    // Предложение двигает заявку на этап «Снабжение — менеджер» для руководителя снабжения.
     await act('snab1', r.id, 'add_quotation', { amount: 700, supplierName: 'ООО X' });
-    await act('snab1', r.id, 'add_quotation', { amount: 800, supplierName: 'ООО Y' });
     expect((await notifsFor(snab1)).filter((n: any) => n.kind === 'step_pending')).toHaveLength(1);
     expect(await notifsFor(snab2)).toHaveLength(0);
 
-    // Выбор поставщика (руководитель) → шаг «Директор».
-    const [q] = await db.select().from(schema.quotations).where(and(eq(schema.quotations.requestId, r.id), eq(schema.quotations.amount, 700)));
-    await act('ph', r.id, 'select_supplier', { quotationId: q.id });
+    // Одобрение предложения → шаг «Директор».
+    await act('ph', r.id, 'approve_price');
     await act('dir', r.id, 'approve');
 
     // close-шаг: «Подтвердите получение» — АВТОРУ (kind step_pending), не роли шага.
@@ -109,8 +107,7 @@ describe('уведомления — адресаты и триггеры', () =
     const r = await createRequest(db, { holdingId: holding.id, requesterId: requester, factoryId: factory.id, items: [{ name: 'X', quantity: 1, unitPrice: 5 }] });
     await act('ph', r.id, 'assign_procurement', { assigneeId: snab1 });
     await act('snab1', r.id, 'add_quotation', { amount: 700, supplierName: 'ООО X' });
-    const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, r.id));
-    await act('ph', r.id, 'select_supplier', { quotationId: q.id });
+    await act('ph', r.id, 'approve_price');
 
     const stagePassedBefore = (await notifsFor(requester)).filter((n: any) => n.kind === 'stage_passed').length;
     await act('dir', r.id, 'reject', { comment: 'дорого, ищите дешевле' });

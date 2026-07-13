@@ -7,7 +7,7 @@ import { issueSession } from '../auth/session.js';
 import { requireAuth, type AuthedRequest } from './auth.middleware.js';
 import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility, getMoneyVisibility } from './request-visibility.js';
-import { isTerminalStatus } from '../workflow/step-kinds.js';
+import { isTerminalStatus, statusForStep } from '../workflow/step-kinds.js';
 import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
 import { performAction, availableActions, statusLabelFor, inboxCandidates, markItemStock } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
@@ -27,6 +27,7 @@ import { stepActorIds } from '../services/step-actors.js';
 import { digestIntervalMinutes } from '../services/digest.service.js';
 import { buildAdminRouter } from './admin.routes.js';
 import { TEST_USERNAMES, TEST_PIN } from '../db/seed-test.js';
+import { ValidationError } from '../services/errors.js';
 
 type Db = any;
 
@@ -34,6 +35,19 @@ type Db = any;
  *  автору затем и существует, чтобы он поправил заявку перед resubmit.
  *  Единый список для PUT /requests/:id и флага canEdit в деталях. */
 const EDITABLE_STATUSES = ['draft', 'pending_approval', 'needs_revision'];
+
+function canEditRequestRow(
+  reqRow: { status: string; requesterId: string | null },
+  userId: string,
+  permissions: string[],
+  approvals: { status: string }[],
+): boolean {
+  if (isTerminalStatus(reqRow.status)) return false;
+  const hasRealApproval = approvals.some((a) => a.status === 'approved');
+  const authorMayEdit = reqRow.requesterId === userId && (EDITABLE_STATUSES.includes(reqRow.status) || !hasRealApproval);
+  const privilegedMayEdit = permissions.includes('requests.edit') && EDITABLE_STATUSES.includes(reqRow.status);
+  return authorMayEdit || privilegedMayEdit;
+}
 
 /** Oversight permissions that let a user see requests beyond their own. */
 /** A user may see a request per the visibility model (bug #2): own + involved +
@@ -509,7 +523,22 @@ export function buildRouter(deps: RouterDeps): Router {
       // Money gate (bug #9): суммы — денежным правам и согласующим от шага
       // закупки и дальше; ранние роли (рук. отдела, склад) их не видят.
       const listMoney = await getMoneyVisibility(db, u.id);
-      const items = rows.map((r: any) => (listMoney.canSee(r) ? r : { ...r, estimatedAmount: null }));
+      // Лист Excel №5: карточки списка показывают «Отдел снабжения» — резолвим
+      // имя отдела по departmentId (заявка адресуется отделу по id, имя не хранится).
+      const listDeptIds = [...new Set(rows.map((r: any) => r.departmentId).filter(Boolean))] as string[];
+      const listDeptName = new Map<string, string>();
+      if (listDeptIds.length) {
+        const deps = await db
+          .select({ id: schema.departments.id, name: schema.departments.name })
+          .from(schema.departments)
+          .where(inArray(schema.departments.id, listDeptIds));
+        for (const d of deps as { id: string; name: string }[]) listDeptName.set(d.id, d.name);
+      }
+      const items = rows.map((r: any) => {
+        const departmentNameResolved = r.departmentId ? listDeptName.get(r.departmentId) ?? r.departmentName ?? null : r.departmentName ?? null;
+        const base = { ...r, departmentNameResolved };
+        return listMoney.canSee(r) ? base : { ...base, estimatedAmount: null };
+      });
       res.json({ items, hasMore, offset, limit, total });
     } catch (e) {
       next(e);
@@ -687,6 +716,9 @@ export function buildRouter(deps: RouterDeps): Router {
           estimatedAmount: inboxMoney.canSee(r0) ? r0.estimatedAmount : null,
           priority: raw.priority ?? null,
           createdAt: raw.createdAt ?? null,
+          // Лист Excel №5: карточка несёт «Объект» и «Нужно к» наравне с прочими полями.
+          neededDate: raw.neededDate ?? null,
+          obyekt: raw.customFields && typeof raw.customFields === 'object' ? ((raw.customFields as Record<string, unknown>).obyekt ?? null) : null,
           requesterId: r0.requesterId,
           departmentId: r0.departmentId,
           actions,
@@ -745,7 +777,8 @@ export function buildRouter(deps: RouterDeps): Router {
       const items = await db
         .select()
         .from(schema.requestItems)
-        .where(eq(schema.requestItems.requestId, reqRow.id));
+        .where(eq(schema.requestItems.requestId, reqRow.id))
+        .orderBy(schema.requestItems.sortOrder, schema.requestItems.id);
       const approvals = await db
         .select()
         .from(schema.approvals)
@@ -796,7 +829,12 @@ export function buildRouter(deps: RouterDeps): Router {
         : [];
       const actions = await availableActions(db, reqRow, u.id);
       // Build workflow timeline with per-step state + WHO/WHEN acted (bugs #4, #7, #10).
-      type TLState = 'completed' | 'current' | 'future' | 'rejected';
+      type TLState = 'completed' | 'current' | 'future' | 'rejected' | 'cancelled';
+      // Лист Excel №13: «Вернуть на доработку» возвращает заявку автору (status
+      // needs_revision, currentStepId=null). Без этого все шаги показывались как
+      // «Согласовано» (completed). Теперь весь маршрут согласования — «Отменено»
+      // (серый), пока автор не отправит заявку заново.
+      const returnedToAuthor = reqRow.status === 'needs_revision';
       let workflowTimeline: {
         stepId: string; stepName: string; stepKind: string; state: TLState;
         actorName: string | null; actorRole: string | null; at: unknown; action: string | null;
@@ -811,12 +849,51 @@ export function buildRouter(deps: RouterDeps): Router {
           .sort((a: { stepOrder: number }, b: { stepOrder: number }) => a.stepOrder - b.stepOrder);
 
         // Resolved action per step (approved / rejected) from the approvals rows.
+        // Non-approval steps do not have approval rows, so below we fall back to
+        // lifecycle status history: the actor who moved out of that step.
         const stepAction = new Map<string, { action: string; at: unknown; actorId: string | null }>();
         for (const a of approvals as { workflowStepId: string | null; status: string; approvedAt: unknown; approverUserId: string | null }[]) {
           if (a.workflowStepId && (a.status === 'approved' || a.status === 'rejected')) {
             stepAction.set(a.workflowStepId, { action: a.status, at: a.approvedAt, actorId: a.approverUserId });
           }
         }
+        type TimelineHistory = {
+          oldStatus: string | null;
+          newStatus: string;
+          changedBy: string | null;
+          createdAt: unknown;
+          source: string | null;
+        };
+        const historyByOldStatus = new Map<string, TimelineHistory[]>();
+        for (const h of statusHistoryOut as TimelineHistory[]) {
+          if (!h.changedBy || h.source === 'auto_skip' || !h.oldStatus) continue;
+          const bucket = historyByOldStatus.get(h.oldStatus) ?? [];
+          bucket.push(h);
+          historyByOldStatus.set(h.oldStatus, bucket);
+        }
+        const usedHistoryByStatus = new Map<string, number>();
+        const historyForStep = (
+          s: { stepKind: string },
+          state: TLState,
+        ): { action: string; at: unknown; actorId: string | null } | null => {
+          const stepStatus = statusForStep(s);
+          const events = historyByOldStatus.get(stepStatus) ?? [];
+          if (!events.length) return null;
+          const used = usedHistoryByStatus.get(stepStatus) ?? 0;
+          const firstUnusedAdvance = events.findIndex((e, idx) => idx >= used && e.oldStatus !== e.newStatus);
+          if (state === 'completed' || state === 'rejected' || state === 'cancelled') {
+            const index = firstUnusedAdvance >= 0 ? firstUnusedAdvance : used;
+            const event = events[index];
+            if (!event) return null;
+            usedHistoryByStatus.set(stepStatus, index + 1);
+            return { action: state === 'rejected' ? 'rejected' : 'completed', at: event.createdAt, actorId: event.changedBy };
+          }
+          if (state === 'current') {
+            const sameStep = [...events].reverse().find((e) => e.oldStatus === e.newStatus);
+            return sameStep ? { action: 'updated', at: sameStep.createdAt, actorId: sameStep.changedBy } : null;
+          }
+          return null;
+        };
         // Rejected request → the step where it was rejected splits the timeline. (#4)
         const rejectedStep = sorted.find((s: { id: string }) => stepAction.get(s.id)?.action === 'rejected');
         const rejectedOrder = rejectedStep ? (rejectedStep as { stepOrder: number }).stepOrder : null;
@@ -824,7 +901,10 @@ export function buildRouter(deps: RouterDeps): Router {
         let foundCurrent = false;
         for (const s of sorted) {
           let state: TLState;
-          if (rejectedOrder != null) {
+          if (returnedToAuthor) {
+            // Возврат автору на доработку — маршрут согласования аннулирован.
+            state = 'cancelled';
+          } else if (rejectedOrder != null) {
             // A rejected chain: steps before are done, the rejection step is red,
             // everything after was never reached.
             if ((s as { stepOrder: number }).stepOrder < rejectedOrder) state = 'completed';
@@ -840,7 +920,7 @@ export function buildRouter(deps: RouterDeps): Router {
           } else {
             state = 'future';
           }
-          const act = stepAction.get(s.id);
+          const act = stepAction.get(s.id) ?? historyForStep(s, state);
           const actor = act?.actorId ? actorMap.get(act.actorId) : undefined;
           workflowTimeline.push({
             stepId: s.id,
@@ -888,40 +968,9 @@ export function buildRouter(deps: RouterDeps): Router {
         canSeeMoney ? it : { ...it, estimatedPrice: null, totalAmount: null },
       );
 
-      // №12в: «История действий» — только ролям с audit.view, зато МАКСИМАЛЬНО
-      // подробная: история статусов + полный аудит-трейл заявки. Остальным ходом
-      // заявки служит workflowTimeline.
-      const canSeeHistory = viewerCodes.includes('audit.view');
-      let auditTrail: unknown[] = [];
-      if (canSeeHistory) {
-        const trail = await db
-          .select()
-          .from(schema.auditLogs)
-          .where(and(eq(schema.auditLogs.entityType, 'request'), eq(schema.auditLogs.entityId, reqRow.id)))
-          .orderBy(schema.auditLogs.createdAt);
-        const trailUserIds = [...new Set(trail.map((t: { userId: string | null }) => t.userId).filter(Boolean))] as string[];
-        const trailUsers = trailUserIds.length
-          ? await db.select({ id: schema.users.id, fullName: schema.users.fullName }).from(schema.users).where(inArray(schema.users.id, trailUserIds))
-          : [];
-        const trailNameBy = new Map((trailUsers as { id: string; fullName: string }[]).map((x) => [x.id, x.fullName]));
-        auditTrail = trail.map((t: any) => ({
-          id: t.id,
-          action: t.action,
-          module: t.module,
-          userId: t.userId,
-          userName: t.userId ? trailNameBy.get(t.userId) ?? null : null,
-          oldValue: t.oldValue,
-          newValue: t.newValue,
-          source: t.source,
-          createdAt: t.createdAt,
-        }));
-      }
-
       // Кнопки/поля на фронте — только из ответа сервера: canEdit повторяет
       // ровно ту проверку, которой PUT /requests/:id пропускает правку.
-      const canEdit =
-        EDITABLE_STATUSES.includes(reqRow.status) &&
-        (reqRow.requesterId === u.id || viewerCodes.includes('requests.edit'));
+      const canEdit = canEditRequestRow(reqRow, u.id, viewerCodes, approvals);
 
       res.json({
         ...reqRow,
@@ -933,9 +982,6 @@ export function buildRouter(deps: RouterDeps): Router {
         statusLabel: await statusLabelFor(db, reqRow),
         items: itemsOut,
         approvals,
-        statusHistory: canSeeHistory ? statusHistoryOut : [],
-        auditTrail,
-        canSeeHistory,
         quotations,
         canSeeMoney,
         actions,
@@ -1037,10 +1083,37 @@ export function buildRouter(deps: RouterDeps): Router {
         .where(and(eq(schema.users.holdingId, u.holdingId), eq(schema.users.status, 'active')));
       const out: { id: string; fullName: string | null }[] = [];
       for (const usr of users) {
+        const assignedRoles = await db
+          .select({ code: schema.roles.code, name: schema.roles.name })
+          .from(schema.userRoles)
+          .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
+          .where(and(eq(schema.userRoles.userId, usr.id), eq(schema.userRoles.status, 'active')));
+        if (assignedRoles.some((r: { code: string; name: string }) => ['owner', 'procurement_head'].includes(r.code) || ['Учредитель', 'Руководитель снабжения'].includes(r.name))) continue;
         const codes = await getUserPermissionCodes(db, usr.id);
         if (['procurement.quote', 'procurement.select_supplier', 'procurement.view'].some((p) => codes.includes(p))) out.push(usr);
       }
       res.json({ users: out });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.get('/procurement/settings', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId) { res.json({ paymentTypes: [] }); return; }
+      const codes = await getUserPermissionCodes(db, u.id);
+      if (!['procurement.view', 'procurement.quote', 'procurement.select_supplier'].some((p) => codes.includes(p))) {
+        res.status(403).json({ error: 'Недостаточно прав' });
+        return;
+      }
+      const [row] = await db
+        .select({ value: schema.settings.value })
+        .from(schema.settings)
+        .where(and(eq(schema.settings.holdingId, u.holdingId), eq(schema.settings.key, 'payment_types')));
+      const raw = String(row?.value ?? 'Перечисление,Наличные,Предоплата,Постоплата');
+      const paymentTypes = raw.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+      res.json({ paymentTypes });
     } catch (e) {
       next(e);
     }
@@ -1082,6 +1155,9 @@ export function buildRouter(deps: RouterDeps): Router {
         amount: body.amount,
         supplierName: body.supplierName,
         supplierId: body.supplierId,
+        ndsIncluded: body.ndsIncluded,
+        paymentType: body.paymentType,
+        quoteItems: Array.isArray(body.quoteItems) ? body.quoteItems : undefined,
         leadTime: body.leadTime,
         quotationId: body.quotationId,
         assigneeId: body.assigneeId,
@@ -1248,13 +1324,19 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
+      const requestApprovals = await db
+        .select({ status: schema.approvals.status })
+        .from(schema.approvals)
+        .where(eq(schema.approvals.requestId, reqRow.id));
+      const editPermissions = await getUserPermissionCodes(db, u.id);
       // Only the author OR someone with requests.edit can update
       const isAuthor = reqRow.requesterId === u.id;
-      if (!isAuthor && !(await hasPermissionInHolding(db, u.id, 'requests.edit', u.holdingId))) {
+      const hasEditPermission = editPermissions.includes('requests.edit');
+      if (!isAuthor && !hasEditPermission) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
-      if (!EDITABLE_STATUSES.includes(reqRow.status)) {
+      if (!canEditRequestRow(reqRow, u.id, editPermissions, requestApprovals)) {
         res.status(409).json({ error: 'Заявку нельзя редактировать на этом этапе' });
         return;
       }
@@ -1267,6 +1349,21 @@ export function buildRouter(deps: RouterDeps): Router {
         if (PRIORITIES.includes(body.priority)) patch.priority = body.priority;
       }
       if (body.warehouseName !== undefined) patch.warehouseName = String(body.warehouseName).trim() || null;
+      // Лист Excel №1: автор может править всю заявку (не только название/описание/
+      // приоритет/склад). Тип, отдел и настраиваемые поля (объект, место закупа).
+      if (body.requestType !== undefined && String(body.requestType).trim()) patch.requestType = String(body.requestType).trim();
+      if (body.departmentId !== undefined) patch.departmentId = body.departmentId ? String(body.departmentId) : null;
+      if (body.customFields !== undefined && body.customFields && typeof body.customFields === 'object') {
+        // Мержим, чтобы правка одного поля не стирала прочие настраиваемые значения.
+        const existingCf = (reqRow.customFields && typeof reqRow.customFields === 'object') ? reqRow.customFields as Record<string, unknown> : {};
+        const incoming = body.customFields as Record<string, unknown>;
+        const merged: Record<string, unknown> = { ...existingCf };
+        for (const [k, v] of Object.entries(incoming)) {
+          if (v === '' || v == null) delete merged[k];
+          else merged[k] = v;
+        }
+        patch.customFields = merged;
+      }
       if (body.neededDate !== undefined) {
         // №5: и при редактировании дата «необходимо к» не может быть в прошлом.
         if (body.neededDate) {
@@ -1283,21 +1380,94 @@ export function buildRouter(deps: RouterDeps): Router {
           patch.neededDate = null;
         }
       }
-      const [updated] = await db
-        .update(schema.requests)
-        .set(patch)
-        .where(eq(schema.requests.id, reqRow.id))
-        .returning();
-      await db.insert(schema.auditLogs).values({
-        holdingId: reqRow.holdingId,
-        userId: u.id,
-        action: 'request.edited',
-        module: 'requests',
-        entityType: 'request',
-        entityId: reqRow.id,
-        oldValue: { title: reqRow.title, description: reqRow.description },
-        newValue: patch,
-        source: 'api',
+      const itemEdits = Array.isArray(body.items) ? body.items : null;
+      const [updated] = await db.transaction(async (tx: Db) => {
+        let oldItems: unknown[] | undefined;
+        let newItems: unknown[] | undefined;
+        if (itemEdits) {
+          const existingItems = await tx
+            .select()
+            .from(schema.requestItems)
+            .where(eq(schema.requestItems.requestId, reqRow.id));
+          oldItems = existingItems.map((it: any) => ({
+            id: it.id,
+            name: it.name,
+            quantity: Number(it.quantity),
+            unit: it.unit,
+            description: it.description,
+            estimatedPrice: it.estimatedPrice,
+            totalAmount: it.totalAmount,
+          }));
+          const existingById = new Map<string, any>(existingItems.map((it: any) => [it.id, it]));
+          const cleaned = itemEdits
+            .map((raw: any) => {
+              const id = raw?.id ? String(raw.id) : null;
+              const prev = id ? existingById.get(id) : null;
+              const name = String(raw?.name ?? '').trim();
+              const quantity = Number(raw?.quantity);
+              const suppliedUnitPrice = raw?.unitPrice !== undefined && raw?.unitPrice !== null && raw?.unitPrice !== '';
+              const unitPrice = suppliedUnitPrice ? Number(raw.unitPrice) : Number(prev?.estimatedPrice ?? 0);
+              return {
+                id,
+                name,
+                quantity,
+                unit: raw?.unit == null || String(raw.unit).trim() === '' ? null : String(raw.unit).trim(),
+                description: raw?.description == null || String(raw.description).trim() === '' ? null : String(raw.description).trim(),
+                unitPrice,
+              };
+            })
+            .filter((it: any) => it.name);
+          if (cleaned.length === 0) {
+            throw new ValidationError('Добавьте хотя бы один продукт');
+          }
+          for (const it of cleaned) {
+            if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
+              throw new ValidationError('Количество продукта должно быть больше нуля');
+            }
+            if (!Number.isFinite(it.unitPrice) || it.unitPrice < 0) {
+              throw new ValidationError('Цена продукта должна быть неотрицательным числом');
+            }
+          }
+          patch.estimatedAmount = Math.round(cleaned.reduce((sum: number, it: any) => sum + it.quantity * it.unitPrice, 0));
+          await tx.delete(schema.requestItems).where(eq(schema.requestItems.requestId, reqRow.id));
+          for (const [index, it] of cleaned.entries()) {
+            await tx.insert(schema.requestItems).values({
+              requestId: reqRow.id,
+              name: it.name,
+              description: it.description,
+              quantity: String(it.quantity),
+              unit: it.unit,
+              estimatedPrice: Math.round(it.unitPrice),
+              totalAmount: Math.round(it.quantity * it.unitPrice),
+              sortOrder: index,
+            });
+          }
+          newItems = cleaned.map((it: any) => ({
+            name: it.name,
+            quantity: it.quantity,
+            unit: it.unit,
+            description: it.description,
+            estimatedPrice: Math.round(it.unitPrice),
+            totalAmount: Math.round(it.quantity * it.unitPrice),
+          }));
+        }
+        const [row] = await tx
+          .update(schema.requests)
+          .set(patch)
+          .where(eq(schema.requests.id, reqRow.id))
+          .returning();
+        await tx.insert(schema.auditLogs).values({
+          holdingId: reqRow.holdingId,
+          userId: u.id,
+          action: 'request.edited',
+          module: 'requests',
+          entityType: 'request',
+          entityId: reqRow.id,
+          oldValue: { title: reqRow.title, description: reqRow.description, items: oldItems },
+          newValue: { ...patch, items: newItems },
+          source: 'api',
+        });
+        return [row];
       });
       res.json(updated);
     } catch (e) {
@@ -1619,7 +1789,20 @@ export function buildRouter(deps: RouterDeps): Router {
         .from(schema.requests)
         .where(and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.status, 'procurement')))
         .orderBy(desc(schema.requests.createdAt));
-      res.json(rows);
+      // Лист Excel №5: карточка очереди показывает «Отдел снабжения» — резолвим имя.
+      const pqDeptIds = [...new Set(rows.map((r: any) => r.departmentId).filter(Boolean))] as string[];
+      const pqDeptName = new Map<string, string>();
+      if (pqDeptIds.length) {
+        const deps = await db
+          .select({ id: schema.departments.id, name: schema.departments.name })
+          .from(schema.departments)
+          .where(inArray(schema.departments.id, pqDeptIds));
+        for (const d of deps as { id: string; name: string }[]) pqDeptName.set(d.id, d.name);
+      }
+      res.json(rows.map((r: any) => ({
+        ...r,
+        departmentNameResolved: r.departmentId ? pqDeptName.get(r.departmentId) ?? r.departmentName ?? null : r.departmentName ?? null,
+      })));
     } catch (e) {
       next(e);
     }

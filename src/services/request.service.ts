@@ -190,7 +190,7 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
       await tx.insert(schema.approvals).values({ requestId: req.id, workflowStepId: first.id });
     }
 
-    for (const it of items) {
+    for (const [index, it] of items.entries()) {
       await tx.insert(schema.requestItems).values({
         requestId: req.id,
         materialId: it.materialId ?? null,
@@ -200,6 +200,7 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
         unit: it.unit ?? null,
         estimatedPrice: Math.round(it.unitPrice),
         totalAmount: Math.round(it.quantity * it.unitPrice),
+        sortOrder: index,
       });
     }
 

@@ -121,14 +121,12 @@ describe('B9 — close is the author-only receipt confirmation', () => {
   });
 });
 
-describe('L4 — estimatedAmount is locked by supplier selection only', () => {
-  it('add_quotation keeps the original estimate; select_supplier sets it', async () => {
+describe('L4 — estimatedAmount is locked by the single approved proposal path', () => {
+  it('add_quotation auto-selects the proposal and sets the real amount', async () => {
     const db = await setup();
     const { h, f } = await org(db);
     const requester = await mkUser(db, h.id, ['requester'], 'req');
     const proc = await mkUser(db, h.id, ['procurement'], 'proc');
-    // Выбор поставщика — только у руководителя снабжения (2026-07-06).
-    const procHead = await mkUser(db, h.id, ['procurement_head'], 'ph');
     const [wf] = await db.insert(schema.workflows).values({ holdingId: h.id, name: 'Proc', isActive: true }).returning();
     await db.insert(schema.workflowSteps).values([
       { workflowId: wf.id, stepOrder: 1, stepName: 'Закупка', stepKind: 'procurement', approverRoleId: await roleId(db, 'procurement') },
@@ -137,16 +135,10 @@ describe('L4 — estimatedAmount is locked by supplier selection only', () => {
     const req = await createRequest(db, { holdingId: h.id, requesterId: requester, factoryId: f.id, items: [{ name: 'X', quantity: 2, unitPrice: 1000 }] });
     expect(req.estimatedAmount).toBe(2000);
 
-    await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: h.id }, supplierName: 'A', amount: 100_000_000 });
-    expect((await reload(db, req.id)).estimatedAmount).toBe(2000); // NOT the un-selected КП
-
-    await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: h.id }, supplierName: 'B', amount: 5000 });
-    const [qb] = await db
-      .select()
-      .from(schema.quotations)
-      .where(and(eq(schema.quotations.requestId, req.id), eq(schema.quotations.supplierName, 'B')));
-    const r = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: procHead, holdingId: h.id }, quotationId: qb.id });
+    const r = await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: h.id }, supplierName: 'A', amount: 5000 });
     expect(r.estimatedAmount).toBe(5000);
+    const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
+    expect(q.selected).toBe(true);
   });
 });
 

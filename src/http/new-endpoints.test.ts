@@ -100,6 +100,70 @@ describe('PUT /requests/:id (edit)', () => {
     expect(updated.body.title).toBe('New Title');
     expect(updated.body.description).toBe('Added desc');
   });
+
+  it('allows the author to edit request items while the request is editable', async () => {
+    const { app, db } = await makeApp();
+    const { token, holdingId } = await setupUser(app, db, 201, 'owner');
+    const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'W', isActive: true }).returning();
+    await db.insert(schema.workflowSteps).values({
+      workflowId: wf.id, stepOrder: 1, stepName: 'S',
+      approverRoleId: await roleId(db, 'dept_head'),
+    });
+
+    const created = await request(app).post('/api/requests').set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Needs parts', items: [{ name: 'Old Bolt', quantity: 1, unit: 'pcs', unitPrice: 10 }] }).expect(201);
+
+    await request(app).put(`/api/requests/${created.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        title: 'Needs better parts',
+        items: [
+          { name: 'New Bolt', quantity: 3, unit: 'pcs', description: 'M8', unitPrice: 10 },
+          { name: 'Washer', quantity: 5, unit: 'pcs', description: 'Flat', unitPrice: 2 },
+        ],
+      }).expect(200);
+
+    const items = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, created.body.id));
+    expect(items.map((it) => it.name).sort()).toEqual(['New Bolt', 'Washer']);
+    expect(items.find((it) => it.name === 'New Bolt')?.quantity).toBe('3');
+    const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, created.body.id));
+    expect(reqRow.estimatedAmount).toBe(40);
+  });
+
+  it('allows a department-head author to edit after their own approval step is auto-skipped', async () => {
+    const { app, db } = await makeApp();
+    const { token, holdingId } = await setupUser(app, db, 202, 'dept_head');
+    const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'Dept head flow', isActive: true }).returning();
+    await db.insert(schema.workflowSteps).values([
+      {
+        workflowId: wf.id,
+        stepOrder: 1,
+        stepName: 'Руководитель отдела',
+        stepKind: 'approval',
+        approverRoleId: await roleId(db, 'dept_head'),
+      },
+      {
+        workflowId: wf.id,
+        stepOrder: 2,
+        stepName: 'Склад — наличие',
+        stepKind: 'warehouse_check',
+        approverRoleId: await roleId(db, 'warehouse'),
+      },
+    ]);
+
+    const created = await request(app).post('/api/requests').set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Old dept request', items: [{ name: 'X', quantity: 1, unitPrice: 1 }] }).expect(201);
+    expect(created.body.status).toBe('warehouse_check');
+
+    const detail = await request(app).get(`/api/requests/${created.body.id}`)
+      .set('Authorization', `Bearer ${token}`).expect(200);
+    expect(detail.body.canEdit).toBe(true);
+
+    const updated = await request(app).put(`/api/requests/${created.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Updated dept request' }).expect(200);
+    expect(updated.body.title).toBe('Updated dept request');
+  });
 });
 
 describe('Warehouse endpoints', () => {

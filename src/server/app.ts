@@ -5,6 +5,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import helmet from 'helmet';
 import { buildRouter, type RouterDeps } from '../http/routes.js';
 import { buildCompatRouter } from '../http/compat.routes.js';
+import { buildSnabDashboardRouter } from '../http/snab-dashboard.routes.js';
 import { legacyAuth } from '../http/legacy-auth.js';
 import { mapError } from '../http/errors.js';
 import { apiLimiter, authLimiter } from '../http/rate-limit.js';
@@ -22,6 +23,7 @@ export function createApp(deps: RouterDeps) {
   app.use(express.json({ limit: '4mb' })); // design uploads base64 attachments
 
   app.get('/healthz', (_req: Request, res: Response) => res.json({ ok: true, uptime: process.uptime() }));
+  app.use('/snab-dashboard', buildSnabDashboardRouter(deps.db));
 
   // Request logging (non-static, non-health)
   app.use('/api', (req: Request, _res: Response, next: NextFunction) => {

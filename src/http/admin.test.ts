@@ -117,12 +117,12 @@ describe('constructor / admin API', () => {
   });
 
   it('config reflects tenant settings, and editing settings via admin updates it', async () => {
-    const { app } = await make(); // setupTenant sets factory_name='Zelal' and an 11-step workflow
+    const { app } = await make(); // setupTenant sets factory_name='Zelal' and a 12-step workflow
     const token = await login(app, '999');
 
     const cfg = await request(app).get('/api/config').set('Authorization', `Bearer ${token}`).expect(200);
     expect(cfg.body.factoryName).toBe('Zelal');
-    expect(cfg.body.stages.length).toBe(11);
+    expect(cfg.body.stages.length).toBe(12);
 
     await request(app)
       .put('/api/admin/settings')

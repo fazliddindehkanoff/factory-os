@@ -122,13 +122,10 @@ describe('data-driven lifecycle', () => {
     expect(r2.inStock).toBe(false);
     expect(r2.status).toBe('procurement');
 
-    // add_quotation stays on the step; select_supplier advances.
+    // The single proposal is auto-selected and advances.
     const r3 = await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: proc, holdingId: h.id }, supplierName: 'ООО Поставка', amount: 5000 });
-    expect(r3.status).toBe('procurement');
-    const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    const r4 = await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: procHead, holdingId: h.id }, quotationId: q.id });
-    expect(r4.status).toBe('finance_payment');
-    expect(r4.estimatedAmount).toBe(5000);
+    expect(r3.status).toBe('finance_payment');
+    expect(r3.estimatedAmount).toBe(5000);
   });
 
   it('rejecting at any step ends the request as rejected', async () => {

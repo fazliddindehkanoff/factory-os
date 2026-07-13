@@ -4,7 +4,7 @@
  * request path, so the scenario can be walked end-to-end without ever switching
  * the role on a single Telegram account:
  *
- *   sklad_01 создаёт → nach_sklad_01 подтверждает → snab_01 (КП + поставщик) →
+ *   sklad_01 создаёт → nach_sklad_01 подтверждает → snab_01 (предложение + одобрение) →
  *   zamdir_01 → gendir_01 → founder_01 → прибытие → приёмка → sklad_01 закрывает.
  *
  * Each user logs in through dev auth (telegramId = username below), i.e. the
@@ -61,13 +61,14 @@ export const TEST_USERNAMES = TEST_USERS.map((u) => u.username);
 /** Полный маршрут из ТЗ на существующих step-kind'ах — без новых статусов. */
 const STEP_SPECS = [
   { order: 1, name: 'Подтверждение начальника склада', kind: 'approval', role: 'warehouse' },
-  { order: 2, name: 'Закупка: КП и выбор поставщика', kind: 'procurement', role: 'procurement_manager' },
-  { order: 3, name: 'Одобрение зам. директора', kind: 'approval', role: 'deputy_director' },
-  { order: 4, name: 'Одобрение ген. директора', kind: 'approval', role: 'director' },
-  { order: 5, name: 'Утверждение учредителя', kind: 'approval', role: 'owner' },
-  { order: 6, name: 'Прибытие товара на склад', kind: 'delivery', role: 'warehouse_worker' },
-  { order: 7, name: 'Приёмка товара', kind: 'receiving', role: 'warehouse_worker' },
-  { order: 8, name: 'Подтверждение получения', kind: 'close', role: 'requester' },
+  { order: 2, name: 'Снабжение — предложение', kind: 'procurement', role: 'procurement_manager' },
+  { order: 3, name: 'Снабжение — менеджер', kind: 'price_approval', role: 'procurement_head' },
+  { order: 4, name: 'Одобрение зам. директора', kind: 'approval', role: 'deputy_director' },
+  { order: 5, name: 'Одобрение ген. директора', kind: 'approval', role: 'director' },
+  { order: 6, name: 'Утверждение учредителя', kind: 'approval', role: 'owner' },
+  { order: 7, name: 'Прибытие товара на склад', kind: 'delivery', role: 'warehouse_worker' },
+  { order: 8, name: 'Приёмка товара', kind: 'receiving', role: 'warehouse_worker' },
+  { order: 9, name: 'Подтверждение получения', kind: 'close', role: 'requester' },
 ];
 
 async function roleId(db: Db, code: string): Promise<string | undefined> {

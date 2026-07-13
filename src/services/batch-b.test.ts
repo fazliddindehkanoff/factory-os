@@ -189,17 +189,14 @@ describe('№16б — перед закупкой только «Передат�
     await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: snab, holdingId: h.id }, amount: 500, supplierName: 'ООО X' });
     const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
 
-    // Выбор поставщика — ТОЛЬКО руководитель снабжения (2026-07-06): у снабженца
-    // права нет вовсе, а руководителя назначение исполнителя не запирает.
+    // После добавления предложения заявка уже ушла дальше; снабженец не должен
+    // видеть повторное добавление или выбор поставщика на следующем шаге.
     await expect(
       performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: snab, holdingId: h.id }, quotationId: q.id }),
-    ).rejects.toThrow(/Недостаточно прав/);
+    ).rejects.toThrow(/Действие недоступно/);
     const snabActs = acts(await availableActions(db, await reload(db, req.id), snab));
-    expect(snabActs).toContain('add_quotation');
+    expect(snabActs).not.toContain('add_quotation');
     expect(snabActs).not.toContain('select_supplier');
-    const phActs = acts(await availableActions(db, await reload(db, req.id), ph));
-    expect(phActs).toContain('select_supplier');
-    await performAction(db, { requestId: req.id, action: 'select_supplier', actor: { id: ph, holdingId: h.id }, quotationId: q.id });
 
     // Шаг «Директор» перед ВТОРОЙ закупкой: исполнитель уже назначен → approve есть.
     const dirActs = acts(await availableActions(db, await reload(db, req.id), dir));
@@ -209,12 +206,12 @@ describe('№16б — перед закупкой только «Передат�
     expect(r.status).toBe('procurement');
     expect(r.responsibleUserId).toBe(snab); // назначение сохранилось
 
-    // ВТОРОЙ шаг закупки (поставщик уже выбран): у снабженца есть «Закуплено» —
-    // именно оно двигает заявку дальше (без него шаг вставал после отзыва
-    // select_supplier у снабженца, 2026-07-06).
+    // ВТОРОЙ шаг закупки: снабженец снова добавляет предложение, и оно двигает
+    // заявку дальше без повторного выбора поставщика на стороне снабженца.
     const snabActs2 = acts(await availableActions(db, r, snab));
-    expect(snabActs2).toContain('mark_purchased');
-    await performAction(db, { requestId: req.id, action: 'mark_purchased', actor: { id: snab, holdingId: h.id } });
+    expect(snabActs2).toContain('add_quotation');
+    expect(snabActs2).not.toContain('select_supplier');
+    await performAction(db, { requestId: req.id, action: 'add_quotation', actor: { id: snab, holdingId: h.id }, amount: 600, supplierName: 'ООО Y' });
     expect((await reload(db, req.id)).status).toBe('close');
   });
 

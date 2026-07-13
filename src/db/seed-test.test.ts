@@ -29,7 +29,7 @@ describe('seedTest', () => {
       .select()
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.workflowId, first.workflow.id));
-    expect(steps.length).toBe(8);
+    expect(steps.length).toBe(9);
 
     const requests = await db.select().from(schema.requests);
     expect(requests.length).toBe(3);
@@ -54,13 +54,11 @@ describe('seedTest', () => {
     const id = requests.fresh.id;
     await act('nach_sklad_01', id, 'assign_procurement', { assigneeId: users['snab_01'].id });
     await act('snab_01', id, 'add_quotation', { amount: 100000, supplierName: 'ООО Тест-Снаб' });
-    const [quote] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, id));
-    // Выбор поставщика — только руководитель снабжения (2026-07-06).
-    await act('nach_snab_01', id, 'select_supplier', { quotationId: quote.id });
+    await act('nach_snab_01', id, 'approve_price');
     await act('zamdir_01', id, 'approve');
     await act('gendir_01', id, 'approve');
     await act('founder_01', id, 'approve');
-    await act('sklad_01', id, 'mark_arrived');
+    await act('snab_01', id, 'mark_arrived');
     await act('sklad_01', id, 'receive_full');
     await act('sklad_01', id, 'close');
 

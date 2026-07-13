@@ -57,6 +57,11 @@ const KEYS: { key: string; label: string; placeholder: string; type?: 'select'; 
       { value: '480', label: 'Сводка раз в 8 часов' },
     ],
   },
+  {
+    key: 'payment_types',
+    label: 'Типы оплаты для снабжения',
+    placeholder: 'Перечисление, Наличные, Предоплата, Постоплата',
+  },
 ];
 
 export function Settings() {

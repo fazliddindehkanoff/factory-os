@@ -184,11 +184,9 @@ describe('multi-item request — full lifecycle across roles', () => {
 
     expect((await act('approve', dh, { pin: PIN })).status).toBe('warehouse_check');
     expect((await act('wh_out_of_stock', wh)).status).toBe('procurement');
-    await act('add_quotation', proc, { supplierName: 'ООО Крепёж', amount: 9000 });
-    const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    expect((await act('select_supplier', procHead, { quotationId: q.id })).status).toBe('finance_payment');
+    expect((await act('add_quotation', proc, { supplierName: 'ООО Крепёж', amount: 9000 })).status).toBe('finance_payment');
     expect((await act('mark_paid', fin, { pin: PIN })).status).toBe('delivery');
-    expect((await act('mark_arrived', wh)).status).toBe('receiving');
+    expect((await act('mark_arrived', proc)).status).toBe('receiving');
     expect((await act('receive_full', wh)).status).toBe('issue');
 
     // Receiving credited BOTH materials (income), one movement each.

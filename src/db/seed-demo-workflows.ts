@@ -34,11 +34,12 @@ const DEMO_USERS = [
 const STEP_SPECS = [
   { code: 'director', order: 1, name: 'Согласование', kind: 'approval' },
   { code: 'warehouse', order: 2, name: 'Проверка склада', kind: 'warehouse_check' },
-  { code: 'procurement', order: 3, name: 'Снабжение', kind: 'procurement' },
-  { code: 'finance', order: 4, name: 'Оплата', kind: 'finance_payment' },
-  { code: 'warehouse', order: 5, name: 'Приёмка', kind: 'receiving' },
-  { code: 'warehouse', order: 6, name: 'Выдача', kind: 'issue' },
-  { code: 'requester', order: 7, name: 'Закрытие', kind: 'close' },
+  { code: 'procurement', order: 3, name: 'Снабжение — предложение', kind: 'procurement' },
+  { code: 'procurement_head', order: 4, name: 'Снабжение — менеджер', kind: 'price_approval' },
+  { code: 'finance', order: 5, name: 'Оплата', kind: 'finance_payment' },
+  { code: 'warehouse', order: 6, name: 'Приёмка', kind: 'receiving' },
+  { code: 'warehouse', order: 7, name: 'Выдача', kind: 'issue' },
+  { code: 'requester', order: 8, name: 'Закрытие', kind: 'close' },
 ];
 
 async function roleId(db: Db, code: string): Promise<string | undefined> {

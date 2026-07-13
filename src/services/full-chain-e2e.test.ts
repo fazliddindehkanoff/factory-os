@@ -93,10 +93,8 @@ describe('full 8-link out-of-stock chain', () => {
     expect(r2.inStock).toBe(false);
     expect(r2.status).toBe('procurement');
 
-    // 3 → 4: КП + supplier selection locks the amount.
-    await act('add_quotation', proc, { supplierName: 'ООО Ремни', amount: 7000 });
-    const [q] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, req.id));
-    const r3 = await act('select_supplier', procHead, { quotationId: q.id });
+    // 3 → 4: one proposal is auto-selected and moves to payment.
+    const r3 = await act('add_quotation', proc, { supplierName: 'ООО Ремни', amount: 7000 });
     expect(r3.status).toBe('finance_payment');
     expect(r3.estimatedAmount).toBe(7000);
 
@@ -105,7 +103,7 @@ describe('full 8-link out-of-stock chain', () => {
     expect(r4.status).toBe('delivery');
 
     // 5 → 6: goods arrived (previously untested link).
-    const r5 = await act('mark_arrived', wh);
+    const r5 = await act('mark_arrived', proc);
     expect(r5.status).toBe('receiving');
 
     // 6 → 7: receiving books the income exactly once (previously untested link).
@@ -138,7 +136,7 @@ describe('full 8-link out-of-stock chain', () => {
       .select()
       .from(schema.requestStatusHistory)
       .where(eq(schema.requestStatusHistory.requestId, req.id));
-    expect(history.length).toBe(10); // create + 8 transitions + add_quotation (stays on step, still logged)
+    expect(history.length).toBe(9); // create + one transition per lifecycle step
     const pending = await db
       .select()
       .from(schema.approvals)

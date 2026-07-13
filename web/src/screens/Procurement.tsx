@@ -18,6 +18,19 @@ interface QueueRequest {
   id: string;
   requestNumber: string;
   title: string | null;
+  // Лист Excel №5: карточка показывает № + объект/отдел/даты, а не наименование товара.
+  status?: string;
+  obyekt?: string | null;
+  departmentNameResolved?: string | null;
+  departmentName?: string | null;
+  neededDate?: string | null;
+  createdAt?: string | null;
+  customFields?: Record<string, unknown> | null;
+}
+
+function qDate(iso?: string | null): string | null {
+  if (!iso) return null;
+  try { return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }); } catch { return null; }
 }
 
 type Tab = 'queue' | 'suppliers';
@@ -63,15 +76,26 @@ function QueueTab({ onOpen }: { onOpen: (id: string) => void }) {
   if (items.length === 0) return <Empty>Заявок в закупке нет.</Empty>;
   return (
     <div className="space-y-2.5">
-      {items.map((r) => (
-        <button key={r.id} onClick={() => onOpen(r.id)} className="w-full rounded-2xl border border-line bg-card p-4 text-left">
-          <div className="text-sm font-semibold text-fg">{r.title || r.requestNumber}</div>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            <Pill tone="muted">{r.requestNumber}</Pill>
-            <Pill tone="system">В закупке</Pill>
-          </div>
-        </button>
-      ))}
+      {items.map((r) => {
+        const obyekt = r.obyekt ?? (r.customFields && typeof r.customFields === 'object' ? (r.customFields.obyekt as string | undefined) ?? null : null);
+        const dept = r.departmentNameResolved ?? r.departmentName ?? null;
+        const created = qDate(r.createdAt);
+        return (
+          <button key={r.id} onClick={() => onOpen(r.id)} className="w-full rounded-2xl border border-line bg-card p-4 text-left">
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-mono text-sm font-bold text-fg">{r.requestNumber}</div>
+              <Pill tone="system">В закупке</Pill>
+            </div>
+            <div className="mt-2 space-y-1 text-xs text-fg2">
+              {obyekt && <div>Объект: <span className="font-semibold text-fg">{obyekt}</span></div>}
+              {dept && <div>Отдел снабжения: <span className="font-semibold text-fg">{dept}</span></div>}
+              <div className="flex flex-wrap gap-x-3">
+                {created && <span>Создана {created}</span>}
+              </div>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }

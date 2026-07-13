@@ -230,18 +230,17 @@ async function actorMayAct(
   if (!(await hasPermission(db, userId, def.perm, scope))) return false;
   // Reject/revision гейтятся отдельно через canHandleStep (ответственный за шаг),
   // поэтому требование «держит роль шага» к ним не применяется здесь.
-  if (step.stepKind === 'approval' && !def.reject && !def.revision && step.approverRoleId) {
+  if (['approval', 'price_approval'].includes(step.stepKind) && !def.reject && !def.revision && step.approverRoleId) {
     if (!(await actorHoldsRoleInScope(db, userId, step.approverRoleId, scope))) return false;
   }
-  // Bug #8: once a specific procurement person is assigned, only THEY work the
-  // procurement step (others with the permission are locked out). Исключение —
-  // «Выбрать поставщика»: это решение руководителя снабжения (только у него
-  // есть право с 2026-07-06), назначение снабженца его не запирает.
+  // Once a specific procurement person is assigned, only they work the
+  // procurement-family operational steps. The head assigns, then the assignee
+  // moves the request through supplier/payment/delivery statuses.
   if (
-    step.stepKind === 'procurement' &&
+    ['procurement', 'ordering', 'delivery'].includes(step.stepKind) &&
     req.responsibleUserId &&
     req.responsibleUserId !== userId &&
-    def.action !== 'select_supplier' // только выбор поставщика руководителем не запирается назначением
+    ['procurement.quote', 'procurement.view'].includes(def.perm)
   ) {
     return false;
   }
@@ -305,6 +304,11 @@ async function canHandleStep(db: Db, userId: string, req: RequestRow, step: Kind
     // Гейт строится по ОСНОВНЫМ действиям шага: reject/revision сами защищаются
     // этим предикатом, иначе проверка зациклилась бы на них самих.
     if (a.reject || a.revision) continue;
+    // New procurement flow: one proposal is saved, auto-selected, then the
+    // request moves to the manager approval step. Keep legacy actions callable
+    // server-side, but don't surface them in the app.
+    if (step.stepKind === 'procurement' && a.action !== 'add_quotation') continue;
+    if (step.stepKind === 'price_approval' && a.action !== 'approve_price') continue;
     if (sodBlocked(a, req, userId)) continue; // separation of duties
     if (a.requesterOnly && req.requesterId !== userId) continue;
     if (await actorMayAct(db, userId, req, step, a)) return true;
@@ -346,11 +350,7 @@ export async function inboxCandidates(db: Db, userId: string, holdingId: string)
   if (actionsForKind('close').some((a) => !a.reject && permCodes.includes(a.perm))) {
     stepConds.push(and(eq(ws.stepKind, 'close'), eq(schema.requests.requesterId, userId)) as SQL);
   }
-  if (permCodes.includes('procurement.select_supplier')) {
-    // Руководитель снабжения выбирает поставщика на ЛЮБОЙ закупке — назначение
-    // снабженца не убирает шаг из его инбокса (2026-07-06).
-    stepConds.push(eq(ws.stepKind, 'procurement') as SQL);
-  } else if (actionsForKind('procurement').some((a) => !a.reject && permCodes.includes(a.perm))) {
+  if (actionsForKind('procurement').some((a) => !a.reject && permCodes.includes(a.perm))) {
     stepConds.push(
       and(
         eq(ws.stepKind, 'procurement'),
@@ -433,6 +433,8 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   let isHandler = false;
   for (const a of defs) {
     if (a.reject || a.revision) continue;
+    if (step.stepKind === 'procurement' && a.action !== 'add_quotation') continue;
+    if (step.stepKind === 'price_approval' && a.action !== 'approve_price') continue;
     // Assign-handoff on an APPROVAL step only before procurement; on procurement_intake
     // «Назначить снабженца» is a first-class action always available.
     if (a.assign && step.stepKind === 'approval' && !nextIsProcurement) continue;
@@ -451,7 +453,7 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     isHandler = true;
   }
   // Reject/return-for-revision are shown ONLY to whoever handles the current step.
-  if (isHandler) {
+  if (isHandler && !['procurement', 'price_approval'].includes(step.stepKind)) {
     const rev = defs.find((d) => d.revision);
     if (rev && (await hasPermission(db, userId, rev.perm, reqScope(req)))) out.push(toUi(rev, requirePin));
     const rej = defs.find((d) => d.reject);
@@ -478,6 +480,9 @@ export interface PerformInput {
   amount?: number;
   supplierName?: string;
   supplierId?: string;
+  ndsIncluded?: boolean;
+  paymentType?: string;
+  quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[];
   leadTime?: string;
   quotationId?: string;
   assigneeId?: string;
@@ -781,10 +786,55 @@ export async function performAction(db: Db, input: PerformInput) {
 
     // Procurement: 'add' records a real КП; 'select' picks one and locks the amount.
     if (def.quote === 'add') {
-      const amt = Math.max(0, Math.round(Number(input.amount) || 0));
+      const items = await tx.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
+      const byId = new Map(items.map((it: any) => [it.id, it]));
+      const quoteItems = Array.isArray(input.quoteItems) ? input.quoteItems : [];
+      let ndsIncluded = !!input.ndsIncluded;
+      let amt = Math.max(0, Math.round(Number(input.amount) || 0));
+      if (quoteItems.length > 0) {
+        if (quoteItems.length !== items.length) throw new ValidationError('Укажите цену для каждой позиции');
+        let sum = 0;
+        const itemSuppliers: { name: string; id: string | null }[] = [];
+        for (const qi of quoteItems) {
+          const item = byId.get(qi.itemId) as any;
+          if (!item) throw new ValidationError('Позиция КП не найдена в заявке');
+          const unitPrice = Number(qi.unitPrice);
+          if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new ValidationError('Цена позиции должна быть неотрицательным числом');
+          let itemSupplierName = String(qi.supplierName ?? '').trim();
+          let itemSupplierId: string | null = qi.supplierId ? String(qi.supplierId) : null;
+          if (itemSupplierId) {
+            const [sup] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, itemSupplierId));
+            if (!sup || sup.holdingId !== req.holdingId) throw new ValidationError('Поставщик не найден');
+            itemSupplierName = sup.name;
+          }
+          const base = Number(item.quantity) * unitPrice;
+          const lineTotal = Math.round(base);
+          const itemNdsIncluded = !!qi.ndsIncluded;
+          sum += lineTotal;
+          if (itemNdsIncluded) ndsIncluded = true;
+          if (itemSupplierName) itemSuppliers.push({ name: itemSupplierName, id: itemSupplierId });
+          await tx
+            .update(schema.requestItems)
+            .set({
+              estimatedPrice: Math.round(unitPrice),
+              totalAmount: lineTotal,
+              supplierName: itemSupplierName || null,
+              supplierId: itemSupplierId,
+              ndsIncluded: itemNdsIncluded,
+              paymentType: String(input.paymentType ?? '').trim() || null,
+            })
+            .where(eq(schema.requestItems.id, item.id));
+        }
+        amt = Math.round(sum);
+        const uniqueSuppliers = [...new Set(itemSuppliers.map((s) => s.name))];
+        if (!input.supplierName && !input.supplierId) {
+          input.supplierName = uniqueSuppliers.length === 1 ? uniqueSuppliers[0] : uniqueSuppliers.length > 1 ? 'По позициям' : 'Не указан';
+        }
+      }
       if (!amt) throw new ValidationError('Укажите сумму КП');
       let supplierName = String(input.supplierName ?? '').trim();
       let supplierId: string | null = null;
+      const paymentType = String(input.paymentType ?? '').trim() || null;
       // Preferred: a normalized supplier (validated within the holding). Legacy
       // free-text supplierName is kept as a snapshot / fallback.
       if (input.supplierId) {
@@ -793,7 +843,8 @@ export async function performAction(db: Db, input: PerformInput) {
         supplierId = sup.id;
         if (!supplierName) supplierName = sup.name;
       }
-      if (!supplierName) throw new ValidationError('Укажите поставщика');
+      if (!supplierName) supplierName = 'Не указан';
+      await tx.update(schema.quotations).set({ selected: false }).where(eq(schema.quotations.requestId, req.id));
       const [quote] = await tx
         .insert(schema.quotations)
         .values({
@@ -802,7 +853,10 @@ export async function performAction(db: Db, input: PerformInput) {
           supplierId,
           supplierName,
           amount: amt,
+          ndsIncluded,
+          paymentType,
           leadTime: String(input.leadTime ?? '').trim() || null,
+          selected: true,
           createdBy: input.actor.id,
         })
         .returning();
@@ -814,11 +868,10 @@ export async function performAction(db: Db, input: PerformInput) {
         module: 'procurement',
         entityType: 'quotation',
         entityId: quote.id,
-        newValue: { supplierId, supplierName, amount: amt },
+        newValue: { supplierId, supplierName, amount: amt, ndsIncluded, paymentType },
         source: 'lifecycle',
       });
-      // The request amount is locked only when a supplier is SELECTED — merely
-      // recording another КП must not swing estimatedAmount around. (L4)
+      patch.estimatedAmount = amt;
     } else if (def.quote === 'select') {
       const [q] = await tx.select().from(schema.quotations).where(eq(schema.quotations.id, String(input.quotationId ?? '')));
       if (!q || q.requestId !== req.id) throw new ValidationError('Выберите КП поставщика');
@@ -849,6 +902,7 @@ export async function performAction(db: Db, input: PerformInput) {
     if (def.assign) {
       const assigneeId = String(input.assigneeId ?? '');
       if (!assigneeId) throw new ValidationError('Выберите снабженца');
+      if (assigneeId === req.requesterId) throw new ValidationError('Автор заявки не может быть выбран снабженцем');
       const [assignee] = await tx
         .select()
         .from(schema.users)

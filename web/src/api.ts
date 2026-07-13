@@ -128,13 +128,13 @@ export const api = {
   createRequest: (data: CreateRequestData) =>
     call('/requests', { method: 'POST', body: JSON.stringify(data) }),
   // ── Edit request ──
-  updateRequest: (id: string, data: Partial<{ title: string; description: string; priority: string; warehouseName: string; neededDate: string | null }>) =>
+  updateRequest: (id: string, data: Partial<{ title: string; description: string; priority: string; warehouseName: string; neededDate: string | null; requestType: string; departmentId: string | null; customFields: Record<string, unknown>; items: (Omit<RequestItemInput, 'unitPrice'> & { id?: string; unitPrice?: number })[] }>) =>
     call(`/requests/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
   // ── Lifecycle ──
   requestAction: (
     id: string,
-    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; receipts?: { itemId: string; receivedQty: number }[] },
+    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[]; leadTime?: string; quotationId?: string; receipts?: { itemId: string; receivedQty: number }[] },
   ) => call(`/requests/${id}/action`, { method: 'POST', body: JSON.stringify(body) }),
   // #3 Пер-позиционная отметка наличия (кнопки в карточке позиции на шаге склада).
   markItemStock: (id: string, itemId: string, inStock: boolean) =>
@@ -168,6 +168,7 @@ export const api = {
   // ── Procurement ──
   procurement: {
     queue: () => call('/procurement/queue'),
+    settings: (): Promise<{ paymentTypes: string[] }> => call('/procurement/settings'),
   },
 
   // ── Attachments ──

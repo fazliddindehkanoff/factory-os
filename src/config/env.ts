@@ -19,6 +19,7 @@ const schema = z.object({
   NODE_ENV: z.string().default('production'),
   ENABLE_DEV_AUTH: z.string().optional(),
   SERVE_DESIGN: z.string().optional(),
+  SNAB_DASHBOARD_PASSWORD: z.string().optional(),
 });
 
 export type Env = z.infer<typeof schema>;
