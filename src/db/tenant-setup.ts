@@ -25,7 +25,7 @@ interface StepSpec {
 // operational kinds (warehouse_check / procurement / finance_payment / delivery /
 // receiving / issue / close), each carrying its own behaviour via stepKind.
 // dept_head → склад → закупка(если нет в наличии) → финансы(≥5M) → директор(≥30M)
-//   → учредитель(≥100M) → оплата → доставка → приёмка → выдача → закрытие
+//   → учредитель(≥100M) → оплата → доставка → приёмка.
 const STEP_SPECS: StepSpec[] = [
   { code: 'dept_head', order: 1, name: 'Рук. отдела', kind: 'approval' },
   { code: 'warehouse', order: 2, name: 'Проверка склада', kind: 'warehouse_check' },
@@ -40,8 +40,6 @@ const STEP_SPECS: StepSpec[] = [
   { code: 'finance', order: 8, name: 'Оплата', kind: 'finance_payment', condition: { inStock: false } },
   { code: 'procurement', order: 9, name: 'Доставка', kind: 'delivery', condition: { inStock: false } },
   { code: 'warehouse', order: 10, name: 'Приёмка на склад', kind: 'receiving', condition: { inStock: false } },
-  { code: 'warehouse', order: 11, name: 'Выдача в отдел', kind: 'issue' },
-  { code: 'requester', order: 12, name: 'Подтверждение получения', kind: 'close' },
 ];
 
 async function roleIdByCode(db: Db, code: string): Promise<string | undefined> {
@@ -110,7 +108,7 @@ export async function setupTenant(db: Db, input: TenantSetupInput) {
   const settings: [string, string][] = [
     ['currency', 'UZS'],
     ['factory_name', input.holdingName],
-    ['payment_types', 'Перечисление, Наличные, Предоплата, Постоплата'],
+    ['payment_types', 'Перечисление, Наличные'],
   ];
   for (const [key, value] of settings) {
     await findOrInsert(

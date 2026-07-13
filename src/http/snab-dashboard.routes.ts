@@ -408,7 +408,9 @@ function pageHtml(): string {
     .login { min-height:100vh; display:grid; place-items:center; padding:20px; }
     .login-card { width:min(430px,100%); background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px; box-shadow:0 14px 40px -28px #0b1b38; }
     input, button { font:inherit; }
-    .password { width:100%; border:1px solid var(--line); border-radius:12px; padding:13px 14px; margin:16px 0 12px; }
+    .password-wrap { position:relative; margin:16px 0 12px; }
+    .password { width:100%; border:1px solid var(--line); border-radius:12px; padding:13px 48px 13px 14px; margin:0; }
+    .eye { position:absolute; right:7px; top:7px; width:34px; height:34px; border:0; border-radius:10px; background:#eef3fb; color:var(--fg); display:grid; place-items:center; cursor:pointer; }
     .btn { border:0; border-radius:12px; padding:12px 16px; background:var(--accent); color:white; font-weight:800; cursor:pointer; }
     .btn.secondary { background:white; color:var(--fg); border:1px solid var(--line); }
     .mini { border:1px solid var(--line); border-radius:9px; padding:7px 9px; background:white; color:var(--fg); font-weight:800; cursor:pointer; }
@@ -417,6 +419,14 @@ function pageHtml(): string {
     .toolbar { display:flex; gap:10px; flex-wrap:wrap; }
     .search { min-width:300px; border:1px solid var(--line); border-radius:12px; padding:11px 13px; background:white; }
     .cards { display:grid; grid-template-columns:repeat(4, minmax(150px, 1fr)); gap:12px; margin-bottom:14px; }
+    .layout { display:grid; grid-template-columns:280px minmax(0, 1fr); gap:14px; align-items:start; }
+    .sidebar { position:sticky; top:14px; max-height:calc(100vh - 28px); overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; box-shadow:0 12px 32px -28px #0b1b38; }
+    .sidebar h2 { margin:0 0 4px; font-size:16px; }
+    .side-sub { margin:0 0 12px; color:var(--muted); font-size:12px; line-height:1.4; }
+    .filter-list { display:flex; flex-direction:column; gap:10px; }
+    .filter-field label { display:block; margin-bottom:5px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; }
+    .filter-field input { width:100%; border:1px solid var(--line); border-radius:10px; padding:9px 10px; background:#fbfcfe; color:var(--fg); font-size:12.5px; outline:none; }
+    .filter-field input:focus { border-color:var(--accent); background:white; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
     .k { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
     .v { font-size:24px; font-weight:900; margin-top:7px; }
@@ -444,6 +454,8 @@ function pageHtml(): string {
       .wrap { padding:14px; }
       .top { align-items:stretch; flex-direction:column; }
       .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .layout { grid-template-columns:1fr; }
+      .sidebar { position:relative; top:auto; max-height:none; }
       .search { min-width:0; width:100%; }
       .scroll { max-height:calc(100vh - 300px); }
     }
@@ -454,7 +466,12 @@ function pageHtml(): string {
     <form class="login-card" id="loginForm">
       <h1>Snabbase</h1>
       <div class="sub">Закрытый dashboard по форме Excel</div>
-      <input class="password" id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
+      <div class="password-wrap">
+        <input class="password" id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
+        <button class="eye" id="togglePassword" type="button" aria-label="Показать пароль">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+      </div>
       <div class="err" id="loginErr"></div>
       <button class="btn" type="submit">Войти</button>
     </form>
@@ -476,9 +493,17 @@ function pageHtml(): string {
       <div class="card"><div class="k">Сумма</div><div class="v" id="kAmount">0</div></div>
       <div class="card"><div class="k">Поставщиков</div><div class="v" id="kSuppliers">0</div></div>
     </section>
-    <section class="table-shell">
-      <div class="scroll"><table id="table"></table></div>
-    </section>
+    <div class="layout">
+      <aside class="sidebar">
+        <h2>Фильтры</h2>
+        <p class="side-sub">Фильтры применяются к строкам таблицы сразу.</p>
+        <div id="filters" class="filter-list"></div>
+        <button id="clearFilters" class="btn secondary" type="button" style="width:100%; margin-top:12px;">Очистить</button>
+      </aside>
+      <section class="table-shell">
+        <div class="scroll"><table id="table"></table></div>
+      </section>
+    </div>
     <div id="toast" class="toast hidden"></div>
     <div id="confirmModal" class="modal-backdrop hidden">
       <div class="modal">
@@ -497,11 +522,32 @@ function pageHtml(): string {
     const keys = ${JSON.stringify(KEYS)};
     const editableKeys = new Set(${JSON.stringify([...EDITABLE_KEYS])});
     let rows = [];
+    let filtersReady = false;
     const fmt = new Intl.NumberFormat('ru-RU');
     const money = (v) => fmt.format(Math.round(Number(v) || 0));
     const numericKeys = new Set(['quantity','unitPrice','exchangeRate','amount','usdAmount','ndsRate','amountWithNds','usdAmountWithNds']);
     let pendingDeleteRow = null;
     function pass() { return sessionStorage.getItem('snab_dashboard_password') || ''; }
+    function rowValue(r, key) {
+      return String(r[key] ?? '').toLowerCase();
+    }
+    function filterValues() {
+      const out = {};
+      for (const input of document.querySelectorAll('[data-filter-key]')) {
+        const v = input.value.trim().toLowerCase();
+        if (v) out[input.dataset.filterKey] = v;
+      }
+      return out;
+    }
+    function renderFilters() {
+      if (filtersReady) return;
+      const box = document.getElementById('filters');
+      box.innerHTML = keys.map((key, i) =>
+        '<div class="filter-field"><label>' + escapeHtml(headers[i]) + '</label><input data-filter-key="' + key + '" placeholder="Фильтр..." /></div>'
+      ).join('');
+      box.addEventListener('input', render);
+      filtersReady = true;
+    }
     function toast(message) {
       const el = document.getElementById('toast');
       el.textContent = message;
@@ -519,11 +565,19 @@ function pageHtml(): string {
       if (!res.ok) throw new Error(body.error || 'Ошибка загрузки');
       rows = body.rows || [];
       document.getElementById('updated').textContent = 'Обновлено: ' + new Date().toLocaleString('ru-RU');
+      renderFilters();
       render();
     }
     function render() {
       const q = document.getElementById('search').value.trim().toLowerCase();
-      const data = q ? rows.filter((r) => JSON.stringify(r).toLowerCase().includes(q)) : rows;
+      const fv = filterValues();
+      const data = rows.filter((r) => {
+        if (q && !JSON.stringify(r).toLowerCase().includes(q)) return false;
+        for (const [key, value] of Object.entries(fv)) {
+          if (!rowValue(r, key).includes(value)) return false;
+        }
+        return true;
+      });
       document.getElementById('kRows').textContent = fmt.format(data.length);
       document.getElementById('kRequests').textContent = fmt.format(new Set(data.map((r) => r.requestNumber).filter(Boolean)).size);
       document.getElementById('kAmount').textContent = money(data.reduce((sum, r) => sum + Number(r.amount || 0), 0));
@@ -592,6 +646,17 @@ function pageHtml(): string {
       }
     });
     document.getElementById('search').addEventListener('input', render);
+    document.getElementById('clearFilters').addEventListener('click', () => {
+      for (const input of document.querySelectorAll('[data-filter-key]')) input.value = '';
+      document.getElementById('search').value = '';
+      render();
+    });
+    document.getElementById('togglePassword').addEventListener('click', () => {
+      const input = document.getElementById('password');
+      const next = input.type === 'password' ? 'text' : 'password';
+      input.type = next;
+      document.getElementById('togglePassword').setAttribute('aria-label', next === 'password' ? 'Показать пароль' : 'Скрыть пароль');
+    });
     document.getElementById('table').addEventListener('input', (e) => {
       const td = e.target.closest('[data-key]');
       if (td) td.closest('tr')?.classList.add('dirty');

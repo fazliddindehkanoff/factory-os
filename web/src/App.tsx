@@ -3331,7 +3331,7 @@ function ActionModal({
               <div style={lbl}>Тип оплаты</div>
               <select value={paymentType} onChange={(e) => setPaymentType(e.target.value)} style={inputStyle}>
                 <option value="" disabled>Выберите тип оплаты…</option>
-                {(paymentTypes.length ? paymentTypes : ['Перечисление', 'Наличные', 'Предоплата', 'Постоплата']).map((p) => <option key={p} value={p}>{p}</option>)}
+                {(paymentTypes.length ? paymentTypes : ['Перечисление', 'Наличные']).map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </div>
             <div style={{ marginBottom: 12, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '12px 13px', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)' }}>

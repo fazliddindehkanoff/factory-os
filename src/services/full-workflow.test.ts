@@ -118,8 +118,6 @@ describe('new step-kinds: intake → price approval → ordering → per-item re
       { workflowId: wf.id, stepOrder: 4, stepName: 'Цена', stepKind: 'price_approval', approverRoleId: await roleId(db, 'procurement_head'), onReject: 'return_step', onRejectStepOrder: 3 },
       { workflowId: wf.id, stepOrder: 5, stepName: 'Заказ', stepKind: 'ordering', approverRoleId: await roleId(db, 'procurement') },
       { workflowId: wf.id, stepOrder: 6, stepName: 'Приёмка', stepKind: 'receiving', approverRoleId: await roleId(db, 'warehouse') },
-      { workflowId: wf.id, stepOrder: 7, stepName: 'Выдача', stepKind: 'issue', approverRoleId: await roleId(db, 'warehouse') },
-      { workflowId: wf.id, stepOrder: 8, stepName: 'Закрытие', stepKind: 'close', approverRoleId: await roleId(db, 'requester') },
     ]);
     const requester = await mkUser(db, h.id, 'requester', 'req');
     const dh = await mkUser(db, h.id, 'dept_head', 'dh', true);
@@ -139,24 +137,18 @@ describe('new step-kinds: intake → price approval → ordering → per-item re
     // #6 назначенный снабженец: одно предложение сразу уходит на одобрение менеджеру.
     expect((await act(req.id, 'add_quotation', pman, { supplierName: 'ООО Металл', amount: 9000 })).status).toBe('price_approval');
     expect((await act(req.id, 'approve_price', phead)).status).toBe('ordering');
-    // #10 менеджер: оформление и отправка (order_status), затем поставка → приёмка.
-    expect((await act(req.id, 'place_order', pman)).orderStatus).toBe('ordered');
-    expect((await act(req.id, 'mark_sent', pman)).orderStatus).toBe('sent');
-    const delivered = await act(req.id, 'mark_delivered', pman);
-    expect(delivered.orderStatus).toBe('delivered');
-    expect(delivered.status).toBe('receiving');
-    // #11 приёмка с расхождением: заказано 10, принято 8.
+    // #10 менеджер: оформление заказа сразу двигает заявку на приёмку.
+    const ordered = await act(req.id, 'place_order', pman);
+    expect(ordered.orderStatus).toBe('ordered');
+    expect(ordered.status).toBe('receiving');
+    // #11 приёмка с расхождением закрывает цепочку: заказано 10, принято 8.
     const [item] = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
-    expect((await act(req.id, 'receive_discrepancy', wh, { comment: 'недовоз 2', receipts: [{ itemId: item.id, receivedQty: 8 }] })).status).toBe('issue');
+    expect((await act(req.id, 'receive_discrepancy', wh, { comment: 'недовоз 2', receipts: [{ itemId: item.id, receivedQty: 8 }] })).status).toBe('closed');
     const [afterRecv] = await db.select().from(schema.requestItems).where(eq(schema.requestItems.id, item.id));
     expect(Number(afterRecv.receivedQty)).toBe(8);
     expect(afterRecv.status).toBe('short');
-    // Income booked what actually arrived (8), issue draws the same 8 → balance 0.
+    // Income booked what actually arrived (8); no separate issue/close steps remain.
     const [bal] = await db.select().from(schema.stockBalances).where(eq(schema.stockBalances.materialId, mat.id));
     expect(Number(bal.availableQty)).toBe(8);
-    expect((await act(req.id, 'issue', wh)).status).toBe('close');
-    const [bal2] = await db.select().from(schema.stockBalances).where(eq(schema.stockBalances.materialId, mat.id));
-    expect(Number(bal2.availableQty)).toBe(0);
-    expect((await act(req.id, 'close', requester)).status).toBe('closed');
   });
 });

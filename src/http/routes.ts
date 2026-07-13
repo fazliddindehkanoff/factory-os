@@ -189,6 +189,41 @@ async function notifyStepApprovers(
   }
 }
 
+async function notifyDeptHeadAfterReceiving(
+  db: Db,
+  notify: Notifier | undefined,
+  requestId: string,
+  opts: { actorId?: string } = {},
+): Promise<void> {
+  try {
+    const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
+    if (!reqRow) return;
+    const [role] = await db
+      .select({ id: schema.roles.id })
+      .from(schema.roles)
+      .where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, 'dept_head')));
+    if (!role) return;
+    const userIds = await stepActorIds(db, reqRow, { stepKind: 'approval', approverRoleId: role.id });
+    if (!userIds.length) return;
+    const push = (await digestIntervalMinutes(db, reqRow.holdingId)) ? undefined : notify;
+    for (const uId of userIds) {
+      if (uId === opts.actorId) continue;
+      await notifyUser(db, push, {
+        holdingId: reqRow.holdingId,
+        recipientUserId: uId,
+        title: `Склад принял заявку — ${reqRow.requestNumber}`,
+        message: `Заявка ${reqRow.requestNumber} принята складом и закрыта.`,
+        priority: 'high',
+        kind: 'closed',
+        entityType: 'request',
+        entityId: reqRow.id,
+      });
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
 export function buildRouter(deps: RouterDeps): Router {
   const { db, botToken, sessionSecret, devAuth, notify } = deps;
   const r = Router();
@@ -1111,7 +1146,7 @@ export function buildRouter(deps: RouterDeps): Router {
         .select({ value: schema.settings.value })
         .from(schema.settings)
         .where(and(eq(schema.settings.holdingId, u.holdingId), eq(schema.settings.key, 'payment_types')));
-      const raw = String(row?.value ?? 'Перечисление,Наличные,Предоплата,Постоплата');
+      const raw = String(row?.value ?? 'Перечисление,Наличные');
       const paymentTypes = raw.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
       res.json({ paymentTypes });
     } catch (e) {
@@ -1146,6 +1181,9 @@ export function buildRouter(deps: RouterDeps): Router {
         .where(eq(schema.requests.id, req.params.id as string));
       const fromStatus = beforeReq?.status;
       const fromStepId = beforeReq?.currentStepId ?? null;
+      const [fromStep] = fromStepId
+        ? await db.select({ stepKind: schema.workflowSteps.stepKind }).from(schema.workflowSteps).where(eq(schema.workflowSteps.id, fromStepId))
+        : [];
       const result = await performAction(db, {
         requestId: req.params.id as string,
         action: String(body.action ?? ''),
@@ -1170,6 +1208,9 @@ export function buildRouter(deps: RouterDeps): Router {
       const stepChanged = (result.currentStepId ?? null) !== fromStepId;
       if (result.currentStepId && stepChanged) {
         notifyStepApprovers(db, notify, result.id, result.currentStepId, { actorId: u.id }).catch(() => {});
+      }
+      if (!result.currentStepId && result.status === 'closed' && fromStep?.stepKind === 'receiving') {
+        notifyDeptHeadAfterReceiving(db, notify, result.id, { actorId: u.id }).catch(() => {});
       }
       // Автору — о ходе ЕГО заявки, но не о его же собственных действиях
       // (resubmit/close: автор — актор, пуш самому себе — шум).

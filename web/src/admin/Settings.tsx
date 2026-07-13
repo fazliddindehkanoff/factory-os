@@ -60,7 +60,7 @@ const KEYS: { key: string; label: string; placeholder: string; type?: 'select'; 
   {
     key: 'payment_types',
     label: 'Типы оплаты для снабжения',
-    placeholder: 'Перечисление, Наличные, Предоплата, Постоплата',
+    placeholder: 'Перечисление, Наличные',
   },
 ];
 

@@ -188,9 +188,7 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   ],
   // #10 Менеджер по снабжению — оформление и отправка заказа. Под-статусы в order_status.
   ordering: [
-    { action: 'place_order', label: 'Оформить заказ', perm: 'procurement.quote', setOrderStatus: 'ordered', advance: false },
-    { action: 'mark_sent', label: 'Отметить заказ отправленным', perm: 'procurement.quote', setOrderStatus: 'sent', advance: false },
-    { action: 'mark_delivered', label: 'Отметить поставку', perm: 'procurement.quote', setOrderStatus: 'delivered', advance: true },
+    { action: 'place_order', label: 'Оформить заказ', perm: 'procurement.quote', setOrderStatus: 'ordered', advance: true },
     { action: 'report_problem', label: 'Сообщить о проблеме', perm: 'procurement.quote', comment: true, setOrderStatus: 'problem', advance: false },
     REJECT,
   ],
