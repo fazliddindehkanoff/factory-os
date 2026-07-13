@@ -1052,7 +1052,10 @@ export async function performAction(db: Db, input: PerformInput) {
       } else {
         // A chain that ends after physical fulfilment (receiving/issue/close) is CLOSED;
         // ending anywhere earlier means "approved but not fulfilled". (L3)
-        to = ['close', 'issue', 'receiving'].includes(step.stepKind) ? TERMINAL_CLOSED : TERMINAL_APPROVED;
+        to =
+          ['close', 'issue', 'receiving'].includes(step.stepKind) || (step.stepKind === 'warehouse_check' && ctx.inStock === true)
+            ? TERMINAL_CLOSED
+            : TERMINAL_APPROVED;
         newCurrentStepId = null;
         patch.closedAt = new Date();
       }
