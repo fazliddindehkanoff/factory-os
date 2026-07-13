@@ -134,7 +134,7 @@ export const api = {
   // ── Lifecycle ──
   requestAction: (
     id: string,
-    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; receipts?: { itemId: string; receivedQty: number }[] },
+    body: { action: string; pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; leadTime?: string; quotationId?: string; assigneeId?: string; receipts?: { itemId: string; receivedQty: number }[] },
   ) => call(`/requests/${id}/action`, { method: 'POST', body: JSON.stringify(body) }),
   // #3 Пер-позиционная отметка наличия (кнопки в карточке позиции на шаге склада).
   markItemStock: (id: string, itemId: string, inStock: boolean) =>

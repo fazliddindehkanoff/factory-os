@@ -88,13 +88,14 @@ export async function getMoneyVisibility(db: Db, userId: string): Promise<MoneyV
   const procMins = await db
     .select({ wf: schema.workflowSteps.workflowId, minOrder: sql<number>`min(${schema.workflowSteps.stepOrder})` })
     .from(schema.workflowSteps)
-    .where(and(eq(schema.workflowSteps.stepKind, 'procurement' as any), sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`))
+    .where(and(inArray(schema.workflowSteps.stepKind, ['procurement', 'procurement_intake', 'price_approval', 'ordering'] as any), sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`))
     .groupBy(schema.workflowSteps.workflowId);
   const minByWf = new Map<string, number>(procMins.map((r: { wf: string; minOrder: number }) => [r.wf, Number(r.minOrder)]));
   if (!minByWf.size) return mk(false, new Set());
 
-  // Мои шаги согласования: «не раньше первой закупки» проверяем по order.
-  // Считаются только РЕШАЮЩИЕ шаги (approval/procurement/finance) — роль,
+  // Мои шаги согласования: «не раньше начала закупочной фазы» проверяем по order
+  // (закупочная фаза = procurement и его новые под-шаги intake/price/ordering).
+  // Считаются только РЕШАЮЩИЕ шаги (approval/закупочные/finance) — роль,
   // прикреплённая к close-шагу (подтверждает автор) или складским шагам,
   // сумм из-за этого не получает.
   const mySteps = await db
@@ -103,7 +104,7 @@ export async function getMoneyVisibility(db: Db, userId: string): Promise<MoneyV
     .where(
       and(
         inArray(schema.workflowSteps.approverRoleId, myRoleIds),
-        inArray(schema.workflowSteps.stepKind, ['approval', 'procurement', 'finance_payment'] as any),
+        inArray(schema.workflowSteps.stepKind, ['approval', 'procurement', 'procurement_intake', 'price_approval', 'ordering', 'finance_payment'] as any),
         sql`COALESCE(${schema.workflowSteps.enabled}, true) = true`,
       ),
     );
