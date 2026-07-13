@@ -398,11 +398,19 @@ function pageHtml(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Snabbase Dashboard</title>
   <style>
-    :root { --bg:#f4f6f9; --card:#fff; --fg:#17182b; --muted:#687386; --line:#dfe5ee; --head:#1a2b4a; --accent:#2d7dd2; --danger:#b42318; --ok:#16875a; }
+    :root { --bg:#f4f6f9; --card:#fff; --fg:#17182b; --muted:#687386; --line:#dfe5ee; --head:#1a2b4a; --accent:#2d7dd2; --danger:#b42318; --ok:#16875a; --nav:#10203c; }
     * { box-sizing:border-box; }
     body { margin:0; font-family:Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
-    .wrap { max-width:1440px; margin:0 auto; padding:22px; }
-    .top { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; margin-bottom:18px; }
+    .app-shell { min-height:100vh; display:grid; grid-template-columns:300px minmax(0, 1fr); }
+    .wrap { min-width:0; padding:20px; }
+    .navbar { position:sticky; top:0; z-index:10; display:flex; justify-content:space-between; align-items:center; gap:14px; min-height:70px; padding:12px 20px; background:rgba(255,255,255,.92); border-bottom:1px solid var(--line); backdrop-filter:blur(12px); }
+    .nav-left { display:flex; align-items:center; gap:12px; min-width:0; }
+    .brand-mark { width:40px; height:40px; border-radius:12px; display:grid; place-items:center; background:#e7f0fb; color:var(--accent); font-weight:900; }
+    .brand-title { font-size:17px; font-weight:900; line-height:1.1; }
+    .brand-sub { color:var(--muted); font-size:12px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:42vw; }
+    .menu-btn { display:none; width:44px; height:44px; border:1px solid var(--line); border-radius:12px; background:white; color:var(--fg); cursor:pointer; }
+    .nav-actions { display:flex; align-items:center; gap:10px; min-width:0; }
+    .top { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; margin:0 0 18px; }
     h1 { margin:0; font-size:28px; letter-spacing:0; }
     .sub { color:var(--muted); margin-top:5px; font-size:14px; }
     .login { min-height:100vh; display:grid; place-items:center; padding:20px; }
@@ -417,11 +425,19 @@ function pageHtml(): string {
     .mini.save { color:var(--ok); }
     .mini.delete { color:var(--danger); }
     .toolbar { display:flex; gap:10px; flex-wrap:wrap; }
-    .search { min-width:300px; border:1px solid var(--line); border-radius:12px; padding:11px 13px; background:white; }
+    .search { width:min(420px, 34vw); border:1px solid var(--line); border-radius:12px; padding:11px 13px; background:white; }
     .cards { display:grid; grid-template-columns:repeat(4, minmax(150px, 1fr)); gap:12px; margin-bottom:14px; }
-    .layout { display:grid; grid-template-columns:280px minmax(0, 1fr); gap:14px; align-items:start; }
-    .sidebar { position:sticky; top:14px; max-height:calc(100vh - 28px); overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; box-shadow:0 12px 32px -28px #0b1b38; }
-    .sidebar h2 { margin:0 0 4px; font-size:16px; }
+    .sidebar { position:sticky; top:0; height:100vh; overflow:auto; background:var(--nav); color:white; border-right:1px solid rgba(255,255,255,.1); padding:18px; }
+    .side-brand { display:flex; align-items:center; gap:12px; padding-bottom:18px; border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:16px; }
+    .side-logo { width:42px; height:42px; border-radius:13px; display:grid; place-items:center; background:#2d7dd2; font-weight:900; }
+    .side-title { font-size:16px; font-weight:900; }
+    .side-caption { color:#aebad0; font-size:12px; margin-top:2px; }
+    .side-nav { display:grid; gap:8px; margin-bottom:18px; }
+    .side-link { display:flex; align-items:center; gap:10px; min-height:42px; padding:10px 12px; border-radius:12px; color:#dce5f4; text-decoration:none; font-weight:800; font-size:14px; }
+    .side-link.active { background:rgba(45,125,210,.22); color:white; box-shadow:inset 0 0 0 1px rgba(255,255,255,.08); }
+    .side-link svg { flex:0 0 auto; }
+    .filter-panel { background:white; color:var(--fg); border:1px solid rgba(255,255,255,.14); border-radius:16px; padding:14px; box-shadow:0 18px 42px -34px #000; }
+    .filter-panel h2 { margin:0 0 4px; font-size:16px; }
     .side-sub { margin:0 0 12px; color:var(--muted); font-size:12px; line-height:1.4; }
     .filter-list { display:flex; flex-direction:column; gap:10px; }
     .filter-field label { display:block; margin-bottom:5px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; }
@@ -431,7 +447,7 @@ function pageHtml(): string {
     .k { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
     .v { font-size:24px; font-weight:900; margin-top:7px; }
     .table-shell { background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
-    .scroll { overflow:auto; max-height:calc(100vh - 240px); }
+    .scroll { overflow:auto; max-height:calc(100vh - 250px); }
     table { border-collapse:separate; border-spacing:0; min-width:2750px; width:100%; font-size:12.5px; }
     th, td { border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:9px 10px; white-space:nowrap; text-align:left; }
     th { position:sticky; top:34px; z-index:2; background:#eef3fb; font-weight:900; color:#18233a; }
@@ -450,14 +466,26 @@ function pageHtml(): string {
     .modal-actions { display:flex; justify-content:flex-end; gap:10px; }
     .err { color:#b42318; font-size:13px; min-height:18px; }
     .hidden { display:none; }
+    .backdrop { display:none; }
+    body.sidebar-open { overflow:hidden; }
+    body.sidebar-open .backdrop { display:block; position:fixed; inset:0; z-index:20; background:rgba(15,23,42,.48); }
     @media (max-width:760px) {
+      .app-shell { display:block; }
       .wrap { padding:14px; }
+      .navbar { min-height:64px; padding:10px 14px; }
+      .menu-btn { display:grid; place-items:center; }
+      .brand-sub { max-width:50vw; }
+      .nav-actions { gap:8px; }
+      .nav-actions .search { display:none; }
       .top { align-items:stretch; flex-direction:column; }
       .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
-      .layout { grid-template-columns:1fr; }
-      .sidebar { position:relative; top:auto; max-height:none; }
+      .sidebar { position:fixed; inset:0 auto 0 0; z-index:30; width:min(320px, calc(100vw - 42px)); height:100dvh; transform:translateX(-105%); transition:transform .2s ease; }
+      body.sidebar-open .sidebar { transform:translateX(0); }
       .search { min-width:0; width:100%; }
       .scroll { max-height:calc(100vh - 300px); }
+    }
+    @media (min-width:761px) {
+      .mobile-search { display:none; }
     }
   </style>
 </head>
@@ -476,32 +504,73 @@ function pageHtml(): string {
       <button class="btn" type="submit">Войти</button>
     </form>
   </main>
-  <main id="app" class="wrap hidden">
-    <div class="top">
-      <div>
-        <h1>Snabbase Dashboard</h1>
-        <div class="sub" id="updated"></div>
-      </div>
-      <div class="toolbar">
-        <input id="search" class="search" placeholder="Поиск по объекту, заявке, товару, поставщику..." />
-        <button id="logout" class="btn secondary">Выйти</button>
-      </div>
-    </div>
-    <section class="cards">
-      <div class="card"><div class="k">Строк</div><div class="v" id="kRows">0</div></div>
-      <div class="card"><div class="k">Заявок</div><div class="v" id="kRequests">0</div></div>
-      <div class="card"><div class="k">Сумма</div><div class="v" id="kAmount">0</div></div>
-      <div class="card"><div class="k">Поставщиков</div><div class="v" id="kSuppliers">0</div></div>
-    </section>
-    <div class="layout">
-      <aside class="sidebar">
-        <h2>Фильтры</h2>
-        <p class="side-sub">Фильтры применяются к строкам таблицы сразу.</p>
-        <div id="filters" class="filter-list"></div>
-        <button id="clearFilters" class="btn secondary" type="button" style="width:100%; margin-top:12px;">Очистить</button>
+  <main id="app" class="hidden">
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="side-brand">
+          <div class="side-logo">SB</div>
+          <div>
+            <div class="side-title">Snabbase</div>
+            <div class="side-caption">Dashboard</div>
+          </div>
+        </div>
+        <nav class="side-nav" aria-label="Разделы dashboard">
+          <a class="side-link active" href="#overview">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 13h6V4H4v9Zm10 7h6V4h-6v16ZM4 20h6v-5H4v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+            Обзор
+          </a>
+          <a class="side-link" href="#table">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16M8 5v14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Таблица
+          </a>
+          <a class="side-link" href="#filters">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Фильтры
+          </a>
+        </nav>
+        <section class="filter-panel" aria-label="Фильтры таблицы">
+          <h2>Фильтры</h2>
+          <p class="side-sub">Фильтры применяются к строкам таблицы сразу.</p>
+          <div id="filters" class="filter-list"></div>
+          <button id="clearFilters" class="btn secondary" type="button" style="width:100%; margin-top:12px;">Очистить</button>
+        </section>
       </aside>
-      <section class="table-shell">
-        <div class="scroll"><table id="table"></table></div>
+      <div class="backdrop" id="sidebarBackdrop"></div>
+      <section class="main-pane">
+        <header class="navbar">
+          <div class="nav-left">
+            <button class="menu-btn" id="menuToggle" type="button" aria-label="Открыть меню">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <div class="brand-mark">SB</div>
+            <div>
+              <div class="brand-title">Snabbase Dashboard</div>
+              <div class="brand-sub" id="updated"></div>
+            </div>
+          </div>
+          <div class="nav-actions">
+            <input id="search" class="search" placeholder="Поиск по объекту, заявке, товару, поставщику..." />
+            <button id="logout" class="btn secondary">Выйти</button>
+          </div>
+        </header>
+        <div class="wrap" id="overview">
+          <div class="top">
+            <div>
+              <h1>Snabbase Dashboard</h1>
+              <div class="sub">Excel-структура закупок, редактирование и фильтры</div>
+            </div>
+            <input id="mobileSearch" class="search mobile-search" placeholder="Поиск..." />
+          </div>
+          <section class="cards">
+            <div class="card"><div class="k">Строк</div><div class="v" id="kRows">0</div></div>
+            <div class="card"><div class="k">Заявок</div><div class="v" id="kRequests">0</div></div>
+            <div class="card"><div class="k">Сумма</div><div class="v" id="kAmount">0</div></div>
+            <div class="card"><div class="k">Поставщиков</div><div class="v" id="kSuppliers">0</div></div>
+          </section>
+          <section class="table-shell">
+            <div class="scroll"><table id="table"></table></div>
+          </section>
+        </div>
       </section>
     </div>
     <div id="toast" class="toast hidden"></div>
@@ -539,6 +608,20 @@ function pageHtml(): string {
       }
       return out;
     }
+    function activeSearch() {
+      const desktop = document.getElementById('search').value.trim();
+      const mobile = document.getElementById('mobileSearch').value.trim();
+      return (desktop || mobile).toLowerCase();
+    }
+    function syncSearch(value) {
+      document.getElementById('search').value = value;
+      document.getElementById('mobileSearch').value = value;
+      render();
+    }
+    function closeSidebar() {
+      document.body.classList.remove('sidebar-open');
+      document.getElementById('menuToggle').setAttribute('aria-label', 'Открыть меню');
+    }
     function renderFilters() {
       if (filtersReady) return;
       const box = document.getElementById('filters');
@@ -569,7 +652,7 @@ function pageHtml(): string {
       render();
     }
     function render() {
-      const q = document.getElementById('search').value.trim().toLowerCase();
+      const q = activeSearch();
       const fv = filterValues();
       const data = rows.filter((r) => {
         if (q && !JSON.stringify(r).toLowerCase().includes(q)) return false;
@@ -645,10 +728,21 @@ function pageHtml(): string {
         document.getElementById('loginErr').textContent = err instanceof Error ? err.message : 'Ошибка входа';
       }
     });
-    document.getElementById('search').addEventListener('input', render);
+    document.getElementById('search').addEventListener('input', (e) => syncSearch(e.target.value));
+    document.getElementById('mobileSearch').addEventListener('input', (e) => syncSearch(e.target.value));
+    document.getElementById('menuToggle').addEventListener('click', () => {
+      const next = !document.body.classList.contains('sidebar-open');
+      document.body.classList.toggle('sidebar-open', next);
+      document.getElementById('menuToggle').setAttribute('aria-label', next ? 'Закрыть меню' : 'Открыть меню');
+    });
+    document.getElementById('sidebarBackdrop').addEventListener('click', closeSidebar);
+    document.getElementById('sidebar').addEventListener('click', (e) => {
+      if (e.target.closest('a')) closeSidebar();
+    });
     document.getElementById('clearFilters').addEventListener('click', () => {
       for (const input of document.querySelectorAll('[data-filter-key]')) input.value = '';
       document.getElementById('search').value = '';
+      document.getElementById('mobileSearch').value = '';
       render();
     });
     document.getElementById('togglePassword').addEventListener('click', () => {
