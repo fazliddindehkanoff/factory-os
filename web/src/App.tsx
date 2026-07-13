@@ -90,6 +90,8 @@ interface RequestDetail extends RequestRow {
   canSeeMoney?: boolean;
   /** Сервер: этот пользователь может править заявку на текущем этапе (PUT /requests/:id). */
   canEdit?: boolean;
+  /** Кастомные поля с подписями из конструктора формы (сервер резолвит ключи и коды). */
+  customInfo?: { label: string; value: string }[];
   // full-info fields (bug #9)
   requesterName?: string | null;
   responsibleName?: string | null;
@@ -2461,16 +2463,15 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   pushInfo('Завод', req.factoryName);
   pushInfo('Отдел', req.departmentNameResolved ?? req.departmentName);
   pushInfo('Склад', req.warehouseName);
-  // «Объект» — настраиваемое поле формы (custom_fields.obyekt); показываем его
-  // как полноценную строку в основной сетке, а не в блоке «Дополнительно».
-  const cfObj = req.customFields && typeof req.customFields === 'object' ? (req.customFields as Record<string, unknown>) : {};
-  pushInfo('Объект', cfObj.obyekt);
   pushInfo('Ответственный', req.responsibleName);
   pushInfo('Нужно к', req.neededDate ? fmtDate(req.neededDate) : null);
   if (req.canSeeMoney && req.estimatedAmount != null) pushInfo('Сумма', `${Number(req.estimatedAmount).toLocaleString('ru-RU')} ${req.currency || 'UZS'}`);
-  // Custom form fields entered at creation. `obyekt` is promoted to the main
-  // info grid above, so exclude it here to avoid showing it twice.
-  const customEntries = (req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : []).filter(([k]) => k !== 'obyekt');
+  // Макет 09.07: при одной позиции — «Количество: 1 л»; при нескольких — счётчик.
+  if (req.items.length === 1) pushInfo('Количество', `${req.items[0].quantity}${req.items[0].unit ? ' ' + req.items[0].unit : ''}`);
+  else pushInfo('Позиций', String(req.items.length));
+  // Кастомные поля (включая «Объект») — уже с подписями формы от сервера
+  // (customInfo), не сырые ключи; блок «Дополнительно» больше не нужен.
+  for (const ci of req.customInfo ?? []) pushInfo(ci.label, ci.value);
 
   // Фото позиции: мастер грузит вложения именем «<Позиция> - <файл>», по этому
   // префиксу и находим картинки конкретной позиции (mime может быть пуст —
@@ -2530,6 +2531,13 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
           ))}
         </div>
       </div>
+
+      {req.description && String(req.description).trim() !== '' && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Примечание</div>
+          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
+        </div>
+      )}
 
       {/* Позиции — сразу под шапкой, до прогресса согласования. Метки/значения
           чёрным, фото каждой позиции — справа. */}
@@ -2604,7 +2612,11 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         </div>
       )}
 
-      {/* Progress timeline — top of the card (#10), per-step actor/date-time (#7), correct rejected state (#4) */}
+      <AttachmentsSection requestId={id} />
+
+      {/* Задача Сарвара 09.07: примечание/позиции/вложения — часть информации
+          о заявке и стоят ВЫШЕ процесса согласования (#10 timeline после них,
+          per-step actor/date-time #7, rejected-состояние #4). */}
       {(req.workflowTimeline ?? []).length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Процесс согласования</div>
@@ -2642,27 +2654,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         </div>
       )}
 
-      {req.description && String(req.description).trim() !== '' && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Примечание</div>
-          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
-        </div>
-      )}
-
-      {customEntries.length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Дополнительно</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '11px 12px' }}>
-            {customEntries.map(([k, v]) => (
-              <div key={k}>
-                <div style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{k}</div>
-                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', marginTop: 3 }}>{v == null || v === '' ? '—' : String(v)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {quotations.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Коммерческие предложения</div>
@@ -2682,8 +2673,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
           </div>
         </div>
       )}
-
-      <AttachmentsSection requestId={id} />
 
       {/* №12в: история — только ролям с audit.view (сервер отдаёт её лишь им),
           зато подробная: переходы статусов, источник, плюс полный аудит-лог. */}
