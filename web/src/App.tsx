@@ -177,7 +177,7 @@ interface TenantConfig {
 }
 
 export default function App() {
-  const { t } = useI18n();
+  const { lang, setLang, t } = useI18n();
   const [me, setMe] = useState<Me | null>(null);
   const [config, setConfig] = useState<TenantConfig | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -314,6 +314,14 @@ export default function App() {
             </div>
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <select
+              aria-label={t('menu.language')}
+              value={lang}
+              onChange={(e) => setLang(e.target.value as Lang)}
+              style={{ width: 58, height: 38, border: 'none', borderRadius: 11, background: 'rgba(255,255,255,.12)', color: 'var(--hfg)', padding: '0 6px', fontSize: 12, fontWeight: 800, cursor: 'pointer', outline: 'none' }}
+            >
+              {(['uz', 'ru', 'en'] as Lang[]).map((code) => <option key={code} value={code}>{LANG_LABELS[code]}</option>)}
+            </select>
             <button aria-label="Уведомления" onClick={() => setScreen({ name: 'notifications' })} style={{ ...iconBtn, position: 'relative' }}>
               <Icon name="bell" size={20} />
               {unread > 0 && (
@@ -328,7 +336,7 @@ export default function App() {
             <button aria-label="Сменить тему" onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} style={iconBtn}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
             </button>
-            <span style={{ borderRadius: 9, background: 'rgba(255,255,255,.12)', padding: '5px 10px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
+            <span style={{ maxWidth: 96, overflow: 'hidden', textOverflow: 'ellipsis', borderRadius: 9, background: 'rgba(255,255,255,.12)', padding: '5px 10px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
               {me.user.fullName}
             </span>
             <button aria-label="Выйти" onClick={() => { clearToken(); setMe(null); }} style={iconBtn}>
@@ -423,7 +431,7 @@ function BottomNav({ me, active, onNav }: { me: Me; active: Screen['name']; onNa
 }
 
 function Menu({ me, theme, onToggleTheme, onLogout, onProfileUpdated }: { me: Me; theme: Theme; onToggleTheme: () => void; onLogout: () => void; onProfileUpdated: () => void }) {
-  const { lang, setLang, t } = useI18n();
+  const { t } = useI18n();
   const rowStyle: CSSProperties = {
     width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: '14px 15px', border: 'none',
     borderTop: '1px solid var(--line)', background: 'none', cursor: 'pointer', textAlign: 'left',
@@ -481,23 +489,6 @@ function Menu({ me, theme, onToggleTheme, onLogout, onProfileUpdated }: { me: Me
           <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{t('menu.theme')}</span>
           <span style={{ fontSize: 13, color: 'var(--fg2)' }}>{theme === 'dark' ? t('menu.themeDark') : t('menu.themeLight')}</span>
         </button>
-        <div style={rowStyle}>
-          <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800 }}>
-            {lang.toUpperCase()}
-          </span>
-          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{t('menu.language')}</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {(['uz', 'ru', 'en'] as Lang[]).map((code) => (
-              <button
-                key={code}
-                onClick={() => setLang(code)}
-                style={{ border: '1px solid var(--border)', borderRadius: 9, padding: '7px 8px', background: lang === code ? 'var(--accent)' : 'var(--card)', color: lang === code ? '#fff' : 'var(--fg2)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}
-              >
-                {LANG_LABELS[code]}
-              </button>
-            ))}
-          </div>
-        </div>
         <button onClick={() => { setProfileOpen(true); setPMsg(null); }} style={{ ...rowStyle, borderTop: 'none' }}>
           <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="gear" size={19} /></span>
           <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{t('menu.profile')}</span>
