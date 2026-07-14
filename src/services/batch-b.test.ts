@@ -254,7 +254,7 @@ describe('№16б — перед закупкой только «Передат�
   });
 });
 
-describe('№15 — настройка require_pin', () => {
+describe('№15 — lifecycle actions use modal confirmation without PIN', () => {
   async function flow(db: any, h: any, f: any, requesterId: string) {
     const [wf] = await db.insert(schema.workflows).values({ holdingId: h.id, name: 'W15', isActive: true }).returning();
     await db.insert(schema.workflowSteps).values([
@@ -264,7 +264,7 @@ describe('№15 — настройка require_pin', () => {
     return createRequest(db, { holdingId: h.id, requesterId, factoryId: f.id, items: [{ name: 'X', quantity: 1, unitPrice: 7 }] });
   }
 
-  it('по умолчанию PIN обязателен; require_pin=0 → действия без PIN, pin:false в actions', async () => {
+  it('approval action is exposed and executable without a PIN code', async () => {
     const db = await setup();
     const { h, f } = await org(db);
     const requester = await mkUser(db, h.id, ['requester'], 'req');
@@ -273,10 +273,7 @@ describe('№15 — настройка require_pin', () => {
 
     expect(await holdingRequiresPin(db, h.id)).toBe(true);
     let dirActs = await availableActions(db, await reload(db, req.id), dir);
-    expect(dirActs.find((x) => x.action === 'approve')!.pin).toBe(true);
-    await expect(
-      performAction(db, { requestId: req.id, action: 'approve', actor: { id: dir, holdingId: h.id } }),
-    ).rejects.toThrow(/PIN/);
+    expect(dirActs.find((x) => x.action === 'approve')!.pin).toBe(false);
 
     await db.insert(schema.settings).values({ holdingId: h.id, key: 'require_pin', value: '0' });
     expect(await holdingRequiresPin(db, h.id)).toBe(false);

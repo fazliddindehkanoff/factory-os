@@ -7,16 +7,14 @@
  * hardcoded status switch.
  *
  * Each transition runs in one transaction with the full guard stack
- * (valid-action + permission + scope + approver-role + PIN/comment), then writes
+ * (valid-action + permission + scope + approver-role + comment), then writes
  * the new status, a status-history row, approval/signature bookkeeping and a DNA
  * audit log.
  */
 import { and, desc, eq, inArray, isNull, like, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
-import { verifyPin } from '../auth/pin.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
-import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from '../http/rate-limit.js';
 import { applyStockOp } from './warehouse.service.js';
 import { nextStep, firstStep, applicableSteps, type WorkflowContext } from '../workflow/engine.js';
 import {
@@ -267,10 +265,10 @@ export interface UiAction {
   assign?: boolean;
 }
 
-const toUi = (a: StepActionDef, requirePin = true): UiAction => ({
+const toUi = (a: StepActionDef): UiAction => ({
   action: a.action,
   label: a.label,
-  pin: !!a.pin && requirePin,
+  pin: false,
   comment: !!a.comment,
   amount: !!a.amount,
   quote: a.quote ?? null,
@@ -421,7 +419,6 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     // Assign-handoff is offered before either procurement-family entry step.
     nextIsProcurement = nextIsDirectProcurement || nxt?.stepKind === 'procurement_intake';
   }
-  const requirePin = await holdingRequiresPin(db, req.holdingId);
   const defs = actionsForKind(step.stepKind);
   // Повторный проход закупки: поставщик уже выбран → снабженцу предлагается
   // «Закуплено» (продвигает шаг); до выбора поставщика действия нет.
@@ -449,15 +446,15 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     if (sodBlocked(a, req, userId)) continue;
     if (a.requesterOnly && req.requesterId !== userId) continue;
     if (!(await actorMayAct(db, userId, req, step, a))) continue;
-    out.push(toUi(a, requirePin));
+    out.push(toUi(a));
     isHandler = true;
   }
   // Reject/return-for-revision are shown ONLY to whoever handles the current step.
   if (isHandler && !['procurement', 'price_approval'].includes(step.stepKind)) {
     const rev = defs.find((d) => d.revision);
-    if (rev && (await hasPermission(db, userId, rev.perm, reqScope(req)))) out.push(toUi(rev, requirePin));
+    if (rev && (await hasPermission(db, userId, rev.perm, reqScope(req)))) out.push(toUi(rev));
     const rej = defs.find((d) => d.reject);
-    if (rej && (await hasPermission(db, userId, rej.perm, reqScope(req)))) out.push(toUi(rej, requirePin));
+    if (rej && (await hasPermission(db, userId, rej.perm, reqScope(req)))) out.push(toUi(rej));
   }
   return out;
 }
@@ -749,20 +746,6 @@ export async function performAction(db: Db, input: PerformInput) {
         throw new ConflictError('Перед закупкой заявку передают конкретному снабженцу — используйте «Передать снабженцу»');
       }
     }
-    if (def.pin && (await holdingRequiresPin(tx, req.holdingId))) {
-      const lockMs = pinLockoutRemaining(input.actor.id);
-      if (lockMs > 0) {
-        const mins = Math.ceil(lockMs / 60_000);
-        throw new ForbiddenError(`PIN заблокирован — повторите через ${mins} мин.`);
-      }
-      const [u] = await tx.select().from(schema.users).where(eq(schema.users.id, input.actor.id));
-      if (!u?.pinHash) throw new ForbiddenError('PIN не задан — установите его в профиле');
-      if (!verifyPin(String(input.pin ?? ''), u.pinHash)) {
-        const locked = recordPinFailure(input.actor.id);
-        throw new ForbiddenError(locked ? 'Слишком много попыток — PIN заблокирован на 15 минут' : 'Неверный PIN');
-      }
-      clearPinFailures(input.actor.id);
-    }
     if (def.comment && !String(input.comment ?? '').trim()) {
       throw new ValidationError('Требуется комментарий');
     }
@@ -945,7 +928,7 @@ export async function performAction(db: Db, input: PerformInput) {
             approvalId: pending.id,
             requestId: req.id,
             userId: input.actor.id,
-            signatureType: 'telegram_pin',
+            signatureType: 'internal_pin',
           });
         }
       } else if (!def.reject && !def.revision) {
@@ -967,7 +950,7 @@ export async function performAction(db: Db, input: PerformInput) {
           approvalId: made.id,
           requestId: req.id,
           userId: input.actor.id,
-          signatureType: 'telegram_pin',
+          signatureType: 'internal_pin',
         });
       }
     }

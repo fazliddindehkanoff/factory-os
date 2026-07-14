@@ -142,9 +142,9 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   approval: [
     // Лист Excel №12: согласующий «одобряет» заявку — кнопка «Одобрить», не
     // «Согласовать» (этап в целом называется «Согласование», действие — одобрение).
-    { action: 'approve', label: 'Одобрить', perm: 'approvals.approve', pin: true, advance: true },
+    { action: 'approve', label: 'Одобрить', perm: 'approvals.approve', advance: true },
     // Bug #8: only surfaced when the NEXT step is procurement (see availableActions).
-    { action: 'assign_procurement', label: 'Передать снабженцу', perm: 'approvals.approve', pin: true, assign: true, advance: true },
+    { action: 'assign_procurement', label: 'Передать снабженцу', perm: 'approvals.approve', assign: true, advance: true },
     REVISE,
     RETURN_STEP,
     REJECT,
@@ -182,7 +182,7 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
     { action: 'reject_purchase', label: 'Отклонить закупку', perm: 'procurement.select_supplier', comment: true, reject: true, advance: true },
   ],
   finance_payment: [
-    { action: 'mark_paid', label: 'Отметить оплату', perm: 'finance.mark_paid', pin: true, sod: true, advance: true },
+    { action: 'mark_paid', label: 'Отметить оплату', perm: 'finance.mark_paid', sod: true, advance: true },
     REVISE,
     REJECT,
   ],

@@ -3190,7 +3190,6 @@ function ActionModal({
   onCancel: () => void;
   onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[]; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
 }) {
-  const [pin, setPin] = useState('');
   const [comment, setComment] = useState('');
   // Bug #3: role-based rejection reasons + «Другое» → free text.
   // Пресеты причин — для отклонений И возвратов (директор/исп.дир/снабжение выбирают причину).
@@ -3253,7 +3252,6 @@ function ActionModal({
     ? (reasonChoice === OTHER ? comment.trim() : reasonChoice)
     : comment.trim();
   const ok =
-    (!action.pin || pin.length >= 4) &&
     (!action.comment || effectiveComment.length > 0) &&
     (!action.amount || isAdd || (amount !== '' && Number(amount) > 0)) &&
     (!isAdd || (quoteLines.length > 0 && quoteLines.every((l) => Number.isFinite(l.unitPrice) && l.unitPrice > 0) && quoteTotal > 0 && paymentType.trim().length > 0)) &&
@@ -3393,19 +3391,13 @@ function ActionModal({
             <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Причина / комментарий" style={{ ...inputStyle, resize: 'none', lineHeight: 1.45 }} />
           </div>
         )}
-        {action.pin && (
-          <div style={{ marginBottom: 12 }}>
-            <div style={lbl}>PIN-код</div>
-            <input value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 8))} inputMode="numeric" type="password" placeholder="••••" style={{ ...inputStyle, letterSpacing: 6, textAlign: 'center' }} />
-          </div>
-        )}
         {error && <Err>{error}</Err>}
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
           <button onClick={onCancel} style={{ flex: 1, padding: 14, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Отмена</button>
           <button
             onClick={() =>
               onConfirm({
-                pin: action.pin ? pin : undefined,
+                pin: undefined,
                 comment: action.comment ? effectiveComment : undefined,
                 amount: isAdd ? quoteTotal : (action.amount ? Number(amount) : undefined),
                 supplierName: isAdd ? (() => {
