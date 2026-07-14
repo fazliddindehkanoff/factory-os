@@ -479,7 +479,7 @@ export interface PerformInput {
   supplierId?: string;
   ndsIncluded?: boolean;
   paymentType?: string;
-  quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[];
+  quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[];
   leadTime?: string;
   quotationId?: string;
   assigneeId?: string;
@@ -793,8 +793,11 @@ export async function performAction(db: Db, input: PerformInput) {
           const base = Number(item.quantity) * unitPrice;
           const lineTotal = Math.round(base);
           const itemNdsIncluded = !!qi.ndsIncluded;
+          const itemPaymentType = String(qi.paymentType ?? '').trim();
+          if (!itemPaymentType) throw new ValidationError('Укажите тип оплаты для каждой позиции');
           sum += lineTotal;
           if (itemNdsIncluded) ndsIncluded = true;
+          if (!input.paymentType) input.paymentType = itemPaymentType;
           if (itemSupplierName) itemSuppliers.push({ name: itemSupplierName, id: itemSupplierId });
           await tx
             .update(schema.requestItems)
@@ -804,7 +807,7 @@ export async function performAction(db: Db, input: PerformInput) {
               supplierName: itemSupplierName || null,
               supplierId: itemSupplierId,
               ndsIncluded: itemNdsIncluded,
-              paymentType: String(input.paymentType ?? '').trim() || null,
+              paymentType: itemPaymentType,
             })
             .where(eq(schema.requestItems.id, item.id));
         }

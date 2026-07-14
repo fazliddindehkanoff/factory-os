@@ -9,6 +9,7 @@ import { ProcurementScreen } from './screens/Procurement';
 import { Icon, TINT_BG, TINT_FG } from './icons';
 import { applyTheme, getTheme, type Theme } from './theme';
 import { DASHBOARD_ACTIONS } from './dashboard.config';
+import { LANG_LABELS, useI18n, type I18nKey, type Lang } from './i18n';
 // Single source of truth for status labels/progress (covers every workflow-driven
 // status incl. finance_payment/delivery/receiving/issue) — see screens/shared.tsx.
 import { statusMeta } from './screens/shared';
@@ -27,6 +28,16 @@ const INBOX_ACTOR_PERMS = [
 const WAREHOUSE_STOCK_ACTIONS = new Set(['wh_in_stock', 'wh_partial', 'wh_out_of_stock']);
 const isHiddenProcurementTransfer = (a: { action: string; label: string }) => a.action === 'assign_procurement' && a.label === 'Передать снабженцу';
 const isHiddenProcurementIntake = (a: { action: string; label: string }) => a.action === 'accept_to_work' && a.label === 'Принять в работу';
+const ACTION_LABEL_KEYS: Record<string, I18nKey> = {
+  approve: 'action.approve',
+  reject: 'action.reject',
+  return_revision: 'action.returnRevision',
+  add_quotation: 'action.addQuotation',
+  approve_price: 'action.approvePrice',
+  wh_in_stock: 'action.whNext',
+  receive_full: 'action.receiveFull',
+  place_order: 'action.placeOrder',
+};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Me {
@@ -166,6 +177,7 @@ interface TenantConfig {
 }
 
 export default function App() {
+  const { t } = useI18n();
   const [me, setMe] = useState<Me | null>(null);
   const [config, setConfig] = useState<TenantConfig | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -258,15 +270,15 @@ export default function App() {
     );
 
   const TITLES: Record<Screen['name'], string> = {
-    home: 'Главная',
-    list: 'Заявки',
+    home: t('nav.home'),
+    list: t('nav.requests'),
     create: 'Новая заявка',
-    detail: 'Заявка',
-    approvals: 'Согласования',
-    warehouse: 'Склад',
-    procurement: 'Закупки',
+    detail: t('screen.detail'),
+    approvals: t('nav.approvals'),
+    warehouse: t('nav.warehouse'),
+    procurement: t('nav.procurement'),
     notifications: 'Уведомления',
-    menu: 'Меню',
+    menu: t('nav.menu'),
     admin: 'Администрирование',
   };
   const title = TITLES[screen.name];
@@ -372,20 +384,21 @@ export default function App() {
 }
 
 function BottomNav({ me, active, onNav }: { me: Me; active: Screen['name']; onNav: (s: Screen) => void }) {
+  const { t } = useI18n();
   const can = (p: string) => me.permissions.includes(p);
   const isAdmin = ADMIN_PERMS.some(can);
   // Anyone who can take a lifecycle action (approve, check stock, quote, pay, receive…)
   // gets the inbox tab — not just final approvers.
   const canAct = INBOX_ACTOR_PERMS.some(can);
-  const tabs: { key: Screen['name']; label: string; ic: string }[] = [{ key: 'home', label: 'Главная', ic: 'home' }];
-  if (can('requests.view')) tabs.push({ key: 'list', label: 'Заявки', ic: 'file' });
-  if (canAct) tabs.push({ key: 'approvals', label: 'Согласования', ic: 'checkCircle' });
+  const tabs: { key: Screen['name']; label: string; ic: string }[] = [{ key: 'home', label: t('nav.home'), ic: 'home' }];
+  if (can('requests.view')) tabs.push({ key: 'list', label: t('nav.requests'), ic: 'file' });
+  if (canAct) tabs.push({ key: 'approvals', label: t('nav.approvals'), ic: 'checkCircle' });
   // Independent tabs: warehouse/procurement show by their own permission,
   // in parallel with the admin tab (an else-if chain hid them from combined roles).
-  if (isAdmin) tabs.push({ key: 'admin', label: 'Админ', ic: 'shield' });
-  if (can('warehouse.view')) tabs.push({ key: 'warehouse', label: 'Склад', ic: 'box' });
-  if (can('procurement.view')) tabs.push({ key: 'procurement', label: 'Закупки', ic: 'box' });
-  tabs.push({ key: 'menu', label: 'Меню', ic: 'grid' });
+  if (isAdmin) tabs.push({ key: 'admin', label: t('nav.admin'), ic: 'shield' });
+  if (can('warehouse.view')) tabs.push({ key: 'warehouse', label: t('nav.warehouse'), ic: 'box' });
+  if (can('procurement.view')) tabs.push({ key: 'procurement', label: t('nav.procurement'), ic: 'box' });
+  tabs.push({ key: 'menu', label: t('nav.menu'), ic: 'grid' });
 
   return (
     <div style={{ flex: '0 0 auto', background: 'var(--card)', borderTop: '1px solid var(--border)', padding: '6px 8px', boxShadow: '0 -2px 14px -8px rgba(16,30,60,.18)' }}>
@@ -410,6 +423,7 @@ function BottomNav({ me, active, onNav }: { me: Me; active: Screen['name']; onNa
 }
 
 function Menu({ me, theme, onToggleTheme, onLogout, onProfileUpdated }: { me: Me; theme: Theme; onToggleTheme: () => void; onLogout: () => void; onProfileUpdated: () => void }) {
+  const { lang, setLang, t } = useI18n();
   const rowStyle: CSSProperties = {
     width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: '14px 15px', border: 'none',
     borderTop: '1px solid var(--line)', background: 'none', cursor: 'pointer', textAlign: 'left',
@@ -464,12 +478,29 @@ function Menu({ me, theme, onToggleTheme, onLogout, onProfileUpdated }: { me: Me
           <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={19} />
           </span>
-          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>Тема оформления</span>
-          <span style={{ fontSize: 13, color: 'var(--fg2)' }}>{theme === 'dark' ? 'Тёмная' : 'Светлая'}</span>
+          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{t('menu.theme')}</span>
+          <span style={{ fontSize: 13, color: 'var(--fg2)' }}>{theme === 'dark' ? t('menu.themeDark') : t('menu.themeLight')}</span>
         </button>
+        <div style={rowStyle}>
+          <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800 }}>
+            {lang.toUpperCase()}
+          </span>
+          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{t('menu.language')}</span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['uz', 'ru', 'en'] as Lang[]).map((code) => (
+              <button
+                key={code}
+                onClick={() => setLang(code)}
+                style={{ border: '1px solid var(--border)', borderRadius: 9, padding: '7px 8px', background: lang === code ? 'var(--accent)' : 'var(--card)', color: lang === code ? '#fff' : 'var(--fg2)', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}
+              >
+                {LANG_LABELS[code]}
+              </button>
+            ))}
+          </div>
+        </div>
         <button onClick={() => { setProfileOpen(true); setPMsg(null); }} style={{ ...rowStyle, borderTop: 'none' }}>
           <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="gear" size={19} /></span>
-          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>Редактировать профиль</span>
+          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{t('menu.profile')}</span>
           <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={16} sw={2.2} /></span>
         </button>
         <button onClick={() => { setPinOpen(true); setPinMsg(null); }} style={rowStyle}>
@@ -483,7 +514,7 @@ function Menu({ me, theme, onToggleTheme, onLogout, onProfileUpdated }: { me: Me
           <span style={{ width: 38, height: 38, flex: 'none', borderRadius: 11, background: 'var(--danger-bg)', color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Icon name="logout" size={19} />
           </span>
-          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--danger)' }}>Выйти</span>
+          <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--danger)' }}>{t('menu.logout')}</span>
         </button>
       </div>
 
@@ -2395,6 +2426,7 @@ function DateDivider({ label }: { label: string }) {
 }
 
 function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; onBack: () => void; tick?: number }) {
+  const { t } = useI18n();
   const [req, setReq] = useState<RequestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<LifecycleActionBtn | null>(null);
@@ -2425,7 +2457,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
   const run = async (
     action: string,
-    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[]; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
+    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[]; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
   ) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -2778,7 +2810,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
           {actions.map((a) => (
             <button key={a.action} onClick={() => onAction(a)} disabled={busy} style={{ ...actionBtnStyle(a.action), opacity: busy ? 0.5 : 1 }}>
-              {a.label}
+              {ACTION_LABEL_KEYS[a.action] ? t(ACTION_LABEL_KEYS[a.action]) : a.label}
             </button>
           ))}
         </div>
@@ -3188,8 +3220,9 @@ function ActionModal({
   quotations: QuotationRow[];
   items: DetailItem[];
   onCancel: () => void;
-  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean }[]; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
+  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[]; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
 }) {
+  const { t } = useI18n();
   const [comment, setComment] = useState('');
   // Bug #3: role-based rejection reasons + «Другое» → free text.
   // Пресеты причин — для отклонений И возвратов (директор/исп.дир/снабжение выбирают причину).
@@ -3217,7 +3250,7 @@ function ActionModal({
   const [itemSupplierIds, setItemSupplierIds] = useState<Record<string, string>>({});
   const [itemSuppliers, setItemSuppliers] = useState<Record<string, string>>(() => Object.fromEntries(items.map((it) => [it.id, it.supplierName ?? ''])));
   const [paymentTypes, setPaymentTypes] = useState<string[]>([]);
-  const [paymentType, setPaymentType] = useState('');
+  const [itemPaymentTypes, setItemPaymentTypes] = useState<Record<string, string>>(() => Object.fromEntries(items.map((it) => [it.id, it.paymentType ?? ''])));
   const [itemNds, setItemNds] = useState<Record<string, boolean>>(() => Object.fromEntries(items.map((it) => [it.id, !!it.ndsIncluded])));
   const [unitPrices, setUnitPrices] = useState<Record<string, string>>(() => Object.fromEntries(items.map((it) => [it.id, it.estimatedPrice != null && it.estimatedPrice > 0 ? String(it.estimatedPrice) : ''])));
   const [leadTime, setLeadTime] = useState('');
@@ -3232,10 +3265,12 @@ function ActionModal({
       api.procurement.settings().then((r) => {
         const opts = r.paymentTypes ?? [];
         setPaymentTypes(opts);
-        if (!paymentType && opts.length > 0) setPaymentType(opts[0]);
+        if (opts.length > 0) {
+          setItemPaymentTypes((prev) => Object.fromEntries(items.map((it) => [it.id, prev[it.id] || opts[0]])));
+        }
       }).catch(() => setPaymentTypes([]));
     }
-  }, [isAdd, paymentType]);
+  }, [isAdd, items]);
   const inputStyle: CSSProperties = { width: '100%', padding: '13px 15px', fontSize: 15, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
   const lbl: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 8 };
   const quoteLines = items.map((it) => {
@@ -3244,7 +3279,7 @@ function ActionModal({
     const supplierIdForItem = itemSupplierIds[it.id] || '';
     const pickedSupplier = suppliers.find((s) => s.id === supplierIdForItem);
     const supplierNameForItem = pickedSupplier?.name ?? (itemSuppliers[it.id] || '').trim();
-    return { item: it, unitPrice, supplierId: supplierIdForItem || null, supplierName: supplierNameForItem, ndsIncluded: !!itemNds[it.id], total: Math.round(base) };
+    return { item: it, unitPrice, supplierId: supplierIdForItem || null, supplierName: supplierNameForItem, ndsIncluded: !!itemNds[it.id], paymentType: itemPaymentTypes[it.id] || '', total: Math.round(base) };
   });
   const quoteTotal = quoteLines.reduce((sum, l) => sum + l.total, 0);
   // Effective reject comment: chosen preset, or free text when «Другое».
@@ -3254,7 +3289,7 @@ function ActionModal({
   const ok =
     (!action.comment || effectiveComment.length > 0) &&
     (!action.amount || isAdd || (amount !== '' && Number(amount) > 0)) &&
-    (!isAdd || (quoteLines.length > 0 && quoteLines.every((l) => Number.isFinite(l.unitPrice) && l.unitPrice > 0) && quoteTotal > 0 && paymentType.trim().length > 0)) &&
+    (!isAdd || (quoteLines.length > 0 && quoteLines.every((l) => Number.isFinite(l.unitPrice) && l.unitPrice > 0 && l.paymentType.trim().length > 0) && quoteTotal > 0)) &&
     (!isSelect || quotationId !== '') &&
     (!isAssign || assigneeId !== '');
 
@@ -3262,21 +3297,21 @@ function ActionModal({
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
       <div onClick={onCancel} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)' }} />
       <div style={{ position: 'relative', width: '100%', maxWidth: 560, background: 'var(--bg)', borderTop: '1px solid var(--edge)', borderRadius: '24px 24px 0 0', padding: '20px 20px 28px' }}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--fg)', marginBottom: 16 }}>{action.label}</div>
+        <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--fg)', marginBottom: 16 }}>{ACTION_LABEL_KEYS[action.action] ? t(ACTION_LABEL_KEYS[action.action]) : action.label}</div>
         {isAssign && (
           <div style={{ marginBottom: 12 }}>
-            <div style={lbl}>Снабженец</div>
+            <div style={lbl}>{t('proc.assignee')}</div>
             <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} style={inputStyle}>
-              <option value="" disabled>Выберите снабженца…</option>
+              <option value="" disabled>{t('proc.selectAssignee')}</option>
               {assignees.map((a) => <option key={a.id} value={a.id}>{a.fullName || a.id}</option>)}
             </select>
-            {assignees.length === 0 && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 6 }}>Нет пользователей с правами снабжения</div>}
+            {assignees.length === 0 && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 6 }}>{t('proc.noAssignees')}</div>}
           </div>
         )}
         {isAdd && (
           <>
             <div style={{ marginBottom: 12 }}>
-              <div style={lbl}>Цены по позициям</div>
+              <div style={lbl}>{t('proc.itemPrices')}</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {quoteLines.map(({ item, total }) => (
                   <div key={item.id} style={{ border: '1px solid var(--border)', borderRadius: 11, background: 'var(--card)', padding: 10 }}>
@@ -3291,7 +3326,7 @@ function ActionModal({
                       value={unitPrices[item.id] ?? ''}
                       onChange={(e) => setUnitPrices((prev) => ({ ...prev, [item.id]: e.target.value.replace(/[^\d.]/g, '') }))}
                       inputMode="decimal"
-                      placeholder="Цена за 1"
+                      placeholder={t('proc.unitPrice')}
                       style={{ ...inputStyle, padding: '10px 12px', fontFamily: "'IBM Plex Mono', monospace" }}
                     />
                     {suppliers.length > 0 && (
@@ -3305,7 +3340,7 @@ function ActionModal({
                         }}
                         style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
                       >
-                        <option value="">— выберите поставщика —</option>
+                        <option value="">{t('proc.selectSupplier')}</option>
                         {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                       </select>
                     )}
@@ -3313,40 +3348,41 @@ function ActionModal({
                       <input
                         value={itemSuppliers[item.id] ?? ''}
                         onChange={(e) => setItemSuppliers((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                        placeholder={suppliers.length > 0 ? 'или поставщик вручную' : 'Поставщик'}
+                        placeholder={suppliers.length > 0 ? t('proc.supplierManual') : t('proc.supplier')}
                         style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
                       />
                     )}
+                    <select
+                      value={itemPaymentTypes[item.id] ?? ''}
+                      onChange={(e) => setItemPaymentTypes((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                      style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
+                    >
+                      <option value="" disabled>{t('proc.selectPaymentType')}</option>
+                      {(paymentTypes.length ? paymentTypes : ['Перечисление', 'Наличные']).map((p) => <option key={p} value={p}>{p}</option>)}
+                    </select>
                     <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 8, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg)', cursor: 'pointer' }}>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)' }}>НДС 12%</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)' }}>{t('proc.nds')}</span>
                       <input type="checkbox" checked={!!itemNds[item.id]} onChange={(e) => setItemNds((prev) => ({ ...prev, [item.id]: e.target.checked }))} />
                     </label>
                   </div>
                 ))}
               </div>
             </div>
-            <div style={{ marginBottom: 12 }}>
-              <div style={lbl}>Тип оплаты</div>
-              <select value={paymentType} onChange={(e) => setPaymentType(e.target.value)} style={inputStyle}>
-                <option value="" disabled>Выберите тип оплаты…</option>
-                {(paymentTypes.length ? paymentTypes : ['Перечисление', 'Наличные']).map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-            </div>
             <div style={{ marginBottom: 12, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '12px 13px', borderRadius: 11, background: 'var(--accent-bg)', color: 'var(--accent)' }}>
-              <span style={{ fontSize: 13, fontWeight: 700 }}>Итого</span>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>{t('proc.total')}</span>
               <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 800 }}>{quoteTotal.toLocaleString('ru-RU')} UZS</span>
             </div>
             <div style={{ marginBottom: 12 }}>
-              <div style={lbl}>Срок поставки (необязательно)</div>
-              <input value={leadTime} onChange={(e) => setLeadTime(e.target.value)} placeholder="напр. 10 дней" style={inputStyle} />
+              <div style={lbl}>{t('proc.leadTime')}</div>
+              <input value={leadTime} onChange={(e) => setLeadTime(e.target.value)} placeholder={t('proc.leadTimePlaceholder')} style={inputStyle} />
             </div>
           </>
         )}
         {isSelect && (
           <div style={{ marginBottom: 12 }}>
-            <div style={lbl}>Выберите КП поставщика</div>
+            <div style={lbl}>{t('proc.chooseQuotation')}</div>
             {quotations.length === 0 ? (
-              <div style={{ fontSize: 13, color: 'var(--fg3)', padding: '8px 0' }}>Сначала добавьте хотя бы одно КП.</div>
+              <div style={{ fontSize: 13, color: 'var(--fg3)', padding: '8px 0' }}>{t('proc.addQuotationFirst')}</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {quotations.map((q) => {
@@ -3355,8 +3391,8 @@ function ActionModal({
                     <button key={q.id} onClick={() => setQuotationId(q.id)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 13px', borderRadius: 11, border: `1.5px solid ${sel ? 'var(--accent)' : 'var(--border)'}`, background: sel ? 'var(--accent-bg)' : 'var(--card)', cursor: 'pointer', textAlign: 'left' }}>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{q.supplierName}</div>
-                        {(q.paymentType || q.ndsIncluded) && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>{[q.paymentType, q.ndsIncluded ? 'НДС 12%' : null].filter(Boolean).join(' · ')}</div>}
-                        {q.leadTime && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>срок: {q.leadTime}</div>}
+                        {(q.paymentType || q.ndsIncluded) && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>{[q.paymentType, q.ndsIncluded ? t('proc.nds') : null].filter(Boolean).join(' · ')}</div>}
+                        {q.leadTime && <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>{t('proc.deliveryTerm')}: {q.leadTime}</div>}
                       </div>
                       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 700, color: sel ? 'var(--accent)' : 'var(--fg)', flex: 'none' }}>{q.amount.toLocaleString('ru-RU')}</div>
                     </button>
@@ -3374,26 +3410,26 @@ function ActionModal({
         )}
         {action.comment && isReject && reasons.length > 0 && (
           <div style={{ marginBottom: 12 }}>
-            <div style={lbl}>Причина отклонения</div>
+            <div style={lbl}>{t('reject.reason')}</div>
             <select value={reasonChoice} onChange={(e) => setReasonChoice(e.target.value)} style={inputStyle}>
-              <option value="" disabled>Выберите причину…</option>
+              <option value="" disabled>{t('reject.selectReason')}</option>
               {reasons.map((r) => <option key={r} value={r}>{r}</option>)}
-              <option value={OTHER}>Другое…</option>
+              <option value={OTHER}>{t('reject.other')}</option>
             </select>
             {reasonChoice === OTHER && (
-              <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Укажите причину" style={{ ...inputStyle, resize: 'none', lineHeight: 1.45, marginTop: 8 }} />
+              <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder={t('reject.commentPlaceholder')} style={{ ...inputStyle, resize: 'none', lineHeight: 1.45, marginTop: 8 }} />
             )}
           </div>
         )}
         {action.comment && !(isReject && reasons.length > 0) && (
           <div style={{ marginBottom: 12 }}>
-            <div style={lbl}>Комментарий</div>
-            <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder="Причина / комментарий" style={{ ...inputStyle, resize: 'none', lineHeight: 1.45 }} />
+            <div style={lbl}>{t('common.comment')}</div>
+            <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} placeholder={t('common.commentPlaceholder')} style={{ ...inputStyle, resize: 'none', lineHeight: 1.45 }} />
           </div>
         )}
         {error && <Err>{error}</Err>}
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-          <button onClick={onCancel} style={{ flex: 1, padding: 14, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Отмена</button>
+          <button onClick={onCancel} style={{ flex: 1, padding: 14, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>{t('common.cancel')}</button>
           <button
             onClick={() =>
               onConfirm({
@@ -3407,8 +3443,13 @@ function ActionModal({
                   return 'Не указан';
                 })() : undefined,
                 ndsIncluded: isAdd ? quoteLines.some((l) => l.ndsIncluded) : undefined,
-                paymentType: isAdd ? paymentType : undefined,
-                quoteItems: isAdd ? quoteLines.map((l) => ({ itemId: l.item.id, unitPrice: l.unitPrice, supplierName: l.supplierName, supplierId: l.supplierId, ndsIncluded: l.ndsIncluded })) : undefined,
+                paymentType: isAdd ? (() => {
+                  const types = [...new Set(quoteLines.map((l) => l.paymentType).filter(Boolean))];
+                  if (types.length === 1) return types[0];
+                  if (types.length > 1) return 'По позициям';
+                  return undefined;
+                })() : undefined,
+                quoteItems: isAdd ? quoteLines.map((l) => ({ itemId: l.item.id, unitPrice: l.unitPrice, supplierName: l.supplierName, supplierId: l.supplierId, ndsIncluded: l.ndsIncluded, paymentType: l.paymentType })) : undefined,
                 leadTime: isAdd && leadTime.trim() ? leadTime.trim() : undefined,
                 quotationId: isSelect ? quotationId : undefined,
                 assigneeId: isAssign ? assigneeId : undefined,
@@ -3417,7 +3458,7 @@ function ActionModal({
             disabled={busy || !ok}
             style={{ flex: 1, padding: 14, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: busy || !ok ? 'not-allowed' : 'pointer', opacity: busy || !ok ? 0.5 : 1 }}
           >
-            {busy ? '…' : 'Подтвердить'}
+            {busy ? t('common.loading') : t('common.confirm')}
           </button>
         </div>
       </div>
