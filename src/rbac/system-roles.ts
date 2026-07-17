@@ -96,7 +96,8 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   },
   {
     code: 'requester',
-    name: 'Заявитель',
+    // FIXES 2026-07-17: роль «Заявитель» → «Assistant» (одинаково во всех языках).
+    name: 'Assistant',
     permissions: ['requests.view', 'requests.create', 'requests.upload_attachment'],
   },
   {

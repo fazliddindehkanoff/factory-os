@@ -1024,7 +1024,8 @@ export function buildRouter(deps: RouterDeps): Router {
         action: 'created',
         at: reqRow.createdAt,
         actorName: requesterRow?.name ?? null,
-        actorRole: 'Заявитель',
+        // FIXES 2026-07-17: роль «Заявитель» → «Assistant».
+        actorRole: 'Assistant',
         comment: null,
       });
 

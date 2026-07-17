@@ -415,6 +415,54 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   'Принято': { uz: 'Qabul qilindi', en: 'Received', tr: 'Teslim alındı' },
   'Выдано': { uz: 'Berildi', en: 'Issued', tr: 'Çıkışı yapıldı' },
   'Закрыто': { uz: 'Yopildi', en: 'Closed', tr: 'Kapatıldı' },
+  // FIXES 2026-07-17: добор строк, «протекавших» на русском при выбранном узб/тур.
+  // ── Шапка / приветствие + aria-label кнопок ──
+  'Добрый день,': { uz: 'Xayrli kun,', en: 'Good afternoon,', tr: 'İyi günler,' },
+  'Сменить тему': { uz: 'Mavzuni almashtirish', en: 'Toggle theme', tr: 'Temayı değiştir' },
+  'Календарь': { uz: 'Kalendar', en: 'Calendar', tr: 'Takvim' },
+  // ── Секции главного экрана ──
+  'Быстрые действия': { uz: 'Tezkor amallar', en: 'Quick actions', tr: 'Hızlı işlemler' },
+  'Заявки по статусам': { uz: 'Holat bo‘yicha arizalar', en: 'Requests by status', tr: 'Duruma göre talepler' },
+  // ── Метки карточек списка ──
+  'Отдел снабжения': { uz: 'Ta’minot bo‘limi', en: 'Procurement dept.', tr: 'Satın alma bölümü' },
+  'Создано мной': { uz: 'Men yaratganman', en: 'Created by me', tr: 'Benim oluşturduğum' },
+  // ── Статусы (statusMeta) ──
+  'Проверка склада': { uz: 'Ombor tekshiruvi', en: 'Warehouse check', tr: 'Depo kontrolü' },
+  'Частично в наличии': { uz: 'Qisman mavjud', en: 'Partially in stock', tr: 'Kısmen stokta' },
+  'Нет в наличии': { uz: 'Mavjud emas', en: 'Out of stock', tr: 'Stokta yok' },
+  'В закупке': { uz: 'Xaridda', en: 'In procurement', tr: 'Satın almada' },
+  'Назначение снабженца': { uz: 'Ta’minotchi tayinlash', en: 'Assigning buyer', tr: 'Alıcı atama' },
+  'Оформление заказа': { uz: 'Buyurtma rasmiylashtirish', en: 'Placing order', tr: 'Sipariş oluşturma' },
+  'Получены КП': { uz: 'Takliflar olindi', en: 'Offers received', tr: 'Teklifler alındı' },
+  'На согласовании': { uz: 'Kelishuvda', en: 'In approval', tr: 'Onayda' },
+  'Согласована': { uz: 'Kelishilgan', en: 'Approved', tr: 'Onaylandı' },
+  'Отклонена': { uz: 'Rad etilgan', en: 'Rejected', tr: 'Reddedildi' },
+  'Оплачена': { uz: 'To‘langan', en: 'Paid', tr: 'Ödendi' },
+  'В доставке': { uz: 'Yetkazishda', en: 'In delivery', tr: 'Teslimatta' },
+  'Приёмка на складе': { uz: 'Omborda qabul', en: 'Receiving at warehouse', tr: 'Depoda kabul' },
+  'Ожидает оплаты': { uz: 'To‘lovni kutmoqda', en: 'Awaiting payment', tr: 'Ödeme bekliyor' },
+  'Доставка': { uz: 'Yetkazish', en: 'Delivery', tr: 'Teslimat' },
+  'Принята на склад': { uz: 'Omborga qabul qilingan', en: 'Received to warehouse', tr: 'Depoya alındı' },
+  'Выдана в отдел': { uz: 'Bo‘limga berilgan', en: 'Issued to department', tr: 'Bölüme verildi' },
+  'Подтверждение получения': { uz: 'Qabulni tasdiqlash', en: 'Confirm receipt', tr: 'Teslimatı onayla' },
+  'Закрыта': { uz: 'Yopilgan', en: 'Closed', tr: 'Kapatıldı' },
+  'Отменена': { uz: 'Bekor qilingan', en: 'Cancelled', tr: 'İptal edildi' },
+  'В архиве': { uz: 'Arxivda', en: 'Archived', tr: 'Arşivde' },
+  'Черновик': { uz: 'Qoralama', en: 'Draft', tr: 'Taslak' },
+  // ── KPI-плитки ──
+  'Возвращённые': { uz: 'Qaytarilganlar', en: 'Returned', tr: 'İade edilenler' },
+  'Низкий остаток': { uz: 'Kam qoldiq', en: 'Low stock', tr: 'Düşük stok' },
+  'Для закупа': { uz: 'Xarid uchun', en: 'To purchase', tr: 'Satın alınacak' },
+  // ── Список заявок: фильтры/кнопки ──
+  'Только мои': { uz: 'Faqat meniki', en: 'Mine only', tr: 'Yalnızca benim' },
+  'Все': { uz: 'Barchasi', en: 'All', tr: 'Hepsi' },
+  'Создать': { uz: 'Yaratish', en: 'Create', tr: 'Oluştur' },
+  '+ Создать': { uz: '+ Yaratish', en: '+ Create', tr: '+ Oluştur' },
+  'Сбросить дату': { uz: 'Sanani tiklash', en: 'Reset date', tr: 'Tarihi sıfırla' },
+  'Закупка': { uz: 'Xarid', en: 'Procurement', tr: 'Satın alma' },
+  'Попробуйте другой запрос или сбросьте фильтр.': { uz: 'Boshqa so‘rov kiriting yoki filtrni tiklang.', en: 'Try another query or reset the filter.', tr: 'Başka bir sorgu deneyin veya filtreyi sıfırlayın.' },
+  'Заявок нет. Создайте первую с главного экрана.': { uz: 'Arizalar yo‘q. Birinchisini asosiy ekrandan yarating.', en: 'No requests. Create the first one from the home screen.', tr: 'Talep yok. İlkini ana ekrandan oluşturun.' },
+  '+ Новая заявка': { uz: '+ Yangi ariza', en: '+ New request', tr: '+ Yeni talep' },
 };
 
 function translateDynamic(trimmed: string, lang: Exclude<Lang, 'ru'>): string | null {

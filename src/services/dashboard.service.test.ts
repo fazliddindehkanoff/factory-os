@@ -79,6 +79,8 @@ describe('getDashboard', () => {
 
     const reqDash = await getDashboard(db, requester.id, holding.id);
     expect(reqDash.myActive).toBe(1);
+    // FIXES 2026-07-17: «Созданные мной» считает все мои заявки (тут одна активная).
+    expect(reqDash.myCreated).toBe(1);
     expect(reqDash.activity.length).toBe(1);
 
     const [owner] = await db.select().from(schema.users).where(eq(schema.users.telegramId, '999'));
@@ -91,6 +93,7 @@ describe('getDashboard', () => {
     const d = await getDashboard(db, '00000000-0000-0000-0000-000000000000', null);
     expect(d).toEqual({
       myActive: 0,
+      myCreated: 0,
       myReturned: 0,
       pendingForMe: 0,
       totalActive: 0,

@@ -232,6 +232,13 @@
       "when": 1784620980000,
       "tag": "0032_price_review_reasons",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784624400000,
+      "tag": "0033_rename_requester_assistant",
+      "breakpoints": true
     }
   ]
 }

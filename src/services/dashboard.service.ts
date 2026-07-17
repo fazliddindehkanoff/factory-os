@@ -30,6 +30,9 @@ export interface DashboardActivity {
 
 export interface Dashboard {
   myActive: number;
+  // FIXES 2026-07-17: «Созданные мной» = ВСЕ заявки автора (любой статус), чтобы
+  // цифра на плитке совпадала со списком «Только мои», который она открывает.
+  myCreated: number;
   // Лист Excel №14: свои заявки, возвращённые автору на доработку (needs_revision).
   myReturned: number;
   pendingForMe: number;
@@ -49,6 +52,7 @@ const INACTIVE = [...TERMINAL_STATUSES, 'draft'];
 
 const EMPTY_DASHBOARD: Dashboard = {
   myActive: 0,
+  myCreated: 0,
   myReturned: 0,
   pendingForMe: 0,
   totalActive: 0,
@@ -111,7 +115,7 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   const activityWhere = baseWhere;
 
   // Run count queries and activity in parallel — each touches only the rows it needs.
-  const [myActiveRows, myReturnedRows, totalActiveRows, activity] = await Promise.all([
+  const [myActiveRows, myCreatedRows, myReturnedRows, totalActiveRows, activity] = await Promise.all([
     // "Мои заявки" = my in-flight requests (own, excluding drafts and terminal).
     db
       .select({ id: schema.requests.id })
@@ -121,6 +125,18 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
           eq(schema.requests.holdingId, holdingId),
           eq(schema.requests.requesterId, userId),
           notInArray(schema.requests.status, INACTIVE),
+        ),
+      ),
+    // FIXES 2026-07-17: «Созданные мной» — ВСЕ заявки автора (любой статус, кроме
+    // черновика), чтобы совпадать со списком «Только мои», который открывает плитка.
+    db
+      .select({ id: schema.requests.id })
+      .from(schema.requests)
+      .where(
+        and(
+          eq(schema.requests.holdingId, holdingId),
+          eq(schema.requests.requesterId, userId),
+          notInArray(schema.requests.status, ['draft']),
         ),
       ),
     // Лист Excel №14: свои заявки, возвращённые на доработку (needs_revision) —
@@ -196,6 +212,7 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
 
   return {
     myActive: myActiveRows.length,
+    myCreated: myCreatedRows.length,
     myReturned: myReturnedRows.length,
     pendingForMe,
     totalActive: totalActiveRows.length,

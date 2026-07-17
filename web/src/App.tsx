@@ -143,7 +143,8 @@ interface RequestDetail extends RequestRow {
 type Screen =
   | { name: 'home' }
   // `status` — optional prefilter applied when the list opens (KPI/by-status click).
-  | { name: 'list'; status?: string }
+  // `mine` — open with the «Только мои» filter on (from the «Созданные мной» KPI).
+  | { name: 'list'; status?: string; mine?: boolean }
   | { name: 'create' }
   // `from` — the screen that opened the detail, so "back" returns to the source.
   | { name: 'detail'; id: string; from?: 'home' | 'list' | 'approvals' | 'procurement' | 'notifications' }
@@ -156,6 +157,7 @@ type Screen =
 
 interface DashboardData {
   myActive: number;
+  myCreated: number;
   myReturned: number;
   pendingForMe: number;
   totalActive: number;
@@ -362,6 +364,7 @@ export default function App() {
             me={me}
             tick={tick}
             initialStatus={screen.status}
+            initialMine={screen.mine}
             onCreate={() => setScreen({ name: 'create' })}
             onOpen={(id) => setScreen({ name: 'detail', id, from: 'list' })}
           />
@@ -564,7 +567,8 @@ function roleLabel(perms: string[], roleName?: string | null): string {
   if (perms.includes('procurement.select_supplier')) return 'Закупки';
   if (perms.includes('warehouse.issue')) return 'Склад';
   if (perms.includes('approvals.approve')) return 'Согласующий';
-  if (perms.includes('requests.create')) return 'Заявитель';
+  // FIXES 2026-07-17: роль «Заявитель» → «Assistant», одинаково во всех языках.
+  if (perms.includes('requests.create')) return 'Assistant';
   return 'Сотрудник';
 }
 
@@ -869,7 +873,9 @@ function Home({
   if (can('requests.create') && dash && dash.myReturned > 0) cards.push({ key: 'returned', label: 'Возвращённые', value: dash.myReturned, tint: 'warning', ic: 'alert', onClick: () => onNav({ name: 'list', status: 'needs_revision' }) });
   // Only request authors need author-centric cards. Operational roles often have
   // requests.view for visibility but do not create заявки.
-  if (can('requests.create')) cards.push({ key: 'myActive', label: 'Созданные мной', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
+  // FIXES 2026-07-17: цифра = все мои заявки, клик открывает список «Только мои» —
+  // так плитка и список показывают одно и то же число.
+  if (can('requests.create')) cards.push({ key: 'myActive', label: 'Созданные мной', value: dash?.myCreated ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list', mine: true }) });
   // FIXES 2026-07-17 (лист G): «Ожидают меня» видит и снабженец — заявки до
   // простановки цены ждут его действия в этой очереди.
   if (can('approvals.approve') || can('procurement.view')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
@@ -1110,12 +1116,14 @@ function RequestsList({
   onCreate,
   onOpen,
   initialStatus,
+  initialMine,
   tick = 0,
 }: {
   me: Me;
   onCreate: () => void;
   onOpen: (id: string) => void;
   initialStatus?: string;
+  initialMine?: boolean;
   tick?: number;
 }) {
   const [rows, setRows] = useState<RequestRow[] | null>(null);
@@ -1123,7 +1131,7 @@ function RequestsList({
   const [search, setSearch] = useState('');
   // Prefilter from a KPI/by-status click on the dashboard (deep-link via state).
   const [statusFilter, setStatusFilter] = useState(initialStatus ?? '');
-  const [mineOnly, setMineOnly] = useState(false); // №13: «Только мои»
+  const [mineOnly, setMineOnly] = useState(initialMine ?? false); // №13: «Только мои» (FIXES 2026-07-17: предустановка из плитки «Созданные мной»)
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [showCalendar, setShowCalendar] = useState(false); // bug #12: calendar collapsed by default
   const [hasMore, setHasMore] = useState(false);

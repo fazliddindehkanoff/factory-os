@@ -84,7 +84,8 @@ export function roleLabel(perms: string[], roleName?: string | null): string {
   if (perms.includes('procurement.select_supplier')) return 'Закупки';
   if (perms.includes('warehouse.issue')) return 'Склад';
   if (perms.includes('approvals.approve')) return 'Согласующий';
-  if (perms.includes('requests.create')) return 'Заявитель';
+  // FIXES 2026-07-17: роль «Заявитель» → «Assistant», одинаково во всех языках.
+  if (perms.includes('requests.create')) return 'Assistant';
   return 'Сотрудник';
 }
 
