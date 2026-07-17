@@ -340,9 +340,8 @@ export default function App() {
             <button aria-label="Сменить тему" onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} style={iconBtn}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
             </button>
-            <span style={{ maxWidth: 96, overflow: 'hidden', textOverflow: 'ellipsis', borderRadius: 9, background: 'rgba(255,255,255,.12)', padding: '5px 10px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
-              {me.user.fullName}
-            </span>
+            {/* FIXES 2026-07-17: имя пользователя в шапке убрано — оно и так есть
+                в приветствии на главной. */}
             <button aria-label="Выйти" onClick={() => { clearToken(); setMe(null); }} style={iconBtn}>
               <Icon name="logout" size={20} />
             </button>
