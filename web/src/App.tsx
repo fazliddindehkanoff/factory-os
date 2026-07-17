@@ -2629,41 +2629,40 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                     {/* 1) Наименование товара — заголовок позиции. */}
                     <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)' }}>{it.name}</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-                      {/* 2) Количество — отдельной подписанной строкой. */}
-                      {/* FIXES 2026-07-17 (лист B): метки — серые light, значения — чёрные BOLD. */}
+                      {/* Detail rows intentionally match the creation preview. */}
                       <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                        <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Количество:</span>
-                        <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
+                        <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Количество:</span>
+                        <span style={{ fontWeight: 600, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
                       </div>
                       {rows.map((r, i) => (
                         <div key={i} style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                          {r.label && <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>{r.label}:</span>}
-                          <span style={{ fontWeight: 700, color: 'var(--fg)', whiteSpace: 'pre-wrap', minWidth: 0 }}>{r.value}</span>
+                          {r.label && <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>{r.label}:</span>}
+                          <span style={{ fontWeight: 600, color: 'var(--fg)', whiteSpace: 'pre-wrap', minWidth: 0 }}>{r.value}</span>
                         </div>
                       ))}
                       {req.canSeeMoney && it.totalAmount != null && (
                         <>
                           {it.supplierName && (
                             <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                              <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Поставщик:</span>
-                              <span style={{ fontWeight: 700, color: 'var(--fg)', minWidth: 0 }}>{it.supplierName}</span>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Поставщик:</span>
+                              <span style={{ fontWeight: 600, color: 'var(--fg)', minWidth: 0 }}>{it.supplierName}</span>
                             </div>
                           )}
                           {(it.paymentType || it.ndsIncluded) && (
                             <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                              <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Условия:</span>
-                              <span style={{ fontWeight: 700, color: 'var(--fg)', minWidth: 0 }}>{[it.paymentType, it.ndsIncluded ? 'НДС' : null].filter(Boolean).join(' · ')}</span>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Условия:</span>
+                              <span style={{ fontWeight: 600, color: 'var(--fg)', minWidth: 0 }}>{[it.paymentType, it.ndsIncluded ? 'НДС' : null].filter(Boolean).join(' · ')}</span>
                             </div>
                           )}
                           {it.estimatedPrice != null && Number(it.estimatedPrice) > 0 && (
                             <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                              <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Цена за 1:</span>
-                              <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.estimatedPrice).toLocaleString('ru-RU')}</span>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Цена за 1:</span>
+                              <span style={{ fontWeight: 600, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.estimatedPrice).toLocaleString('ru-RU')}</span>
                             </div>
                           )}
                           <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                            <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Сумма:</span>
-                            <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
+                            <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Сумма:</span>
+                            <span style={{ fontWeight: 600, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
                           </div>
                         </>
                       )}

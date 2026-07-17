@@ -21,25 +21,18 @@ interface StepSpec {
   threshold?: number;
 }
 
-// The whole path is data-driven: approvals (sign-off by role) interleave with the
-// operational kinds (warehouse_check / procurement / finance_payment / delivery /
-// receiving / issue / close), each carrying its own behaviour via stepKind.
-// dept_head → склад → закупка(если нет в наличии) → финансы(≥5M) → директор(≥30M)
-//   → учредитель(≥100M) → оплата → доставка → приёмка.
+// Approved full-cycle path. The UI prepends request creation as progress stage 1,
+// so these nine workflow steps are displayed as stages 2–10.
 const STEP_SPECS: StepSpec[] = [
-  { code: 'dept_head', order: 1, name: 'Рук. отдела', kind: 'approval' },
+  { code: 'dept_head', order: 1, name: 'Руководитель отдела', kind: 'approval' },
   { code: 'warehouse', order: 2, name: 'Проверка склада', kind: 'warehouse_check' },
-  { code: 'procurement', order: 3, name: 'Снабжение', kind: 'procurement', condition: { inStock: false } },
-  { code: 'procurement_head', order: 4, name: 'Снабжение — менеджер', kind: 'price_approval', condition: { inStock: false } },
-  { code: 'finance', order: 5, name: 'Финансы', kind: 'approval', threshold: 5_000_000 },
-  { code: 'director', order: 6, name: 'Директор', kind: 'approval', threshold: 30_000_000 },
-  { code: 'owner', order: 7, name: 'Учредитель', kind: 'approval', threshold: 100_000_000 },
-  // H1 fix: these apply only when the item is NOT in stock. An in-stock request goes
-  // approval → warehouse_check → issue → close, and `issue` draws from existing stock —
-  // no phantom payment/delivery/receiving (which previously netted the balance to zero).
-  { code: 'finance', order: 8, name: 'Оплата', kind: 'finance_payment', condition: { inStock: false } },
-  { code: 'procurement', order: 9, name: 'Доставка', kind: 'delivery', condition: { inStock: false } },
-  { code: 'warehouse', order: 10, name: 'Приёмка на склад', kind: 'receiving', condition: { inStock: false } },
+  { code: 'deputy_director', order: 3, name: 'Главный инженер', kind: 'approval' },
+  { code: 'procurement_head', order: 4, name: 'Руководитель снабжения — принятие заявки', kind: 'procurement_intake', condition: { inStock: false } },
+  { code: 'procurement', order: 5, name: 'Снабженец — поиск поставщика', kind: 'procurement', condition: { inStock: false } },
+  { code: 'procurement_head', order: 6, name: 'Руководитель снабжения — проверка цены', kind: 'price_approval', condition: { inStock: false } },
+  { code: 'director', order: 7, name: 'Директор', kind: 'approval', condition: { inStock: false } },
+  { code: 'procurement', order: 8, name: 'Снабженец — оформление заказа', kind: 'ordering', condition: { inStock: false } },
+  { code: 'warehouse', order: 9, name: 'Склад — приёмка', kind: 'receiving', condition: { inStock: false } },
 ];
 
 async function roleIdByCode(db: Db, code: string): Promise<string | undefined> {

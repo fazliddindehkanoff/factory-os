@@ -137,7 +137,9 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   },
   {
     code: 'deputy_director',
-    name: 'Заместитель директора',
+    // Stable legacy code retained for existing assignments; this approval role is
+    // presented to users as «Главный инженер».
+    name: 'Главный инженер',
     permissions: [
       'reports.status_summary',
       'requests.view',

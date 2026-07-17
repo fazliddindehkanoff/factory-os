@@ -1018,7 +1018,7 @@ export function buildRouter(deps: RouterDeps): Router {
       // Progress starts with the REQUESTER (who created it), then the approval steps.
       workflowTimeline.unshift({
         stepId: 'created',
-        stepName: 'Заявка создана',
+        stepName: 'Создание заявки',
         stepKind: 'created',
         state: 'completed',
         action: 'created',
