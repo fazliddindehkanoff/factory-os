@@ -481,7 +481,7 @@ function Menu({ me, theme, onToggleTheme, onLogout, onProfileUpdated }: { me: Me
         </span>
         <div>
           <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg)' }}>{me.user.fullName}</div>
-          <div style={{ fontSize: 12.5, color: 'var(--fg2)' }}>{roleLabel(me.permissions, me.user.roleName)} · {me.permissions.length} прав</div>
+          <div style={{ fontSize: 12.5, color: 'var(--fg2)' }}>{roleLabel(me.permissions, me.user.roleName, t)} · {me.permissions.length} прав</div>
         </div>
       </div>
 
@@ -558,16 +558,15 @@ function Menu({ me, theme, onToggleTheme, onLogout, onProfileUpdated }: { me: Me
 }
 
 // ── Screens ──────────────────────────────────────────────────────────────────
-function roleLabel(perms: string[], roleName?: string | null): string {
-  if (roleName) return roleName;
+function roleLabel(perms: string[], roleName: string | null | undefined, t: (key: I18nKey) => string): string {
+  if (roleName) return roleName === 'Assistant' ? t('role.assistant') : roleName;
   if (perms.includes('approvals.override')) return 'Учредитель';
   if (perms.includes('roles.manage') || perms.includes('settings.manage')) return 'Администратор';
   if (perms.includes('finance.mark_paid')) return 'Финансы';
   if (perms.includes('procurement.select_supplier')) return 'Закупки';
   if (perms.includes('warehouse.issue')) return 'Склад';
   if (perms.includes('approvals.approve')) return 'Согласующий';
-  // FIXES 2026-07-17: роль «Заявитель» → «Assistant», одинаково во всех языках.
-  if (perms.includes('requests.create')) return 'Assistant';
+  if (perms.includes('requests.create')) return t('role.assistant');
   return 'Сотрудник';
 }
 
@@ -852,6 +851,7 @@ function Home({
   onOpen: (id: string) => void;
   tick?: number;
 }) {
+  const { t } = useI18n();
   const [dash, setDash] = useState<DashboardData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -910,7 +910,7 @@ function Home({
           style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 10, padding: '5px 12px', borderRadius: 9, background: 'var(--accent)', fontSize: 12.5, fontWeight: 600, color: '#fff' }}
         >
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff' }} />
-          {roleLabel(me.permissions, me.user.roleName)}
+          {roleLabel(me.permissions, me.user.roleName, t)}
         </div>
       </div>
 
