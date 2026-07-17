@@ -886,6 +886,21 @@ export function buildRouter(deps: RouterDeps): Router {
           .select()
           .from(schema.workflowSteps)
           .where(eq(schema.workflowSteps.workflowId, reqRow.workflowId));
+        // A user may hold several roles. The role displayed beneath a completed
+        // timeline stage must be the role assigned to that workflow step, not an
+        // arbitrary first role from the actor's account.
+        const timelineRoleIds = [...new Set<string>(
+          (allSteps as { approverRoleId: string | null }[])
+            .flatMap((s) => (s.approverRoleId ? [s.approverRoleId] : [])),
+        )];
+        const timelineRoleNames = new Map<string, string>();
+        if (timelineRoleIds.length) {
+          const timelineRoles = await db
+            .select({ id: schema.roles.id, name: schema.roles.name })
+            .from(schema.roles)
+            .where(inArray(schema.roles.id, timelineRoleIds));
+          for (const role of timelineRoles) timelineRoleNames.set(role.id, role.name);
+        }
         // FIXES 2026-07-17 (лист B): авто-пропущенные шаги (автор — единственный
         // согласующий своего шага, напр. начальник отдела создал заявку сам)
         // в «Процессе согласования» не показываем вовсе.
@@ -995,7 +1010,9 @@ export function buildRouter(deps: RouterDeps): Router {
             action: act?.action ?? null,
             at: act?.at ?? null,
             actorName: actor?.name ?? null,
-            actorRole: actor?.role ?? null,
+            actorRole: s.approverRoleId
+              ? timelineRoleNames.get(s.approverRoleId) ?? actor?.role ?? null
+              : actor?.role ?? null,
             comment: (act as { comment?: string | null } | null)?.comment ?? null,
           });
         }
