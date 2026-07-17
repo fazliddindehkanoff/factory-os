@@ -204,6 +204,34 @@
       "when": 1783922400000,
       "tag": "0028_price_approval_procurement_head",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784620800000,
+      "tag": "0029_fixes_form_labels_warehouses",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1784620860000,
+      "tag": "0030_disable_exec_director_step",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1784620920000,
+      "tag": "0031_fixes_reject_reasons",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1784620980000,
+      "tag": "0032_price_review_reasons",
+      "breakpoints": true
     }
   ]
 }

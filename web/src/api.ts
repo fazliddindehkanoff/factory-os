@@ -116,7 +116,7 @@ export const api = {
   getRequest: (id: string) => call('/requests/' + id),
   cancelRequest: (id: string, reason?: string) =>
     call(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason ?? '' }) }),
-  rejectReasons: (id: string) => call(`/requests/${id}/reject-reasons`),
+  rejectReasons: (id: string, action?: string) => call(`/requests/${id}/reject-reasons?action=${encodeURIComponent(action ?? '')}`),
   // CSV — бинарный ответ мимо call(); вызывающий отзывает URL через revokeObjectURL.
   exportRequestsUrl: async (): Promise<string> => {
     const token = getToken();

@@ -321,8 +321,10 @@ describe('№14 — сводка по статусам по праву reports.s
 
     const headDash = await getDashboard(db, head, h.id);
     expect(headDash.byStatus).not.toBeNull();
+    // FIXES 2026-07-17 (лист F): «Заявки по статусам» видят все пользователи —
+    // выборка ограничена тем, что видит вызывающий (своими заявками).
     const reqDash = await getDashboard(db, requester, h.id);
-    expect(reqDash.byStatus).toBeNull();
+    expect(reqDash.byStatus).toMatchObject({ pending_approval: 1 });
   });
 });
 

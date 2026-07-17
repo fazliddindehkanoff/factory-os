@@ -30,10 +30,10 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     fieldType: 'select',
     system: true,
     required: true,
+    // FIXES 2026-07-17: «Ремонт» убран из типов заявки по решению владельца.
     options: [
       { value: 'material_request', label: 'Материал' },
       { value: 'service_request', label: 'Услуга' },
-      { value: 'repair_request', label: 'Ремонт' },
     ],
     stepGroup: 1,
     orderIndex: 1,
@@ -68,9 +68,10 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     label: 'Объект',
     fieldType: 'select',
     system: false,
+    // FIXES 2026-07-17: реальные объекты холдинга вместо примеров-плейсхолдеров.
     options: [
-      { value: 'Объект №1', label: 'Объект №1' },
-      { value: 'Объект №2', label: 'Объект №2' },
+      { value: 'Zelal Tekstil', label: 'Zelal Tekstil' },
+      { value: 'Zarbdor', label: 'Zarbdor' },
     ],
     stepGroup: 1,
     orderIndex: 4,
@@ -114,11 +115,12 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
   // ── Step 2: Позиция ──
   {
     fieldKey: 'itemName',
-    label: 'Наименование товара / материала',
+    // FIXES 2026-07-17: label — заголовок секции позиций, placeholder — подпись поля.
+    label: 'Спецификация заявки',
     fieldType: 'text',
     system: true,
     required: true,
-    placeholder: 'напр. Хлопковая пряжа 40/1',
+    placeholder: 'Наименование материала или услуги',
     stepGroup: 2,
     orderIndex: 1,
   },
@@ -127,7 +129,7 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     label: 'Код товара',
     fieldType: 'text',
     system: false,
-    placeholder: 'напр. YRN-40-WHT',
+    placeholder: 'КОД товара',
     stepGroup: 2,
     orderIndex: 2,
   },
@@ -177,13 +179,13 @@ export const DEFAULT_REQUEST_CREATE_FIELDS: SeedField[] = [
     label: 'Примечание',
     fieldType: 'textarea',
     system: true,
-    placeholder: 'Спецификации или контекст для склада и снабжения.',
+    placeholder: 'Примечания',
     stepGroup: 2,
     orderIndex: 7,
   },
   {
     fieldKey: 'attachment',
-    label: 'Вложение',
+    label: 'Вложение файла или изображения',
     fieldType: 'file',
     system: false,
     stepGroup: 2,

@@ -100,7 +100,8 @@ export function statusMeta(status: string): { label: string; color: string; bg: 
     case 'ordering': return { label: 'Оформление заказа', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'quotation_received': return { label: 'Получены КП', color: 'var(--accent)', bg: 'var(--accent-bg)' };
     case 'approval_pending': case 'pending_approval': return { label: 'На согласовании', color: 'var(--warning)', bg: 'var(--warning-bg)' };
-    case 'needs_revision': return { label: 'На доработке', color: 'var(--warning)', bg: 'var(--warning-bg)' };
+    // FIXES 2026-07-17 (лист E): явный статус возврата.
+    case 'needs_revision': return { label: 'Возвращено на доработку', color: 'var(--warning)', bg: 'var(--warning-bg)' };
     case 'approved': return { label: 'Согласована', color: 'var(--success)', bg: 'var(--success-bg)' };
     case 'rejected': return { label: 'Отклонена', color: 'var(--danger)', bg: 'var(--danger-bg)' };
     case 'paid': return { label: 'Оплачена', color: 'var(--accent)', bg: 'var(--accent-bg)' };

@@ -114,7 +114,9 @@ export function WarehouseScreen({ permissions = [] }: { permissions?: string[] }
   const tabs = TABS.filter((t) => !t.perm || permissions.includes(t.perm));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '0 0 24px' }}>
+    // FIXES 2026-07-17 (лист D): экран — fullBleed, без своих отступов вкладки
+    // прилипали к шапке (вход с карточки «Низкий остаток») — добавлены отступы.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '16px 16px 24px' }}>
       {/* Tab bar */}
       <div
         style={{

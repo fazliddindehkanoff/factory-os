@@ -9,7 +9,7 @@ import { ProcurementScreen } from './screens/Procurement';
 import { Icon, TINT_BG, TINT_FG } from './icons';
 import { applyTheme, getTheme, type Theme } from './theme';
 import { DASHBOARD_ACTIONS } from './dashboard.config';
-import { LANG_LABELS, useI18n, type I18nKey, type Lang } from './i18n';
+import { LANG_LABELS, SWITCHER_LANGS, useI18n, type I18nKey, type Lang } from './i18n';
 // Single source of truth for status labels/progress (covers every workflow-driven
 // status incl. finance_payment/delivery/receiving/issue) — see screens/shared.tsx.
 import { statusMeta } from './screens/shared';
@@ -105,11 +105,12 @@ interface WorkflowTimelineStep {
   stepId?: string;
   stepName: string;
   stepKind: string;
-  state: 'completed' | 'current' | 'future' | 'rejected' | 'cancelled';
+  state: 'completed' | 'current' | 'future' | 'rejected' | 'cancelled' | 'returned';
   actorName?: string | null;
   actorRole?: string | null;
   at?: string | null;
   action?: string | null;
+  comment?: string | null;
 }
 interface RequestDetail extends RequestRow {
   items: { id: string; name: string; description?: string | null; quantity: string; unit?: string | null; estimatedPrice?: number | null; totalAmount: number | null; supplierName?: string | null; ndsIncluded?: boolean | null; paymentType?: string | null; status?: string | null; receivedQty?: string | null }[];
@@ -320,7 +321,8 @@ export default function App() {
               onChange={(e) => setLang(e.target.value as Lang)}
               style={{ width: 58, height: 38, border: 'none', borderRadius: 11, background: 'rgba(255,255,255,.12)', color: 'var(--hfg)', padding: '0 6px', fontSize: 12, fontWeight: 800, cursor: 'pointer', outline: 'none' }}
             >
-              {(['uz', 'ru', 'en'] as Lang[]).map((code) => <option key={code} value={code}>{LANG_LABELS[code]}</option>)}
+              {/* FIXES 2026-07-17 (лист H): Uzb / Рус / Türkçe (Eng заменён турецким). */}
+              {SWITCHER_LANGS.map((code) => <option key={code} value={code}>{LANG_LABELS[code]}</option>)}
             </select>
             <button aria-label="Уведомления" onClick={() => setScreen({ name: 'notifications' })} style={{ ...iconBtn, position: 'relative' }}>
               <Icon name="bell" size={20} />
@@ -703,7 +705,7 @@ const NOTIF_KIND: Record<string, { label: string; tint: string }> = {
   stage_passed: { label: 'Этап пройден', tint: 'accent' },
   approved_final: { label: 'Согласована', tint: 'success' },
   rejected: { label: 'Отклонена', tint: 'danger' },
-  needs_revision: { label: 'На доработку', tint: 'warning' },
+  needs_revision: { label: 'Возвращено на доработку', tint: 'warning' },
   returned_step: { label: 'Возврат на этап', tint: 'warning' },
   closed: { label: 'Закрыта', tint: 'success' },
   security: { label: 'Безопасность', tint: 'warning' },
@@ -868,10 +870,14 @@ function Home({
   // Only request authors need author-centric cards. Operational roles often have
   // requests.view for visibility but do not create заявки.
   if (can('requests.create')) cards.push({ key: 'myActive', label: 'Созданные мной', value: dash?.myActive ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list' }) });
-  if (can('approvals.approve')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
+  // FIXES 2026-07-17 (лист G): «Ожидают меня» видит и снабженец — заявки до
+  // простановки цены ждут его действия в этой очереди.
+  if (can('approvals.approve') || can('procurement.view')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
   if (oversight) cards.push({ key: 'total', label: 'Активных всего', value: dash?.totalActive ?? null, tint: 'success', ic: 'box', onClick: () => onNav({ name: 'list' }) });
   if (dash && dash.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
-  if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'Для закупа', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'procurement' }) });
+  // FIXES 2026-07-17 (лист G): «Для закупа» — заявки, согласованные директором
+  // (этап «Оформление заказа»), а не всё, что в поиске поставщика.
+  if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'Для закупа', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'ordering' }) });
   if (dash && dash.lowStock != null) cards.push({ key: 'low', label: 'Низкий остаток', value: dash.lowStock, tint: 'danger', ic: 'alert', onClick: () => onNav({ name: 'warehouse' }) });
   // Unread is shown via the header bell badge, not a dashboard card (per request).
 
@@ -883,12 +889,11 @@ function Home({
   // NOTE: warehouse "receiving|issue" tasks need a multi-status list the API does
   // not expose (out of this sprint's backend scope), so warehouse users get a link
   // to the Warehouse screen instead of an inline list — not a silent single-status hack.
+  // FIXES 2026-07-17 (лист G): секция «Ожидают оплаты» убрана — не нужна.
   const profileQueue: { title: string; load: () => Promise<QueueItem[]>; onSeeAll?: () => void; emptyText: string } | null =
     can('procurement.view')
       ? { title: 'Очередь снабжения', load: async () => pickItems(await api.procurement.queue()), onSeeAll: () => onNav({ name: 'procurement' }), emptyText: 'Нет заявок в закупке.' }
-      : can('finance.view')
-        ? { title: 'Ожидают оплаты', load: async () => pickItems(await api.listRequests({ status: 'finance_payment', limit: 8 })), onSeeAll: () => onNav({ name: 'list', status: 'finance_payment' }), emptyText: 'Нет заявок на оплату.' }
-        : null;
+      : null;
 
   return (
     <div>
@@ -972,8 +977,8 @@ function Home({
         ) : null;
       })()}
 
-      {/* requests-by-status breakdown (oversight only) */}
-      {!err && oversight && byStatusEntries.length > 0 && (
+      {/* requests-by-status breakdown — FIXES 2026-07-17 (лист F): у всех пользователей. */}
+      {!err && byStatusEntries.length > 0 && (
         <div style={{ padding: '24px 20px 0' }}>
           <div style={SECTION_LABEL}>Заявки по статусам</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -1012,25 +1017,8 @@ function Home({
         <QueuePreview title={profileQueue.title} load={profileQueue.load} onOpen={onOpen} onSeeAll={profileQueue.onSeeAll} emptyText={profileQueue.emptyText} tick={tick} />
       )}
 
-      {/* Queue slot 2 (warehouse) — link to the Warehouse screen (multi-status list not in API) */}
-      {!err && !profileQueue && can('warehouse.view') && (
-        <div style={{ padding: '22px 20px 0' }}>
-          <div style={SECTION_LABEL}>Склад</div>
-          <button
-            onClick={() => onNav({ name: 'warehouse' })}
-            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: '15px', cursor: 'pointer', textAlign: 'left' }}
-          >
-            <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG.accent, color: TINT_FG.accent }}>
-              <Icon name="box" size={21} />
-            </span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>Приёмка и выдача</div>
-              <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>Открыть склад: остатки, приёмка, выдача</div>
-            </div>
-            <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={18} sw={2.2} /></span>
-          </button>
-        </div>
-      )}
+      {/* FIXES 2026-07-17 (лист D): карточка «Приёмка и выдача» убрана — на склад
+          ведут карточка «Низкий остаток» и вкладка «Склад» в нижней навигации. */}
 
       {/* Queue slot 3 — Recent activity (own for requester, holding for oversight) */}
       <div style={{ padding: '24px 20px 24px' }}>
@@ -1266,7 +1254,7 @@ function RequestsList({
           >
             <option value="">Все</option>
             <option value="pending_approval">На согласовании</option>
-            <option value="needs_revision">На доработке</option>
+            <option value="needs_revision">Возвращено на доработку</option>
             <option value="approved">Согласована</option>
             <option value="rejected">Отклонена</option>
             <option value="draft">Черновик</option>
@@ -1854,7 +1842,8 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
       const renderProductField = (pf: FormField, item: DraftRequestItem, itemIndex: number) => {
         const v = item.values[pf.key];
         const basePlaceholder = pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
-        const placeholder = pf.type === 'select' ? `Выберите: ${pf.label}` : basePlaceholder;
+        // FIXES 2026-07-17: без префикса «Выберите:» — в плейсхолдере остаётся только название поля.
+        const placeholder = pf.type === 'select' ? pf.label : basePlaceholder;
         if (pf.type === 'select') {
           const opts = optionsFor(pf);
           return (
@@ -2634,38 +2623,39 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                     <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)' }}>{it.name}</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
                       {/* 2) Количество — отдельной подписанной строкой. */}
+                      {/* FIXES 2026-07-17 (лист B): метки — серые light, значения — чёрные BOLD. */}
                       <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                        <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Количество:</span>
-                        <span style={{ fontWeight: 600, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
+                        <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Количество:</span>
+                        <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{it.quantity}{it.unit ? ` ${it.unit}` : ''}</span>
                       </div>
                       {rows.map((r, i) => (
                         <div key={i} style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                          {r.label && <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>{r.label}:</span>}
-                          <span style={{ fontWeight: 600, color: 'var(--fg)', whiteSpace: 'pre-wrap', minWidth: 0 }}>{r.value}</span>
+                          {r.label && <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>{r.label}:</span>}
+                          <span style={{ fontWeight: 700, color: 'var(--fg)', whiteSpace: 'pre-wrap', minWidth: 0 }}>{r.value}</span>
                         </div>
                       ))}
                       {req.canSeeMoney && it.totalAmount != null && (
                         <>
                           {it.supplierName && (
                             <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Поставщик:</span>
-                              <span style={{ fontWeight: 600, color: 'var(--fg)', minWidth: 0 }}>{it.supplierName}</span>
+                              <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Поставщик:</span>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', minWidth: 0 }}>{it.supplierName}</span>
                             </div>
                           )}
                           {(it.paymentType || it.ndsIncluded) && (
                             <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Условия:</span>
-                              <span style={{ fontWeight: 600, color: 'var(--fg)', minWidth: 0 }}>{[it.paymentType, it.ndsIncluded ? 'НДС' : null].filter(Boolean).join(' · ')}</span>
+                              <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Условия:</span>
+                              <span style={{ fontWeight: 700, color: 'var(--fg)', minWidth: 0 }}>{[it.paymentType, it.ndsIncluded ? 'НДС' : null].filter(Boolean).join(' · ')}</span>
                             </div>
                           )}
                           {it.estimatedPrice != null && Number(it.estimatedPrice) > 0 && (
                             <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                              <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Цена за 1:</span>
+                              <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Цена за 1:</span>
                               <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.estimatedPrice).toLocaleString('ru-RU')}</span>
                             </div>
                           )}
                           <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                            <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Сумма:</span>
+                            <span style={{ fontWeight: 500, color: 'var(--fg3)', flex: 'none' }}>Сумма:</span>
                             <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{Number(it.totalAmount).toLocaleString('ru-RU')}</span>
                           </div>
                         </>
@@ -2723,8 +2713,11 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
               const rej = step.state === 'rejected';
               // Лист Excel №13: возврат на доработку — шаг «Отменено» серым.
               const cancelled = step.state === 'cancelled';
-              const color = rej ? 'var(--danger)' : done ? 'var(--success)' : cur ? 'var(--warning)' : 'var(--fg3)';
-              const mark = rej ? '✕' : cancelled ? '✕' : done ? '✓' : cur ? '●' : '';
+              // FIXES 2026-07-17 (лист E): шаг, вернувший заявку автору, — оранжевый
+              // «Возвращено на доработку», с автором и комментарием причины.
+              const ret = step.state === 'returned';
+              const color = rej ? 'var(--danger)' : ret ? 'var(--warning)' : done ? 'var(--success)' : cur ? 'var(--warning)' : 'var(--fg3)';
+              const mark = rej ? '✕' : ret ? '↩' : cancelled ? '✕' : done ? '✓' : cur ? '●' : '';
               const lineColor = rej ? 'var(--danger)' : step.state === 'future' || cancelled ? 'var(--line)' : color;
               return (
                 <div key={step.stepId ?? idx} style={{ display: 'flex', gap: 13 }}>
@@ -2734,12 +2727,17 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                   </div>
                   <div style={{ paddingBottom: 16, flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, color: step.state === 'future' || cancelled ? 'var(--fg3)' : 'var(--fg)' }}>{step.stepName}</div>
-                    <div style={{ fontSize: 11.5, marginTop: 2, fontWeight: cur || rej ? 600 : 500, color: rej ? 'var(--danger)' : cur ? 'var(--warning)' : done ? 'var(--success)' : 'var(--fg3)' }}>
-                      {step.action === 'created' ? 'Создана' : rej ? 'Отклонено' : cancelled ? 'Отменено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
+                    <div style={{ fontSize: 11.5, marginTop: 2, fontWeight: cur || rej || ret ? 600 : 500, color: rej ? 'var(--danger)' : ret || cur ? 'var(--warning)' : done ? 'var(--success)' : 'var(--fg3)' }}>
+                      {step.action === 'created' ? 'Создана' : rej ? 'Отклонено' : ret ? 'Возвращено на доработку' : cancelled ? 'Отменено' : done ? 'Согласовано' : cur ? 'Текущий этап · ожидает' : 'Ожидает'}
                     </div>
                     {(step.actorName || step.at) && (
                       <div style={{ fontSize: 11, color: 'var(--fg3)', marginTop: 3, fontFamily: "'IBM Plex Mono', monospace" }}>
                         {step.actorName ?? ''}{step.actorRole ? ` · ${step.actorRole}` : ''}{step.at ? ` · ${fmtDateTime(step.at)}` : ''}
+                      </div>
+                    )}
+                    {step.comment && (rej || ret) && (
+                      <div style={{ fontSize: 12, color: rej ? 'var(--danger)' : 'var(--warning)', marginTop: 4, lineHeight: 1.4 }}>
+                        Комментарий: {step.comment}
                       </div>
                     )}
                     {cur && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 3, fontWeight: 600 }}>→ {nextActionHint(step.stepKind)}</div>}
@@ -3004,7 +3002,7 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
       .filter((it) => it.name);
   const renderEditProductField = (pf: FormField, item: EditDraftItem, itemIndex: number) => {
     const v = item.values[pf.key];
-    const placeholder = pf.type === 'select' ? `Выберите: ${pf.label}` : pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
+    const placeholder = pf.type === 'select' ? pf.label : pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
     if (pf.type === 'select') {
       const opts = optionsForEdit(pf);
       return (
@@ -3221,8 +3219,9 @@ function ActionModal({
   const [reasons, setReasons] = useState<string[]>([]);
   const [reasonChoice, setReasonChoice] = useState('');
   useEffect(() => {
-    if (isReject) api.rejectReasons(requestId).then((r: any) => setReasons(r?.reasons ?? [])).catch(() => setReasons([]));
-  }, [isReject, requestId]);
+    // FIXES 2026-07-17 (лист G): у «Пересмотреть цену» свой список причин — передаём action.
+    if (isReject) api.rejectReasons(requestId, action.action).then((r: any) => setReasons(r?.reasons ?? [])).catch(() => setReasons([]));
+  }, [isReject, requestId, action.action]);
   const OTHER = '__other__';
 
   // Bug #8: procurement head assigns a specific снабженец.

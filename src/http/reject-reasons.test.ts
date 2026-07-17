@@ -42,7 +42,10 @@ describe('bug #3: rejection reasons', () => {
     const { db } = await make();
     const rows = await db.select().from(schema.rejectionReasons).where(isNull(schema.rejectionReasons.holdingId));
     expect(rows.length).toBeGreaterThan(5);
-    expect(rows.some((r: any) => r.roleCode === 'warehouse' && r.text === 'Нет на складе')).toBe(true);
+    // FIXES 2026-07-17 (лист D): у склада осталась одна ролевая причина.
+    expect(rows.some((r: any) => r.roleCode === 'warehouse' && r.text === 'Требуется уточнение по позиции')).toBe(true);
+    // FIXES 2026-07-17 (лист G): пресеты «Пересмотреть цену» (псевдо-роль).
+    expect(rows.some((r: any) => r.roleCode === 'price_review' && r.text === 'Завышенная цена')).toBe(true);
   });
 
   it('returns warehouse reasons + generic for a request on the warehouse step', async () => {
@@ -52,8 +55,18 @@ describe('bug #3: rejection reasons', () => {
     const req = await createRequest(db, { holdingId: holding.id, requesterId: author.uid, factoryId: factory.id, items: [{ name: 'X', quantity: 1, unitPrice: 100 }] });
 
     const res = await request(app).get(`/api/requests/${req.id}/reject-reasons`).set('Authorization', `Bearer ${wh.token}`).expect(200);
-    expect(res.body.reasons).toContain('Нет на складе'); // warehouse-specific
+    // FIXES 2026-07-17 (лист D): склад — «Требуется уточнение по позиции» + общие.
+    expect(res.body.reasons).toContain('Требуется уточнение по позиции'); // warehouse-specific
     expect(res.body.reasons).toContain('Ошибочная заявка'); // generic (roleCode null)
+    expect(res.body.reasons).not.toContain('Нет на складе'); // выключена (лист D)
+    expect(res.body.reasons).not.toContain('Завышенная цена'); // псевдо-роль price_review — только для action=return_research
     expect(res.body.reasons).not.toContain('Превышает лимит'); // director-only, not for warehouse step
+
+    // FIXES 2026-07-17 (лист G): у «Пересмотреть цену» свой список причин.
+    const priceRes = await request(app)
+      .get(`/api/requests/${req.id}/reject-reasons?action=return_research`)
+      .set('Authorization', `Bearer ${wh.token}`)
+      .expect(200);
+    expect(priceRes.body.reasons).toEqual(['Завышенная цена', 'Найти других поставщиков', 'Найти на перечисление', 'Сделать конкурентный лист']);
   });
 });

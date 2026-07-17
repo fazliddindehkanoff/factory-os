@@ -419,7 +419,6 @@ export function buildRouter(deps: RouterDeps): Router {
         users,
         requestTypes: [
           { code: 'material_request', label: 'Материалы' },
-          { code: 'repair_request', label: 'Ремонт' },
           { code: 'service_request', label: 'Услуги' },
         ],
         urgencies: [
@@ -430,7 +429,7 @@ export function buildRouter(deps: RouterDeps): Router {
         statuses: {
           draft: 'Черновик',
           pending_approval: 'На согласовании',
-          needs_revision: 'На доработке',
+          needs_revision: 'Возвращено на доработку',
           approved: 'Согласована',
           rejected: 'Отклонена',
         },
@@ -549,7 +548,8 @@ export function buildRouter(deps: RouterDeps): Router {
         .select()
         .from(schema.requests)
         .where(where)
-        .orderBy(desc(schema.requests.createdAt))
+        // FIXES 2026-07-17 (лист C): заявки везде идут от первой созданной вниз.
+        .orderBy(schema.requests.createdAt)
         .limit(limit + 1) // fetch one extra to detect "has more"
         .offset(offset);
       const hasMore = rows.length > limit;
@@ -601,7 +601,8 @@ export function buildRouter(deps: RouterDeps): Router {
         .select()
         .from(schema.requests)
         .where(and(...conds.filter(Boolean) as SQL[]))
-        .orderBy(desc(schema.requests.createdAt))
+        // FIXES 2026-07-17 (лист C): от первой созданной вниз.
+        .orderBy(schema.requests.createdAt)
         .limit(2000);
 
       const userIds = [...new Set(rows.map((r: any) => r.requesterId).filter(Boolean))] as string[];
@@ -864,32 +865,48 @@ export function buildRouter(deps: RouterDeps): Router {
         : [];
       const actions = await availableActions(db, reqRow, u.id);
       // Build workflow timeline with per-step state + WHO/WHEN acted (bugs #4, #7, #10).
-      type TLState = 'completed' | 'current' | 'future' | 'rejected' | 'cancelled';
-      // Лист Excel №13: «Вернуть на доработку» возвращает заявку автору (status
-      // needs_revision, currentStepId=null). Без этого все шаги показывались как
-      // «Согласовано» (completed). Теперь весь маршрут согласования — «Отменено»
-      // (серый), пока автор не отправит заявку заново.
+      type TLState = 'completed' | 'current' | 'future' | 'rejected' | 'cancelled' | 'returned';
+      // FIXES 2026-07-17 (лист E): возврат на доработку показывается ЧЕСТНО —
+      // пройденные шаги остаются зелёными, шаг, вернувший заявку, помечается
+      // «Возвращено на доработку» (с автором и комментарием), дальше — серые
+      // будущие шаги. Раньше весь маршрут красился «Отменено».
       const returnedToAuthor = reqRow.status === 'needs_revision';
+      const returnEvent = returnedToAuthor
+        ? [...(statusHistory as { oldStatus: string | null; newStatus: string; changedBy: string | null; createdAt: unknown; comment: string | null }[])]
+            .reverse()
+            .find((h) => h.newStatus === 'needs_revision' && h.oldStatus && h.oldStatus !== 'needs_revision')
+        : undefined;
       let workflowTimeline: {
         stepId: string; stepName: string; stepKind: string; state: TLState;
         actorName: string | null; actorRole: string | null; at: unknown; action: string | null;
+        comment: string | null;
       }[] = [];
       if (reqRow.workflowId) {
         const allSteps = await db
           .select()
           .from(schema.workflowSteps)
           .where(eq(schema.workflowSteps.workflowId, reqRow.workflowId));
+        // FIXES 2026-07-17 (лист B): авто-пропущенные шаги (автор — единственный
+        // согласующий своего шага, напр. начальник отдела создал заявку сам)
+        // в «Процессе согласования» не показываем вовсе.
+        const skippedStepNames = new Set(
+          (statusHistory as { source: string | null; comment: string | null }[])
+            .filter((h) => h.source === 'auto_skip')
+            .map((h) => /«(.+)»/.exec(h.comment ?? '')?.[1])
+            .filter((n): n is string => Boolean(n)),
+        );
         const sorted = allSteps
           .filter((s: { enabled: boolean }) => s.enabled !== false)
+          .filter((s: { stepName: string }) => !skippedStepNames.has(s.stepName))
           .sort((a: { stepOrder: number }, b: { stepOrder: number }) => a.stepOrder - b.stepOrder);
 
         // Resolved action per step (approved / rejected) from the approvals rows.
         // Non-approval steps do not have approval rows, so below we fall back to
         // lifecycle status history: the actor who moved out of that step.
-        const stepAction = new Map<string, { action: string; at: unknown; actorId: string | null }>();
-        for (const a of approvals as { workflowStepId: string | null; status: string; approvedAt: unknown; approverUserId: string | null }[]) {
+        const stepAction = new Map<string, { action: string; at: unknown; actorId: string | null; comment: string | null }>();
+        for (const a of approvals as { workflowStepId: string | null; status: string; approvedAt: unknown; approverUserId: string | null; comment: string | null }[]) {
           if (a.workflowStepId && (a.status === 'approved' || a.status === 'rejected')) {
-            stepAction.set(a.workflowStepId, { action: a.status, at: a.approvedAt, actorId: a.approverUserId });
+            stepAction.set(a.workflowStepId, { action: a.status, at: a.approvedAt, actorId: a.approverUserId, comment: a.comment ?? null });
           }
         }
         type TimelineHistory = {
@@ -933,12 +950,22 @@ export function buildRouter(deps: RouterDeps): Router {
         const rejectedStep = sorted.find((s: { id: string }) => stepAction.get(s.id)?.action === 'rejected');
         const rejectedOrder = rejectedStep ? (rejectedStep as { stepOrder: number }).stepOrder : null;
 
+        // Шаг, вернувший заявку автору: его статус = oldStatus события возврата.
+        const returnStepIndex = returnEvent
+          ? (sorted as { stepKind: string }[]).findIndex((s) => statusForStep(s as any) === returnEvent.oldStatus)
+          : -1;
+
         let foundCurrent = false;
-        for (const s of sorted) {
+        for (const [stepIdx, s] of (sorted as any[]).entries()) {
           let state: TLState;
           if (returnedToAuthor) {
-            // Возврат автору на доработку — маршрут согласования аннулирован.
-            state = 'cancelled';
+            // FIXES 2026-07-17 (лист E): до вернувшего шага — пройдено, сам шаг —
+            // «Возвращено на доработку», дальше — будущие.
+            if (returnStepIndex >= 0) {
+              state = stepIdx < returnStepIndex ? 'completed' : stepIdx === returnStepIndex ? 'returned' : 'future';
+            } else {
+              state = 'cancelled';
+            }
           } else if (rejectedOrder != null) {
             // A rejected chain: steps before are done, the rejection step is red,
             // everything after was never reached.
@@ -955,7 +982,10 @@ export function buildRouter(deps: RouterDeps): Router {
           } else {
             state = 'future';
           }
-          const act = stepAction.get(s.id) ?? historyForStep(s, state);
+          // Вернувший шаг несёт автора/время/комментарий события возврата (лист E).
+          const act = state === 'returned' && returnEvent
+            ? { action: 'returned', at: returnEvent.createdAt, actorId: returnEvent.changedBy, comment: returnEvent.comment ?? null }
+            : stepAction.get(s.id) ?? historyForStep(s, state);
           const actor = act?.actorId ? actorMap.get(act.actorId) : undefined;
           workflowTimeline.push({
             stepId: s.id,
@@ -966,6 +996,7 @@ export function buildRouter(deps: RouterDeps): Router {
             at: act?.at ?? null,
             actorName: actor?.name ?? null,
             actorRole: actor?.role ?? null,
+            comment: (act as { comment?: string | null } | null)?.comment ?? null,
           });
         }
       }
@@ -994,6 +1025,7 @@ export function buildRouter(deps: RouterDeps): Router {
         at: reqRow.createdAt,
         actorName: requesterRow?.name ?? null,
         actorRole: 'Заявитель',
+        comment: null,
       });
 
       // Money is visible to the procurement manager and everyone above (bug #9):
@@ -1077,6 +1109,25 @@ export function buildRouter(deps: RouterDeps): Router {
       const u = (req as AuthedRequest).user!;
       const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
       if (!reqRow || reqRow.holdingId !== u.holdingId) { res.json({ reasons: [] }); return; }
+      // FIXES 2026-07-17 (лист G): у «Пересмотреть цену» (return_research) свой
+      // список причин (псевдо-роль price_review), без общих и ролевых.
+      const actionParam = String(req.query.action ?? '').trim();
+      if (actionParam === 'return_research') {
+        const priceRows = await db
+          .select()
+          .from(schema.rejectionReasons)
+          .where(
+            and(
+              eq(schema.rejectionReasons.isActive, true),
+              or(isNull(schema.rejectionReasons.holdingId), eq(schema.rejectionReasons.holdingId, u.holdingId as string)),
+              eq(schema.rejectionReasons.roleCode, 'price_review'),
+            ),
+          )
+          .orderBy(schema.rejectionReasons.sortOrder);
+        const uniq = new Set<string>();
+        res.json({ reasons: priceRows.map((r: { text: string }) => r.text).filter((t: string) => (uniq.has(t) ? false : (uniq.add(t), true))) });
+        return;
+      }
       let roleCode: string | null = null;
       if (reqRow.currentStepId) {
         const [step] = await db.select({ rid: schema.workflowSteps.approverRoleId }).from(schema.workflowSteps).where(eq(schema.workflowSteps.id, reqRow.currentStepId));
@@ -1092,6 +1143,8 @@ export function buildRouter(deps: RouterDeps): Router {
           and(
             eq(schema.rejectionReasons.isActive, true),
             or(isNull(schema.rejectionReasons.holdingId), eq(schema.rejectionReasons.holdingId, u.holdingId as string)),
+            // Псевдо-роль price_review сюда не попадает: roleCode шага — реальная
+            // роль, а строки без роли фильтр ниже пропускает только по isNull.
             or(isNull(schema.rejectionReasons.roleCode), roleCode ? eq(schema.rejectionReasons.roleCode, roleCode) : isNull(schema.rejectionReasons.roleCode)),
           ),
         )
@@ -1829,7 +1882,8 @@ export function buildRouter(deps: RouterDeps): Router {
         .select()
         .from(schema.requests)
         .where(and(eq(schema.requests.holdingId, u.holdingId), eq(schema.requests.status, 'procurement')))
-        .orderBy(desc(schema.requests.createdAt));
+        // FIXES 2026-07-17 (лист C): от первой созданной вниз.
+        .orderBy(schema.requests.createdAt);
       // Лист Excel №5: карточка очереди показывает «Отдел снабжения» — резолвим имя.
       const pqDeptIds = [...new Set(rows.map((r: any) => r.departmentId).filter(Boolean))] as string[];
       const pqDeptName = new Map<string, string>();

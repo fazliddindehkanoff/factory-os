@@ -53,6 +53,9 @@ async function seedAggregates(db: any, holdingId: string, requesterId: string, f
   await mk(1, 'finance_payment');
   await mk(2, 'finance_payment');
   await mk(1, 'procurement');
+  // FIXES 2026-07-17 (лист G): «Для закупа» считает согласованные директором
+  // заявки на этапе «Оформление заказа» (ordering).
+  await mk(1, 'ordering');
 
   // setupTenant seeds demo materials/balances — clear them so lowStock is deterministic.
   await db.delete(schema.stockBalances).where(eq(schema.stockBalances.holdingId, holdingId));
@@ -130,9 +133,9 @@ describe('getDashboard — Sprint 1 aggregates (role-scoped, permission-gated)',
 
     const d = await getDashboard(db, owner.id, holding.id);
     expect(d.awaitingPayment).toBe(2);
-    expect(d.inProcurement).toBe(1);
+    expect(d.inProcurement).toBe(1); // лист G: считаются заявки на этапе ordering
     expect(d.lowStock).toBe(1);
-    expect(d.byStatus).toMatchObject({ finance_payment: 2, procurement: 1 });
+    expect(d.byStatus).toMatchObject({ finance_payment: 2, procurement: 1, ordering: 1 });
   });
 
   it('finance role: awaitingPayment; procurement/lowStock null; byStatus по новому праву (№14)', async () => {
@@ -175,7 +178,9 @@ describe('getDashboard — Sprint 1 aggregates (role-scoped, permission-gated)',
     expect(d.awaitingPayment).toBeNull();
     expect(d.inProcurement).toBeNull();
     expect(d.lowStock).toBeNull();
-    expect(d.byStatus).toBeNull();
+    // FIXES 2026-07-17 (лист F): byStatus виден всем, но только по заявкам,
+    // которые пользователь видит (здесь — его собственные).
+    expect(d.byStatus).toMatchObject({ finance_payment: 2, procurement: 1, ordering: 1 });
   });
 
   it('director (oversight): byStatus + awaitingPayment; no procurement/warehouse cards', async () => {

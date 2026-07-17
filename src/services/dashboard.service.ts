@@ -185,10 +185,13 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   // so each number matches the list it opens.
   const [awaitingPayment, inProcurement, lowStock, byStatus] = await Promise.all([
     has('finance.view') ? countByStatusValue(db, baseWhere, 'finance_payment') : Promise.resolve(null),
-    has('procurement.view') ? countByStatusValue(db, baseWhere, 'procurement') : Promise.resolve(null),
+    // FIXES 2026-07-17 (лист G): «Для закупа» = согласованные директором заявки,
+    // дошедшие до этапа «Оформление заказа».
+    has('procurement.view') ? countByStatusValue(db, baseWhere, 'ordering') : Promise.resolve(null),
     has('warehouse.view') ? countLowStock(db, holdingId) : Promise.resolve(null),
-    // №14: сводка по статусам — по отдельному праву (или старшим reports/audit).
-    has('reports.view') || has('audit.view') || has('reports.status_summary') ? requestsByStatus(db, baseWhere) : Promise.resolve(null),
+    // FIXES 2026-07-17 (лист F): «Заявки по статусам» видят ВСЕ пользователи;
+    // baseWhere уже ограничивает выборку тем, что видит вызывающий.
+    requestsByStatus(db, baseWhere),
   ]);
 
   return {

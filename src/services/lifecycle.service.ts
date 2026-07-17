@@ -11,7 +11,7 @@
  * the new status, a status-history row, approval/signature bookkeeping and a DNA
  * audit log.
  */
-import { and, desc, eq, inArray, isNull, like, notInArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, like, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
@@ -74,7 +74,8 @@ const TERMINAL_LABELS: Record<string, string> = {
   [TERMINAL_REJECTED]: 'Отклонена',
   [TERMINAL_CANCELLED]: 'Отменена',
   [TERMINAL_ARCHIVED]: 'В архиве',
-  [STATUS_NEEDS_REVISION]: 'На доработке',
+  // FIXES 2026-07-17 (лист E): явный статус возврата.
+  [STATUS_NEEDS_REVISION]: 'Возвращено на доработку',
   draft: 'Черновик',
 };
 
@@ -306,7 +307,8 @@ async function canHandleStep(db: Db, userId: string, req: RequestRow, step: Kind
     // request moves to the manager approval step. Keep legacy actions callable
     // server-side, but don't surface them in the app.
     if (step.stepKind === 'procurement' && a.action !== 'add_quotation') continue;
-    if (step.stepKind === 'price_approval' && a.action !== 'approve_price') continue;
+    // FIXES 2026-07-17 (лист G): на проверке цены есть и «Пересмотреть цену».
+    if (step.stepKind === 'price_approval' && !['approve_price', 'return_research'].includes(a.action)) continue;
     if (sodBlocked(a, req, userId)) continue; // separation of duties
     if (a.requesterOnly && req.requesterId !== userId) continue;
     if (await actorMayAct(db, userId, req, step, a)) return true;
@@ -369,7 +371,8 @@ export async function inboxCandidates(db: Db, userId: string, holdingId: string)
             or(...stepConds),
           ),
         )
-        .orderBy(desc(schema.requests.createdAt))
+        // FIXES 2026-07-17 (лист C): заявки везде идут от первой созданной вниз.
+        .orderBy(schema.requests.createdAt)
     : [];
 
   // «На доработке» ждёт самого автора; у таких заявок нет текущего шага.
@@ -383,11 +386,12 @@ export async function inboxCandidates(db: Db, userId: string, holdingId: string)
         eq(schema.requests.requesterId, userId),
       ),
     )
-    .orderBy(desc(schema.requests.createdAt));
+    .orderBy(schema.requests.createdAt);
 
   const all = [...revisions, ...candidates.map((c: { r: RequestRow }) => c.r)];
+  // FIXES 2026-07-17 (лист C): порядок — от первой созданной к последней.
   all.sort(
-    (a: any, b: any) => new Date(b.createdAt as string).getTime() - new Date(a.createdAt as string).getTime(),
+    (a: any, b: any) => new Date(a.createdAt as string).getTime() - new Date(b.createdAt as string).getTime(),
   );
   return all as (RequestRow & { requestNumber: string; title: string | null; createdAt: unknown })[];
 }
@@ -431,7 +435,9 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   for (const a of defs) {
     if (a.reject || a.revision) continue;
     if (step.stepKind === 'procurement' && a.action !== 'add_quotation') continue;
-    if (step.stepKind === 'price_approval' && a.action !== 'approve_price') continue;
+    // FIXES 2026-07-17 (лист G): на проверке цены доступно и «Пересмотреть цену»
+    // (возврат снабженцу на шаг поиска с причиной).
+    if (step.stepKind === 'price_approval' && !['approve_price', 'return_research'].includes(a.action)) continue;
     // Assign-handoff on an APPROVAL step only before procurement; on procurement_intake
     // «Назначить снабженца» is a first-class action always available.
     if (a.assign && step.stepKind === 'approval' && !nextIsProcurement) continue;

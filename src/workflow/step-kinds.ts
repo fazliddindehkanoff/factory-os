@@ -178,7 +178,11 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   // #7 Операционная проверка цены/переход дальше — у назначенного снабженца.
   price_approval: [
     { action: 'approve_price', label: 'Отправить предложение', perm: 'procurement.quote', setOrderStatus: 'payment_in_progress', advance: true },
-    { action: 'return_research', label: 'Вернуть на повторный поиск', perm: 'procurement.select_supplier', comment: true, returnStep: true, advance: true },
+    // FIXES 2026-07-17 (лист G): «Пересмотреть цену» — возврат снабженцу на шаг
+    // поиска с причиной из пресетов (Завышенная цена / Найти других поставщиков /
+    // Найти на перечисление / Сделать конкурентный лист). Снабженец ставит новую
+    // цену и возвращает на проверку.
+    { action: 'return_research', label: 'Пересмотреть цену', perm: 'procurement.select_supplier', comment: true, reason: true, returnStep: true, advance: true },
     { action: 'reject_purchase', label: 'Отклонить закупку', perm: 'procurement.select_supplier', comment: true, reject: true, advance: true },
   ],
   finance_payment: [
