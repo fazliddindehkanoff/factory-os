@@ -818,7 +818,8 @@ export function buildRouter(deps: RouterDeps): Router {
       const approvals = await db
         .select()
         .from(schema.approvals)
-        .where(eq(schema.approvals.requestId, reqRow.id));
+        .where(eq(schema.approvals.requestId, reqRow.id))
+        .orderBy(schema.approvals.createdAt);
       const statusHistory = await db
         .select()
         .from(schema.requestStatusHistory)
@@ -876,6 +877,22 @@ export function buildRouter(deps: RouterDeps): Router {
             .reverse()
             .find((h) => h.newStatus === 'needs_revision' && h.oldStatus && h.oldStatus !== 'needs_revision')
         : undefined;
+      // Approval steps all share `pending_approval`, so oldStatus alone cannot
+      // identify which approval returned the request. The cancelled/rejected
+      // approval row carries the exact workflowStepId and the same actor/comment.
+      const returnApproval = returnEvent
+        ? [...(approvals as {
+            workflowStepId: string | null; status: string; approverUserId: string | null;
+            comment: string | null; approvedAt: unknown; createdAt: unknown;
+          }[])]
+            .reverse()
+            .find((a) =>
+              a.workflowStepId != null
+              && (a.status === 'cancelled' || a.status === 'rejected')
+              && (!returnEvent.changedBy || a.approverUserId === returnEvent.changedBy)
+              && (!returnEvent.comment || !a.comment || a.comment === returnEvent.comment),
+            )
+        : undefined;
       let workflowTimeline: {
         stepId: string; stepName: string; stepKind: string; state: TLState;
         actorName: string | null; actorRole: string | null; at: unknown; action: string | null;
@@ -919,9 +936,9 @@ export function buildRouter(deps: RouterDeps): Router {
         // Non-approval steps do not have approval rows, so below we fall back to
         // lifecycle status history: the actor who moved out of that step.
         const stepAction = new Map<string, { action: string; at: unknown; actorId: string | null; comment: string | null }>();
-        for (const a of approvals as { workflowStepId: string | null; status: string; approvedAt: unknown; approverUserId: string | null; comment: string | null }[]) {
+        for (const a of approvals as { workflowStepId: string | null; status: string; approvedAt: unknown; createdAt: unknown; approverUserId: string | null; comment: string | null }[]) {
           if (a.workflowStepId && (a.status === 'approved' || a.status === 'rejected')) {
-            stepAction.set(a.workflowStepId, { action: a.status, at: a.approvedAt, actorId: a.approverUserId, comment: a.comment ?? null });
+            stepAction.set(a.workflowStepId, { action: a.status, at: a.approvedAt ?? a.createdAt, actorId: a.approverUserId, comment: a.comment ?? null });
           }
         }
         type TimelineHistory = {
@@ -967,7 +984,9 @@ export function buildRouter(deps: RouterDeps): Router {
 
         // Шаг, вернувший заявку автору: его статус = oldStatus события возврата.
         const returnStepIndex = returnEvent
-          ? (sorted as { stepKind: string }[]).findIndex((s) => statusForStep(s as any) === returnEvent.oldStatus)
+          ? returnApproval?.workflowStepId
+            ? (sorted as { id: string }[]).findIndex((s) => s.id === returnApproval.workflowStepId)
+            : (sorted as { stepKind: string }[]).findIndex((s) => statusForStep(s as any) === returnEvent.oldStatus)
           : -1;
 
         let foundCurrent = false;
@@ -1022,6 +1041,19 @@ export function buildRouter(deps: RouterDeps): Router {
       const [requesterRow] = reqRow.requesterId
         ? await db.select({ name: schema.users.fullName }).from(schema.users).where(eq(schema.users.id, reqRow.requesterId))
         : [];
+      const requesterRoleRows = reqRow.requesterId
+        ? await db
+            .select({ code: schema.roles.code, name: schema.roles.name, assignedAt: schema.userRoles.assignedAt })
+            .from(schema.userRoles)
+            .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
+            .where(and(eq(schema.userRoles.userId, reqRow.requesterId), eq(schema.userRoles.status, 'active')))
+            .orderBy(schema.userRoles.assignedAt)
+        : [];
+      // Prefer the requester's business role over the generic Assistant role.
+      // This fixes requests created directly by a department head (and similar
+      // roles) while retaining Assistant for ordinary requesters.
+      const requesterRole = requesterRoleRows.find((r: { code: string }) => r.code !== 'requester')
+        ?? requesterRoleRows[0];
       const [respRow] = reqRow.responsibleUserId
         ? await db.select({ name: schema.users.fullName }).from(schema.users).where(eq(schema.users.id, reqRow.responsibleUserId))
         : [];
@@ -1041,8 +1073,9 @@ export function buildRouter(deps: RouterDeps): Router {
         action: 'created',
         at: reqRow.createdAt,
         actorName: requesterRow?.name ?? null,
-        // FIXES 2026-07-17: роль «Заявитель» → «Assistant».
-        actorRole: 'Assistant',
+        actorRole: requesterRole?.name === 'Заместитель директора'
+          ? 'Главный инженер'
+          : requesterRole?.name ?? 'Assistant',
         comment: null,
       });
 

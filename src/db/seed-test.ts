@@ -68,6 +68,7 @@ const STEP_SPECS = [
   { order: 6, name: 'Утверждение учредителя', kind: 'approval', role: 'owner' },
   { order: 7, name: 'Прибытие товара на склад', kind: 'delivery', role: 'warehouse_worker' },
   { order: 8, name: 'Приёмка товара', kind: 'receiving', role: 'warehouse_worker' },
+  { order: 9, name: 'Подтверждение получения', kind: 'close', role: 'requester' },
 ];
 
 async function roleId(db: Db, code: string): Promise<string | undefined> {

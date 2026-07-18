@@ -42,6 +42,16 @@ async function seedAggregates(db: any, holdingId: string, requesterId: string, f
   // Attach the tenant's active workflow so role participants (finance/procurement)
   // can SEE these requests under the visibility model (real requests always have one).
   const [wf] = await db.select().from(schema.workflows).where(eq(schema.workflows.holdingId, holdingId)).limit(1);
+  // Synthetic finance_payment rows below must belong to a workflow that actually
+  // contains a finance step; otherwise the visibility model correctly excludes
+  // them from a finance user's scope.
+  await db.insert(schema.workflowSteps).values({
+    workflowId: wf.id,
+    stepOrder: 99,
+    stepName: 'Оплата',
+    stepKind: 'finance_payment',
+    approverRoleId: await systemRoleId(db, 'finance'),
+  });
   const mk = (n: number, status: string) =>
     db.insert(schema.requests).values({
       requestNumber: `A-${status}-${n}`,
@@ -195,6 +205,14 @@ describe('getDashboard — Sprint 1 aggregates (role-scoped, permission-gated)',
     expect(d.awaitingPayment).toBe(2); // finance.view
     expect(d.inProcurement).toBeNull(); // no procurement.view
     expect(d.lowStock).toBeNull(); // no warehouse.view
+  });
+
+  it('chief engineer does not get the awaiting-payment card', async () => {
+    const { db, holding, factory, requester } = await setup();
+    await seedAggregates(db, holding.id, requester.id, factory.id);
+    const uid = await mkUserWithRole(db, holding.id, 'chief-engineer', 'deputy_director');
+    const d = await getDashboard(db, uid, holding.id);
+    expect(d.awaitingPayment).toBeNull();
   });
 
   it('auditor: byStatus only (read oversight), no money/stock cards', async () => {

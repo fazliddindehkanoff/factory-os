@@ -28,7 +28,7 @@ const STEP_SPECS: StepSpec[] = [
   { code: 'warehouse', order: 2, name: 'Проверка склада', kind: 'warehouse_check' },
   { code: 'deputy_director', order: 3, name: 'Главный инженер', kind: 'approval' },
   { code: 'procurement_head', order: 4, name: 'Руководитель снабжения — принятие заявки', kind: 'procurement_intake', condition: { inStock: false } },
-  { code: 'procurement', order: 5, name: 'Снабженец — поиск поставщика', kind: 'procurement', condition: { inStock: false } },
+  { code: 'procurement', order: 5, name: 'Снабженец — процесс поиска', kind: 'procurement', condition: { inStock: false } },
   { code: 'procurement_head', order: 6, name: 'Руководитель снабжения — проверка цены', kind: 'price_approval', condition: { inStock: false } },
   { code: 'director', order: 7, name: 'Директор', kind: 'approval', condition: { inStock: false } },
   { code: 'procurement', order: 8, name: 'Снабженец — оформление заказа', kind: 'ordering', condition: { inStock: false } },

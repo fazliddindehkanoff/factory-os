@@ -9,7 +9,12 @@ import { assertWipeAllowed } from './_wipe-guard.js';
 
 async function main() {
   assertWipeAllowed('clear-requests.ts');
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  const url = process.env.DATABASE_URL;
+  const needsSsl = Boolean(url && /neon\.tech|sslmode=require|amazonaws\.com/.test(url));
+  const pool = new Pool({
+    connectionString: url,
+    ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
+  });
   const before = (await pool.query('SELECT count(*)::int AS n FROM requests')).rows[0].n;
 
   // P1-8: request→history FKs are now RESTRICT (no cascade), so this dev-only

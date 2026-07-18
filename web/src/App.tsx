@@ -879,7 +879,7 @@ function Home({
   // простановки цены ждут его действия в этой очереди.
   if (can('approvals.approve') || can('procurement.view')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
   if (oversight) cards.push({ key: 'total', label: 'Активных всего', value: dash?.totalActive ?? null, tint: 'success', ic: 'box', onClick: () => onNav({ name: 'list' }) });
-  if (dash && dash.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
+  if (dash?.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
   // FIXES 2026-07-17 (лист G): «Для закупа» — заявки, согласованные директором
   // (этап «Оформление заказа»), а не всё, что в поиске поставщика.
   if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'Для закупа', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'ordering' }) });

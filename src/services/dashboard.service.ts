@@ -40,7 +40,7 @@ export interface Dashboard {
   activity: DashboardActivity[];
   // Sprint 1 additive, role-scoped + permission-gated aggregates.
   // `null` = the caller lacks the permission → the card is hidden (never a fake 0).
-  awaitingPayment: number | null; // finance.view — requests parked on the finance step
+  awaitingPayment: number | null; // finance.view, except chief engineer — requests parked on the finance step
   inProcurement: number | null; // procurement.view — requests on the procurement step
   lowStock: number | null; // warehouse.view — stock balances at/under their min qty
   byStatus: Record<string, number> | null; // oversight (reports.view | audit.view)
@@ -106,6 +106,14 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   // holding; a pure requester/observer sees only their own requests. (H3 fix)
   const codes = await getUserPermissionCodes(db, userId);
   const has = (p: string) => codes.includes(p);
+  // «Главный инженер» keeps finance.view for amount visibility, but payment is
+  // not their operational queue and must not appear as a dashboard card.
+  const assignedRoles = await db
+    .selectDistinct({ code: schema.roles.code })
+    .from(schema.userRoles)
+    .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
+    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
+  const isChiefEngineer = assignedRoles.some((r: { code: string }) => r.code === 'deputy_director');
   // Activity feed follows the request-visibility model (bug #2): own + involved +
   // role-in-workflow; top roles see the whole holding.
   const vis = await getRequestVisibility(db, userId);
@@ -200,7 +208,9 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   // (null → card hidden) AND scoped to what the caller can see (top roles → holding),
   // so each number matches the list it opens.
   const [awaitingPayment, inProcurement, lowStock, byStatus] = await Promise.all([
-    has('finance.view') ? countByStatusValue(db, baseWhere, 'finance_payment') : Promise.resolve(null),
+    has('finance.view') && !isChiefEngineer
+      ? countByStatusValue(db, baseWhere, 'finance_payment')
+      : Promise.resolve(null),
     // FIXES 2026-07-17 (лист G): «Для закупа» = согласованные директором заявки,
     // дошедшие до этапа «Оформление заказа».
     has('procurement.view') ? countByStatusValue(db, baseWhere, 'ordering') : Promise.resolve(null),

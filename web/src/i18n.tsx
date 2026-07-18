@@ -416,7 +416,7 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   'Руководитель отдела': { uz: 'Bo‘lim boshlig‘i', en: 'Department head', tr: 'Bölüm müdürü' },
   'Главный инженер': { uz: 'Bosh muhandis', en: 'Chief engineer', tr: 'Baş mühendis' },
   'Руководитель снабжения — принятие заявки': { uz: 'Ta’minot rahbari — arizani qabul qilish', en: 'Procurement head — request intake', tr: 'Satın alma yöneticisi — talep kabulü' },
-  'Снабженец — поиск поставщика': { uz: 'Ta’minotchi — yetkazib beruvchi izlash', en: 'Procurement specialist — supplier search', tr: 'Satın alma uzmanı — tedarikçi arama' },
+  'Снабженец — процесс поиска': { uz: 'Ta’minotchi — qidiruv jarayoni', en: 'Procurement specialist — search process', tr: 'Satın alma uzmanı — arama süreci' },
   'Руководитель снабжения — проверка цены': { uz: 'Ta’minot rahbari — narxni tekshirish', en: 'Procurement head — price review', tr: 'Satın alma yöneticisi — fiyat kontrolü' },
   'Директор': { uz: 'Direktor', en: 'Director', tr: 'Direktör' },
   'Снабженец — оформление заказа': { uz: 'Ta’minotchi — buyurtmani rasmiylashtirish', en: 'Procurement specialist — order placement', tr: 'Satın alma uzmanı — sipariş oluşturma' },

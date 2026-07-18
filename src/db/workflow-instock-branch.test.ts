@@ -1,7 +1,7 @@
 /**
- * H1 — the default tenant workflow must route an in-stock request straight to
- * issue (skipping procurement/finance_payment/delivery/receiving), so issue draws
- * from existing stock and the balance is not artificially netted to zero.
+ * The approved default tenant workflow has a 9-step business route. In-stock
+ * requests skip the conditional procurement/fulfilment tail; out-of-stock
+ * requests traverse that tail through warehouse receiving.
  * M3 — tenant:setup must not seed demo users unless explicitly asked.
  */
 import { describe, it, expect } from 'vitest';
@@ -24,7 +24,7 @@ async function db() {
 }
 
 describe('H1 — in-stock routing on the seeded tenant workflow', () => {
-  it('in-stock skips procurement/finance_payment/delivery/receiving; out-of-stock includes them', async () => {
+  it('in-stock skips the procurement tail; out-of-stock includes it', async () => {
     const d = await db();
     const { workflow } = await setupTenant(d, { holdingName: 'Z' });
     const steps = await d.select().from(schema.workflowSteps).where(eq(schema.workflowSteps.workflowId, workflow.id));
@@ -41,16 +41,16 @@ describe('H1 — in-stock routing on the seeded tenant workflow', () => {
     const inStock = kindsFor(true);
     expect(inStock).toContain('approval'); // dept_head sign-off still applies
     expect(inStock).toContain('warehouse_check');
-    expect(inStock).toContain('issue');
-    expect(inStock).toContain('close');
     expect(inStock).not.toContain('procurement');
     expect(inStock).not.toContain('finance_payment');
     expect(inStock).not.toContain('delivery');
     expect(inStock).not.toContain('receiving');
 
     const outOfStock = kindsFor(false);
+    expect(outOfStock).toContain('procurement_intake');
     expect(outOfStock).toContain('procurement');
-    expect(outOfStock).toContain('finance_payment');
+    expect(outOfStock).toContain('price_approval');
+    expect(outOfStock).toContain('ordering');
     expect(outOfStock).toContain('receiving');
   });
 
