@@ -1086,6 +1086,61 @@ export function buildRouter(deps: RouterDeps): Router {
         canSeeMoney ? it : { ...it, estimatedPrice: null, totalAmount: null },
       );
 
+      // №12в: «История действий» — только ролям с audit.view, зато МАКСИМАЛЬНО
+      // подробная: история статусов + полный аудит-трейл заявки. Остальным ходом
+      // заявки служит workflowTimeline.
+      const canSeeHistory = viewerCodes.includes('audit.view');
+      let auditTrail: unknown[] = [];
+      if (canSeeHistory) {
+        const trail = await db
+          .select()
+          .from(schema.auditLogs)
+          .where(and(eq(schema.auditLogs.entityType, 'request'), eq(schema.auditLogs.entityId, reqRow.id)))
+          .orderBy(schema.auditLogs.createdAt);
+        const trailUserIds = [...new Set(trail.map((t: { userId: string | null }) => t.userId).filter(Boolean))] as string[];
+        const trailUsers = trailUserIds.length
+          ? await db.select({ id: schema.users.id, fullName: schema.users.fullName }).from(schema.users).where(inArray(schema.users.id, trailUserIds))
+          : [];
+        const trailNameBy = new Map((trailUsers as { id: string; fullName: string }[]).map((x) => [x.id, x.fullName]));
+        auditTrail = trail.map((t: any) => ({
+          id: t.id,
+          action: t.action,
+          module: t.module,
+          userId: t.userId,
+          userName: t.userId ? trailNameBy.get(t.userId) ?? null : null,
+          oldValue: t.oldValue,
+          newValue: t.newValue,
+          source: t.source,
+          createdAt: t.createdAt,
+        }));
+      }
+
+      // Кастомные поля: сырые ключи/коды («purpose: repair») резолвим в подписи
+      // конструктора формы («Назначение / цель: Ремонт оборудования») — фронт
+      // не должен знать конфиг формы (сервер — источник истины).
+      let customInfo: { label: string; value: string }[] = [];
+      const cfEntries = reqRow.customFields && typeof reqRow.customFields === 'object'
+        ? Object.entries(reqRow.customFields as Record<string, unknown>)
+        : [];
+      if (cfEntries.length) {
+        const ff = await db
+          .select()
+          .from(schema.formFields)
+          .where(and(eq(schema.formFields.holdingId, reqRow.holdingId), eq(schema.formFields.screen, 'request_create')));
+        const fieldByKey = new Map((ff as any[]).map((f) => [f.fieldKey, f]));
+        for (const [k, v] of cfEntries) {
+          if (v == null || String(v).trim() === '' || v === false) continue;
+          const f = fieldByKey.get(k);
+          let value = v === true ? 'Да' : String(v);
+          const opts = f?.options as { value: string; label: string }[] | null;
+          if (Array.isArray(opts)) {
+            const o = opts.find((x) => x.value === value);
+            if (o) value = o.label;
+          }
+          customInfo.push({ label: f?.label ?? k, value });
+        }
+      }
+
       // Кнопки/поля на фронте — только из ответа сервера: canEdit повторяет
       // ровно ту проверку, которой PUT /requests/:id пропускает правку.
       const canEdit = canEditRequestRow(reqRow, u.id, viewerCodes, approvals);
@@ -1104,6 +1159,9 @@ export function buildRouter(deps: RouterDeps): Router {
         canSeeMoney,
         actions,
         canEdit,
+        statusHistory: canSeeHistory ? statusHistoryOut : [],
+        auditTrail,
+        customInfo,
         workflowTimeline,
       });
     } catch (e) {

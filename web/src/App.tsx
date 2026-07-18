@@ -123,6 +123,8 @@ interface RequestDetail extends RequestRow {
   canSeeMoney?: boolean;
   /** Сервер: этот пользователь может править заявку на текущем этапе (PUT /requests/:id). */
   canEdit?: boolean;
+  /** Кастомные поля с подписями из конструктора формы (сервер резолвит ключи и коды). */
+  customInfo?: { label: string; value: string }[];
   // full-info fields (bug #9)
   requesterName?: string | null;
   responsibleName?: string | null;
@@ -2500,6 +2502,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
     if (statuses.every((s) => s === 'out_of_stock')) return 'wh_out_of_stock';
     return 'wh_partial';
   };
+  const history = req.statusHistory ?? [];
   // КП фильтрует сервер (getMoneyVisibility) — согласующие после шага закупки
   // (напр. «Исп дир») видят их без procurement.*-прав.
   const quotations = req.quotations ?? [];
@@ -2528,15 +2531,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   pushInfo('Завод', req.factoryName);
   pushInfo('Отдел', req.departmentNameResolved ?? req.departmentName);
   pushInfo('Склад', req.warehouseName);
-  // «Объект» — настраиваемое поле формы (custom_fields.obyekt); показываем его
-  // как полноценную строку в основной сетке, а не в блоке «Дополнительно».
-  const cfObj = req.customFields && typeof req.customFields === 'object' ? (req.customFields as Record<string, unknown>) : {};
-  pushInfo('Объект', cfObj.obyekt);
-  // Лист Excel №2/№3: «происхождение закупки» (origin) — сразу после «Объект»,
-  // в основной сетке (а не внизу в «Дополнительно»), с подписью «Место закупа»
-  // и человекочитаемым значением Местный/Импорт.
-  const ORIGIN_LABEL: Record<string, string> = { local: 'Местный', import: 'Импорт' };
-  pushInfo('Место закупа', cfObj.origin ? (ORIGIN_LABEL[String(cfObj.origin)] ?? cfObj.origin) : null);
   pushInfo('Ответственный', req.responsibleName);
   const ORDER_STATUS_LABEL: Record<string, string> = {
     started: 'Я начал',
@@ -2550,10 +2544,12 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   pushInfo('Статус снабжения', req.orderStatus ? (ORDER_STATUS_LABEL[req.orderStatus] ?? req.orderStatus) : null);
   pushInfo('Нужно к', req.neededDate ? fmtDate(req.neededDate) : null);
   if (req.canSeeMoney && req.estimatedAmount != null) pushInfo('Сумма', `${Number(req.estimatedAmount).toLocaleString('ru-RU')} ${req.currency || 'UZS'}`);
-  // Custom form fields entered at creation. `obyekt` is promoted to the main
-  // info grid above, so exclude it here to avoid showing it twice.
-  // `obyekt` и `origin` подняты в основную сетку выше — не дублируем их в «Дополнительно».
-  const customEntries = (req.customFields && typeof req.customFields === 'object' ? Object.entries(req.customFields as Record<string, unknown>) : []).filter(([k]) => k !== 'obyekt' && k !== 'origin');
+  // Макет 09.07: при одной позиции — «Количество: 1 л»; при нескольких — счётчик.
+  if (req.items.length === 1) pushInfo('Количество', `${req.items[0].quantity}${req.items[0].unit ? ' ' + req.items[0].unit : ''}`);
+  else pushInfo('Позиций', String(req.items.length));
+  // Кастомные поля (включая «Объект») — уже с подписями формы от сервера
+  // (customInfo), не сырые ключи; блок «Дополнительно» больше не нужен.
+  for (const ci of req.customInfo ?? []) pushInfo(ci.label, ci.value);
 
   // Фото позиции: мастер грузит вложения именем «<Позиция> - <файл>», по этому
   // префиксу и находим картинки конкретной позиции (mime может быть пуст —
@@ -2613,6 +2609,13 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
           ))}
         </div>
       </div>
+
+      {req.description && String(req.description).trim() !== '' && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>Примечание</div>
+          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
+        </div>
+      )}
 
       {/* Позиции — сразу под шапкой, до прогресса согласования. Метки/значения
           чёрным, фото каждой позиции — справа. */}
@@ -2707,7 +2710,11 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         </div>
       )}
 
-      {/* Progress timeline — top of the card (#10), per-step actor/date-time (#7), correct rejected state (#4) */}
+      <AttachmentsSection requestId={id} />
+
+      {/* Задача Сарвара 09.07: примечание/позиции/вложения — часть информации
+          о заявке и стоят ВЫШЕ процесса согласования (#10 timeline после них,
+          per-step actor/date-time #7, rejected-состояние #4). */}
       {(req.workflowTimeline ?? []).length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Процесс согласования</div>
@@ -2755,27 +2762,6 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         </div>
       )}
 
-      {req.description && String(req.description).trim() !== '' && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Примечание</div>
-          <div style={{ fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{req.description}</div>
-        </div>
-      )}
-
-      {customEntries.length > 0 && (
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-          <div style={SECTION_LABEL}>Дополнительно</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '11px 12px' }}>
-            {customEntries.map(([k, v]) => (
-              <div key={k}>
-                <div style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{k}</div>
-                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)', marginTop: 3 }}>{v == null || v === '' ? '—' : String(v)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {quotations.length > 0 && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
           <div style={SECTION_LABEL}>Коммерческие предложения</div>
@@ -2797,7 +2783,62 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
         </div>
       )}
 
-      <AttachmentsSection requestId={id} />
+      {/* №12в: история — только ролям с audit.view (сервер отдаёт её лишь им),
+          зато подробная: переходы статусов, источник, плюс полный аудит-лог. */}
+      {history.length > 0 && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
+          <div style={SECTION_LABEL}>История действий (аудит)</div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {history.map((h, idx) => {
+              const m = statusMeta(h.newStatus);
+              const last = idx === history.length - 1;
+              return (
+                <div key={h.id} style={{ display: 'flex', gap: 13 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 'none' }}>
+                    <span style={{ width: 12, height: 12, borderRadius: '50%', marginTop: 4, flex: 'none', background: m.color }} />
+                    {!last && <span style={{ width: 2, flex: 1, minHeight: 18, background: 'var(--line)' }} />}
+                  </div>
+                  <div style={{ paddingBottom: 14, paddingTop: 1 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)' }}>
+                      {h.oldStatus ? `${statusMeta(h.oldStatus).label} → ` : ''}{m.label}
+                    </div>
+                    {h.changedByName && (
+                      <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>
+                        {h.changedByName}
+                        {h.changedByRole ? ` · ${h.changedByRole}` : ''}
+                      </div>
+                    )}
+                    {h.comment && <div style={{ fontSize: 12, color: 'var(--fg2)', marginTop: 2 }}>{h.comment}</div>}
+                    <div style={{ fontSize: 11, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 2 }}>
+                      {fmtDateTime(h.createdAt)}{(h as any).source ? ` · ${(h as any).source}` : ''}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {((req as any).auditTrail ?? []).length > 0 && (
+            <>
+              <div style={{ ...SECTION_LABEL, marginTop: 14 }}>Аудит-лог</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {((req as any).auditTrail as any[]).map((t) => (
+                  <div key={t.id} style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{t.action}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--fg2)', marginTop: 2 }}>
+                      {t.userName ?? 'система'} · {t.module}{t.source ? ` · ${t.source}` : ''} · {fmtDateTime(t.createdAt)}
+                    </div>
+                    {(t.oldValue || t.newValue) && (
+                      <div style={{ fontSize: 10.5, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace", marginTop: 3, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {t.oldValue ? `− ${JSON.stringify(t.oldValue)}\n` : ''}{t.newValue ? `+ ${JSON.stringify(t.newValue)}` : ''}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {error && <Err>{error}</Err>}
 
