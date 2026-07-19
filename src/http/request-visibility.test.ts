@@ -75,13 +75,30 @@ describe('H3 — request detail visibility', () => {
     await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(404);
   });
 
-  it('a top role (director, audit.view) can read any request in the holding', async () => {
+  it('a top role (auditor, audit.view) can read any request in the holding', async () => {
+    // auditor holds audit.view but is NOT a step in this workflow → proves the
+    // pure top-role (TOP_VIEW_PERMS) see-all path, independent of participation.
     const { app, user, mkReq, login } = await make();
     const alice = await user(['requester'], 'alice');
-    await user(['director'], 'dir');
+    await user(['auditor'], 'aud');
     const reqA = await mkReq(alice);
-    const tk = await login('dir');
+    const tk = await login('aud');
     await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
+  });
+
+  // FIXES 2026-07-19: director dropped audit.view → no longer a top role. They see
+  // reqA here ONLY because they approve a step in its workflow (participation), not
+  // holding-wide. On a workflow with no director step, a director gets 404.
+  it('a director without a step in the workflow cannot read the request (404)', async () => {
+    const { app, db, holding, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['director'], 'dir');
+    // A second workflow the director does NOT approve on; put the request there.
+    const [wf2] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W2', isActive: false }).returning();
+    const reqA = await mkReq(alice);
+    await db.update(schema.requests).set({ workflowId: wf2.id }).where(eq(schema.requests.id, reqA.id));
+    const tk = await login('dir');
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(404);
   });
 
   // bug #2: a former "oversight" permission alone no longer grants visibility —

@@ -31,6 +31,11 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
   {
     code: 'director',
     name: 'Директор',
+    // FIXES 2026-07-19: 'audit.view' убран у директора — он больше не видит
+    // «Историю действий» на заявке. Побочный эффект принят владельцем: право было
+    // единственным источником сквозной видимости (TOP_VIEW_PERMS), поэтому
+    // директор теперь видит заявки по участию (автор/ответственный/шаг маршрута),
+    // а не всё подряд. Суммы остаются видны через finance.view.
     permissions: [
       'reports.status_summary',
       'requests.view',
@@ -38,7 +43,6 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'approvals.reject',
       'approvals.override',
       'finance.view',
-      'audit.view',
       'reports.view',
       'users.view',
     ],

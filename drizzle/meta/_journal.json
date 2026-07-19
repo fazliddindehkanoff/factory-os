@@ -253,6 +253,13 @@
       "when": 1784624520000,
       "tag": "0035_fix_progress_labels",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784624580000,
+      "tag": "0036_remove_director_audit_view",
+      "breakpoints": true
     }
   ]
 }

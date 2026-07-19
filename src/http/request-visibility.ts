@@ -2,7 +2,7 @@
  * Request visibility model (bug #2).
  *
  * A user sees a request if ANY holds:
- *   1. they are a TOP role (owner / director / auditor — all carry `audit.view`) → see all;
+ *   1. they are a TOP role (owner / auditor / admin / ops-lead — all carry `audit.view`) → see all;
  *   2. they are the requester (author);
  *   3. they have already acted on it (status-history change or a signature);
  *   4. one of their active roles is an (enabled) approver step in the request's workflow
@@ -17,7 +17,8 @@ import { getUserPermissionCodes } from '../rbac/rbac.js';
 
 type Db = any;
 
-// Top roles see the whole holding. owner/director/auditor (and admin/ops-lead) hold audit.view.
+// Top roles see the whole holding. owner/auditor/admin/ops-lead hold audit.view.
+// (Director dropped audit.view on 2026-07-19 → no longer a top role; sees by participation.)
 export const TOP_VIEW_PERMS = ['audit.view'];
 
 export interface RequestVisibility {
