@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { sql } from 'drizzle-orm';
+import { createRequest } from '../services/request.service.js';
 
 type Db = any;
 
@@ -390,110 +391,346 @@ async function deleteDashboardRow(db: Db, itemId: string): Promise<void> {
   await refreshRequestAmount(db, requestId);
 }
 
+// ── Meta + create (the «Новая заявка» view of the dashboard) ─────────────────
+
+/** The dashboard is per-deployment (password-gated, not user-scoped): resolve
+ *  the primary holding as «the one with the most requests», fallback first. */
+async function primaryHoldingId(db: Db): Promise<string | null> {
+  const result = await db.execute(sql`
+    SELECT h.id
+    FROM holdings h
+    LEFT JOIN requests r ON r.holding_id = h.id
+    GROUP BY h.id, h.created_at
+    ORDER BY COUNT(r.id) DESC, h.created_at ASC
+    LIMIT 1
+  `);
+  const rows: Array<Record<string, unknown>> = Array.isArray(result) ? result : (result.rows ?? []);
+  return rows[0] ? text(rows[0].id) : null;
+}
+
+function optionList(v: unknown): { value: string; label: string }[] {
+  const raw = Array.isArray(v) ? v : [];
+  return raw
+    .map((o) => ({ value: text((o as any)?.value), label: text((o as any)?.label) || text((o as any)?.value) }))
+    .filter((o) => o.value);
+}
+
+async function fetchCreateMeta(db: Db): Promise<Record<string, unknown>> {
+  const holdingId = await primaryHoldingId(db);
+  if (!holdingId) return { holdingId: null, users: [], departments: [], warehouses: [], types: [], objects: [], purposes: [], origins: [], units: [], priorities: [] };
+
+  const usersRes = await db.execute(sql`
+    SELECT id, full_name FROM users
+    WHERE holding_id = ${holdingId} AND status = 'active'
+    ORDER BY full_name ASC
+  `);
+  const deptRes = await db.execute(sql`
+    SELECT id, name FROM departments
+    WHERE holding_id = ${holdingId} AND status = 'active'
+    ORDER BY name ASC
+  `);
+  const whRes = await db.execute(sql`
+    SELECT name FROM warehouses
+    WHERE holding_id = ${holdingId} AND status = 'active'
+    ORDER BY name ASC
+  `);
+  const ffRes = await db.execute(sql`
+    SELECT field_key, options FROM form_fields
+    WHERE holding_id = ${holdingId} AND screen = 'request_create' AND enabled = true
+  `);
+  const users = (Array.isArray(usersRes) ? usersRes : usersRes.rows ?? []).map((u: any) => ({ id: text(u.id), name: text(u.full_name) }));
+  const departments = (Array.isArray(deptRes) ? deptRes : deptRes.rows ?? []).map((d: any) => ({ id: text(d.id), name: text(d.name) }));
+  const warehouses = (Array.isArray(whRes) ? whRes : whRes.rows ?? []).map((w: any) => text(w.name));
+  const ff = new Map<string, unknown>();
+  for (const f of (Array.isArray(ffRes) ? ffRes : ffRes.rows ?? []) as any[]) ff.set(text(f.field_key), f.options);
+
+  return {
+    holdingId,
+    users,
+    departments,
+    warehouses,
+    types: optionList(ff.get('requestType')).length ? optionList(ff.get('requestType')) : [
+      { value: 'material_request', label: 'Материал' },
+      { value: 'service_request', label: 'Услуга' },
+    ],
+    objects: optionList(ff.get('obyekt')),
+    purposes: optionList(ff.get('purpose')),
+    origins: optionList(ff.get('origin')).length ? optionList(ff.get('origin')) : [
+      { value: 'local', label: 'Местный' },
+      { value: 'import', label: 'Импорт' },
+    ],
+    units: optionList(ff.get('unit')).length ? optionList(ff.get('unit')) : ['шт', 'кг', 'г', 'л', 'м', 'т', 'м²', 'рулон', 'упак'].map((u) => ({ value: u, label: u })),
+    priorities: optionList(ff.get('priority')).length ? optionList(ff.get('priority')) : [
+      { value: 'normal', label: 'Стандартная' },
+      { value: 'high', label: 'Срочная' },
+      { value: 'urgent', label: 'Аварийная' },
+    ],
+  };
+}
+
+interface CreateBody {
+  requesterId?: unknown;
+  requestType?: unknown;
+  departmentId?: unknown;
+  warehouseName?: unknown;
+  obyekt?: unknown;
+  origin?: unknown;
+  purpose?: unknown;
+  priority?: unknown;
+  neededDate?: unknown;
+  comment?: unknown;
+  items?: unknown;
+}
+
+async function createFromDashboard(db: Db, body: CreateBody): Promise<{ id: string; requestNumber: string }> {
+  const holdingId = await primaryHoldingId(db);
+  if (!holdingId) throw new Error('Нет холдинга');
+  const requesterId = text(body.requesterId).trim();
+  if (!requesterId) throw new Error('Укажите заявителя');
+
+  const rawItems = Array.isArray(body.items) ? body.items : [];
+  const items = rawItems
+    .map((it: any) => ({
+      name: text(it?.name).trim(),
+      code: text(it?.code).trim(),
+      qty: num(it?.qty),
+      unit: text(it?.unit).trim(),
+      price: num(it?.price),
+      pay: text(it?.pay).trim(),
+      note: text(it?.note).trim(),
+    }))
+    .filter((it) => it.name);
+  if (!items.length) throw new Error('Добавьте хотя бы одну позицию');
+  for (const it of items) if (!(it.qty > 0)) throw new Error('Количество должно быть больше нуля: ' + it.name);
+
+  const priority = ['low', 'normal', 'high', 'urgent', 'critical'].includes(text(body.priority)) ? text(body.priority) as any : 'normal';
+  const customFields: Record<string, unknown> = {};
+  if (text(body.obyekt).trim()) { customFields.obyekt = text(body.obyekt).trim(); customFields.object = text(body.obyekt).trim(); }
+  if (text(body.origin).trim()) customFields.origin = text(body.origin).trim();
+  if (text(body.purpose).trim()) customFields.purpose = text(body.purpose).trim();
+  const neededRaw = text(body.neededDate).trim();
+  const neededDate = neededRaw ? new Date(neededRaw) : null;
+
+  const req = await createRequest(db, {
+    holdingId,
+    requesterId,
+    departmentId: text(body.departmentId).trim() || null,
+    requestType: text(body.requestType).trim() || 'material_request',
+    priority,
+    title: items[0].name,
+    description: text(body.comment).trim() || undefined,
+    warehouseName: text(body.warehouseName).trim() || null,
+    neededDate: neededDate && !Number.isNaN(neededDate.getTime()) ? neededDate : null,
+    customFields: Object.keys(customFields).length ? customFields : null,
+    items: items.map((it) => {
+      // Description keys mirror what fetchDashboardRows parses back into columns.
+      const lines: string[] = [];
+      if (it.code) lines.push(`Код товара: ${it.code}`);
+      if (it.note) lines.push(`Примечание: ${it.note}`);
+      return {
+        name: it.name,
+        quantity: it.qty,
+        unitPrice: it.price,
+        unit: it.unit || null,
+        description: lines.length ? lines.join('\n') : null,
+      };
+    }),
+  });
+
+  // Банк/Нал per line — request_items.payment_type is not part of the create
+  // service input, so set it right after (the table reads this column).
+  for (const it of items) {
+    if (!it.pay) continue;
+    await db.execute(sql`
+      UPDATE request_items SET payment_type = ${it.pay}
+      WHERE request_id = ${req.id} AND name = ${it.name}
+    `);
+  }
+  return { id: text(req.id), requestNumber: text(req.requestNumber) };
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
+// Design language ported from the confirmed «Новая заявка» mock: dark #080D19,
+// indigo→cyan gradient accents, Inter. Sidebar is NAVIGATION ONLY (Обзор /
+// Новая заявка / Выйти) — filters live in a collapsible panel above the table.
+
 function pageHtml(): string {
   return `<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Snabbase Dashboard</title>
+  <title>Снабжение — Dashboard</title>
   <style>
-    :root { --bg:#f4f6f9; --card:#fff; --fg:#17182b; --muted:#687386; --line:#dfe5ee; --head:#1a2b4a; --accent:#2d7dd2; --danger:#b42318; --ok:#16875a; --nav:#10203c; }
-    * { box-sizing:border-box; }
-    body { margin:0; font-family:Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
-    .app-shell { min-height:100vh; display:grid; grid-template-columns:300px minmax(0, 1fr); }
-    .wrap { min-width:0; padding:20px; }
-    .navbar { position:sticky; top:0; z-index:10; display:flex; justify-content:space-between; align-items:center; gap:14px; min-height:70px; padding:12px 20px; background:rgba(255,255,255,.92); border-bottom:1px solid var(--line); backdrop-filter:blur(12px); }
-    .nav-left { display:flex; align-items:center; gap:12px; min-width:0; }
-    .brand-mark { width:40px; height:40px; border-radius:12px; display:grid; place-items:center; background:#e7f0fb; color:var(--accent); font-weight:900; }
-    .brand-title { font-size:17px; font-weight:900; line-height:1.1; }
-    .brand-sub { color:var(--muted); font-size:12px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:42vw; }
-    .menu-btn { display:none; width:44px; height:44px; border:1px solid var(--line); border-radius:12px; background:white; color:var(--fg); cursor:pointer; }
-    .nav-actions { display:flex; align-items:center; gap:10px; min-width:0; }
-    .top { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; margin:0 0 18px; }
-    h1 { margin:0; font-size:28px; letter-spacing:0; }
-    .sub { color:var(--muted); margin-top:5px; font-size:14px; }
-    .login { min-height:100vh; display:grid; place-items:center; padding:20px; }
-    .login-card { width:min(430px,100%); background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px; box-shadow:0 14px 40px -28px #0b1b38; }
-    input, button { font:inherit; }
-    .password-wrap { position:relative; margin:16px 0 12px; }
-    .password { width:100%; border:1px solid var(--line); border-radius:12px; padding:13px 48px 13px 14px; margin:0; }
-    .eye { position:absolute; right:7px; top:7px; width:34px; height:34px; border:0; border-radius:10px; background:#eef3fb; color:var(--fg); display:grid; place-items:center; cursor:pointer; }
-    .btn { border:0; border-radius:12px; padding:12px 16px; background:var(--accent); color:white; font-weight:800; cursor:pointer; }
-    .btn.secondary { background:white; color:var(--fg); border:1px solid var(--line); }
-    .mini { border:1px solid var(--line); border-radius:9px; padding:7px 9px; background:white; color:var(--fg); font-weight:800; cursor:pointer; }
-    .mini.save { color:var(--ok); }
-    .mini.delete { color:var(--danger); }
-    .toolbar { display:flex; gap:10px; flex-wrap:wrap; }
-    .search { width:min(420px, 34vw); border:1px solid var(--line); border-radius:12px; padding:11px 13px; background:white; }
-    .cards { display:grid; grid-template-columns:repeat(4, minmax(150px, 1fr)); gap:12px; margin-bottom:14px; }
-    .sidebar { position:sticky; top:0; height:100vh; overflow:auto; background:var(--nav); color:white; border-right:1px solid rgba(255,255,255,.1); padding:18px; }
-    .side-brand { display:flex; align-items:center; gap:12px; padding-bottom:18px; border-bottom:1px solid rgba(255,255,255,.12); margin-bottom:16px; }
-    .side-logo { width:42px; height:42px; border-radius:13px; display:grid; place-items:center; background:#2d7dd2; font-weight:900; }
-    .side-title { font-size:16px; font-weight:900; }
-    .side-caption { color:#aebad0; font-size:12px; margin-top:2px; }
-    .side-nav { display:grid; gap:8px; margin-bottom:18px; }
-    .side-link { display:flex; align-items:center; gap:10px; min-height:42px; padding:10px 12px; border-radius:12px; color:#dce5f4; text-decoration:none; font-weight:800; font-size:14px; }
-    .side-link.active { background:rgba(45,125,210,.22); color:white; box-shadow:inset 0 0 0 1px rgba(255,255,255,.08); }
-    .side-link svg { flex:0 0 auto; }
-    .filter-panel { background:white; color:var(--fg); border:1px solid rgba(255,255,255,.14); border-radius:16px; padding:14px; box-shadow:0 18px 42px -34px #000; }
-    .filter-panel h2 { margin:0 0 4px; font-size:16px; }
-    .side-sub { margin:0 0 12px; color:var(--muted); font-size:12px; line-height:1.4; }
-    .filter-list { display:flex; flex-direction:column; gap:10px; }
-    .filter-field label { display:block; margin-bottom:5px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; }
-    .filter-field input { width:100%; border:1px solid var(--line); border-radius:10px; padding:9px 10px; background:#fbfcfe; color:var(--fg); font-size:12.5px; outline:none; }
-    .filter-field input:focus { border-color:var(--accent); background:white; }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
-    .k { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
-    .v { font-size:24px; font-weight:900; margin-top:7px; }
-    .table-shell { background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
-    .scroll { overflow:auto; max-height:calc(100vh - 250px); }
-    table { border-collapse:separate; border-spacing:0; min-width:2750px; width:100%; font-size:12.5px; }
-    th, td { border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:9px 10px; white-space:nowrap; text-align:left; }
-    th { position:sticky; top:34px; z-index:2; background:#eef3fb; font-weight:900; color:#18233a; }
-    th.group { top:0; background:var(--head); color:white; text-align:center; font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
-    tr:nth-child(even) td { background:#fbfcfe; }
-    .num { text-align:right; font-variant-numeric:tabular-nums; font-family:"SFMono-Regular", Consolas, monospace; }
-    .editable { min-width:70px; outline:0; box-shadow:inset 0 0 0 1px transparent; }
-    .editable:focus { background:#fff7df; box-shadow:inset 0 0 0 2px #f5c451; }
-    .actions { display:flex; gap:6px; }
-    .dirty td { background:#fffaf0 !important; }
-    .toast { position:fixed; right:18px; bottom:18px; max-width:min(420px, calc(100vw - 36px)); border:1px solid var(--line); border-radius:12px; background:white; padding:12px 14px; box-shadow:0 18px 48px -30px #0b1b38; font-weight:800; z-index:20; }
-    .modal-backdrop { position:fixed; inset:0; display:grid; place-items:center; padding:18px; background:rgba(15,23,42,.38); z-index:30; }
-    .modal { width:min(420px,100%); border-radius:16px; background:white; border:1px solid var(--line); padding:18px; box-shadow:0 20px 70px -34px #0b1b38; }
-    .modal h2 { margin:0 0 8px; font-size:18px; }
-    .modal p { margin:0 0 16px; color:var(--muted); }
-    .modal-actions { display:flex; justify-content:flex-end; gap:10px; }
-    .err { color:#b42318; font-size:13px; min-height:18px; }
-    .hidden { display:none; }
-    .backdrop { display:none; }
-    body.sidebar-open { overflow:hidden; }
-    body.sidebar-open .backdrop { display:block; position:fixed; inset:0; z-index:20; background:rgba(15,23,42,.48); }
-    @media (max-width:760px) {
-      .app-shell { display:block; }
-      .wrap { padding:14px; }
-      .navbar { min-height:64px; padding:10px 14px; }
-      .menu-btn { display:grid; place-items:center; }
-      .brand-sub { max-width:50vw; }
-      .nav-actions { gap:8px; }
-      .nav-actions .search { display:none; }
-      .top { align-items:stretch; flex-direction:column; }
-      .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
-      .sidebar { position:fixed; inset:0 auto 0 0; z-index:30; width:min(320px, calc(100vw - 42px)); height:100dvh; transform:translateX(-105%); transition:transform .2s ease; }
-      body.sidebar-open .sidebar { transform:translateX(0); }
-      .search { min-width:0; width:100%; }
-      .scroll { max-height:calc(100vh - 300px); }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    :root{
+      --bg:#080D19; --bg-elev:#0A0F1D; --card:rgba(255,255,255,0.04); --card-hover:rgba(255,255,255,0.06);
+      --border:rgba(255,255,255,0.10); --border-strong:rgba(255,255,255,0.20);
+      --text:#FFFFFF; --text-sec:#94A3B8; --text-muted:#64748B;
+      --accent1:#6366F1; --accent2:#22D3EE;
+      --green:#22C55E; --green-bg:rgba(34,197,94,0.13); --green-bd:rgba(34,197,94,0.35);
+      --amber:#F59E0B; --amber-bg:rgba(245,158,11,0.13); --amber-bd:rgba(245,158,11,0.35);
+      --red:#EF4444; --red-bg:rgba(239,68,68,0.13); --red-bd:rgba(239,68,68,0.35);
+      --radius-card:16px; --radius-ctl:10px;
     }
-    @media (min-width:761px) {
-      .mobile-search { display:none; }
+    *{box-sizing:border-box;}
+    body{margin:0;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;color-scheme:dark;}
+    input,select,textarea,button{font:inherit;color:inherit;}
+    .app-shell{min-height:100vh;display:grid;grid-template-columns:264px minmax(0,1fr);}
+    /* ── login ── */
+    .login{min-height:100vh;display:grid;place-items:center;padding:20px;}
+    .login-card{width:min(420px,100%);background:var(--card);border:1px solid var(--border);border-radius:20px;padding:28px;}
+    .login-card h1{margin:0;font-size:22px;}
+    .login-card .sub{color:var(--text-sec);margin-top:5px;font-size:13px;}
+    .password-wrap{position:relative;margin:18px 0 12px;}
+    .password{width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius-ctl);padding:12px 48px 12px 13px;outline:none;}
+    .password:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);}
+    .eye{position:absolute;right:7px;top:7px;width:34px;height:34px;border:0;border-radius:9px;background:rgba(255,255,255,0.06);color:var(--text-sec);display:grid;place-items:center;cursor:pointer;}
+    .btn{border:0;border-radius:11px;padding:11px 17px;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font-weight:600;font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;justify-content:center;transition:filter .12s;}
+    .btn:hover{filter:brightness(1.1);}
+    .btn.secondary{background:rgba(255,255,255,0.06);border:1px solid var(--border);color:var(--text);}
+    .btn.secondary:hover{background:rgba(255,255,255,0.09);}
+    .btn.ghost{background:transparent;border:1px solid var(--border);color:var(--text-sec);}
+    .btn.ghost:hover{background:var(--card-hover);color:var(--text);}
+    /* ── sidebar: navigation only ── */
+    .sidebar{position:sticky;top:0;height:100vh;overflow:auto;background:var(--bg-elev);border-right:1px solid var(--border);padding:20px 14px 16px;display:flex;flex-direction:column;}
+    .side-brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:14px;letter-spacing:.03em;padding:2px 8px 18px;}
+    .brand-dot{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,var(--accent1),var(--accent2));flex:none;}
+    .side-caption{color:var(--text-muted);font-size:11px;font-weight:500;margin-top:1px;}
+    .side-cta{width:100%;margin-bottom:6px;}
+    .nav-sec{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);padding:16px 10px 6px;}
+    .side-link{display:flex;align-items:center;gap:11px;width:100%;padding:9px 10px;border:none;border-radius:10px;background:none;color:var(--text-sec);font-size:13.5px;font-weight:500;cursor:pointer;text-align:left;transition:background .12s,color .12s;}
+    .side-link:hover{background:rgba(255,255,255,0.05);color:var(--text);}
+    .side-link.active{background:rgba(99,102,241,0.15);color:#A5B4FC;font-weight:600;}
+    .side-link svg{flex:0 0 auto;}
+    .side-bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:12px;}
+    /* ── main ── */
+    .main-pane{min-width:0;display:flex;flex-direction:column;}
+    .navbar{position:sticky;top:0;z-index:10;display:flex;justify-content:space-between;align-items:center;gap:14px;min-height:64px;padding:12px 24px;background:rgba(8,13,25,0.92);border-bottom:1px solid var(--border);backdrop-filter:blur(8px);}
+    .nav-left{display:flex;align-items:center;gap:12px;min-width:0;}
+    .menu-btn{display:none;width:42px;height:42px;border:1px solid var(--border);border-radius:11px;background:transparent;color:var(--text-sec);cursor:pointer;}
+    .brand-title{font-size:15px;font-weight:600;line-height:1.15;}
+    .brand-sub{color:var(--text-muted);font-size:11.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42vw;}
+    .nav-actions{display:flex;align-items:center;gap:10px;min-width:0;}
+    .search{width:min(400px,32vw);background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:11px;padding:10px 13px;outline:none;}
+    .search::placeholder{color:var(--text-muted);}
+    .search:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);}
+    .wrap{min-width:0;padding:22px 24px 60px;}
+    .top{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin:0 0 18px;}
+    h1{margin:0;font-size:24px;font-weight:600;letter-spacing:-.01em;}
+    .sub{color:var(--text-sec);margin-top:5px;font-size:13px;}
+    /* KPI */
+    .cards{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;margin-bottom:16px;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px 16px;}
+    .k{color:var(--text-sec);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;}
+    .v{font-size:24px;font-weight:600;margin-top:7px;font-family:'IBM Plex Mono',ui-monospace,monospace;}
+    /* toolbar + collapsible filters (moved OUT of the sidebar) */
+    .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
+    .filter-count{min-width:19px;height:19px;padding:0 5px;border-radius:10px;background:var(--accent1);color:#fff;font-size:10.5px;font-weight:700;line-height:19px;text-align:center;display:none;}
+    .filters-panel{display:none;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px;margin-bottom:14px;}
+    .filters-panel.open{display:block;}
+    .filters-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;}
+    .filter-field label{display:block;margin-bottom:4px;color:var(--text-muted);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
+    .filter-field input{width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:12.5px;outline:none;}
+    .filter-field input:focus{border-color:var(--accent1);}
+    /* table */
+    .table-shell{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);overflow:hidden;}
+    .scroll{overflow:auto;max-height:calc(100vh - 320px);}
+    table{border-collapse:separate;border-spacing:0;min-width:2750px;width:100%;font-size:12.5px;}
+    th,td{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:9px 10px;white-space:nowrap;text-align:left;}
+    th{position:sticky;top:33px;z-index:2;background:#111a30;font-weight:600;color:var(--text-sec);font-size:11.5px;}
+    th.group{top:0;background:#0A0F1D;color:#A5B4FC;text-align:center;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
+    tr:nth-child(even) td{background:rgba(255,255,255,0.015);}
+    .num{text-align:right;font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',ui-monospace,monospace;}
+    .editable{min-width:70px;outline:0;box-shadow:inset 0 0 0 1px transparent;}
+    .editable:focus{background:rgba(99,102,241,0.12);box-shadow:inset 0 0 0 2px var(--accent1);}
+    .actions{display:flex;gap:6px;}
+    .mini{border:1px solid var(--border);border-radius:9px;padding:6px 9px;background:transparent;color:var(--text-sec);font-weight:600;font-size:12px;cursor:pointer;}
+    .mini:hover{background:var(--card-hover);}
+    .mini.save{color:var(--green);}
+    .mini.delete{color:var(--red);}
+    .dirty td{background:rgba(245,158,11,0.08) !important;}
+    /* ── create view (ported from the confirmed «Новая заявка» mock) ── */
+    .form-wrap{max-width:980px;}
+    .fcard{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:22px 24px;margin-bottom:18px;}
+    .fcard-title{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;margin:0 0 16px;}
+    .num-badge{width:22px;height:22px;border-radius:7px;background:rgba(99,102,241,0.18);color:#A5B4FC;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;}
+    .fcard-title small{font-weight:400;font-size:12px;color:var(--text-muted);margin-left:4px;}
+    label.f{display:block;font-size:12px;color:var(--text-sec);margin-bottom:6px;font-weight:500;}
+    label.f .req{color:var(--red);}
+    .field{margin-bottom:14px;}
+    .field-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-bottom:14px;}
+    .fin,select.fin,textarea.fin{width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius-ctl);padding:10px 12px;font-size:13.5px;outline:none;transition:border-color .12s;}
+    .fin:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);}
+    select.fin{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 10px center;background-size:16px;padding-right:32px;}
+    select.fin option{background:#0A0F1D;color:var(--text);}
+    textarea.fin{resize:vertical;min-height:70px;}
+    .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;}
+    .type-card{border:1px solid var(--border);border-radius:14px;padding:14px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;color:var(--text-sec);transition:all .12s;font-size:13px;font-weight:500;}
+    .type-card:hover{background:var(--card-hover);}
+    .type-card.selected{border-color:var(--accent1);background:rgba(99,102,241,0.10);color:var(--text);}
+    .pill-group{display:flex;gap:10px;flex-wrap:wrap;}
+    .pill{border:1px solid var(--border);border-radius:999px;padding:8px 15px;cursor:pointer;font-size:13px;color:var(--text-sec);transition:all .12s;background:none;}
+    .pill:hover{background:var(--card-hover);}
+    .pill.sel-plain{border-color:var(--border-strong);background:rgba(148,163,184,0.12);color:var(--text);}
+    .pill.sel-urgent{border-color:var(--amber-bd);background:var(--amber-bg);color:var(--amber);}
+    .pill.sel-emergency{border-color:var(--red-bd);background:var(--red-bg);color:var(--red);}
+    .warning-banner{display:none;align-items:flex-start;gap:10px;background:var(--red-bg);border:1px solid var(--red-bd);color:#FCA5A5;border-radius:12px;padding:12px 14px;margin-top:12px;font-size:12.5px;}
+    .warning-banner.show{display:flex;}
+    .items-shell{border:1px solid var(--border);border-radius:14px;overflow-x:auto;}
+    table.items{min-width:820px;width:100%;font-size:13px;border-collapse:separate;border-spacing:0;}
+    table.items th{position:static;background:transparent;color:var(--text-muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;padding:10px 8px;border-bottom:1px solid var(--border);border-right:none;}
+    table.items td{padding:5px 6px;border-bottom:1px solid var(--border);border-right:none;vertical-align:middle;}
+    table.items tr:last-child td{border-bottom:none;}
+    table.items input,table.items select{width:100%;border:1px solid transparent;background:transparent;border-radius:8px;padding:7px 8px;font-size:13px;outline:none;}
+    table.items input:hover,table.items select:hover{border-color:var(--border);}
+    table.items input:focus,table.items select:focus{border-color:var(--accent1);background:rgba(255,255,255,0.03);}
+    table.items select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 6px center;background-size:14px;padding-right:22px;}
+    table.items select option{background:#0A0F1D;}
+    td.idx{color:var(--text-muted);font-size:12.5px;text-align:center;width:34px;}
+    .row-x{width:28px;height:28px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-size:15px;line-height:1;}
+    .row-x:hover{color:var(--red);border-color:var(--red-bd);}
+    .row-x:disabled{opacity:.3;cursor:not-allowed;}
+    .add-row-btn{width:100%;margin-top:12px;padding:10px;border:1px dashed var(--border-strong);border-radius:12px;background:transparent;color:var(--text-sec);font-size:13px;cursor:pointer;}
+    .add-row-btn:hover{background:var(--card-hover);border-color:var(--accent1);color:var(--text);}
+    .total-row{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:13px;padding-top:13px;border-top:1px solid var(--border);}
+    .total-row .lbl{color:var(--text-sec);font-size:13px;}
+    .total-row .val{font-size:18px;font-weight:600;font-family:'IBM Plex Mono',ui-monospace,monospace;}
+    .form-actions{display:flex;justify-content:space-between;gap:10px;margin-top:4px;}
+    .err-line{color:#FCA5A5;font-size:12.5px;min-height:18px;margin-bottom:8px;}
+    /* misc */
+    .toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,calc(100vw - 36px));border:1px solid var(--border-strong);border-radius:12px;background:#111827;padding:12px 15px;font-weight:500;z-index:40;box-shadow:0 8px 24px rgba(0,0,0,0.4);}
+    .modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:rgba(4,7,14,.6);z-index:30;}
+    .modal{width:min(420px,100%);border-radius:16px;background:#0E1526;border:1px solid var(--border);padding:20px;}
+    .modal h2{margin:0 0 8px;font-size:17px;}
+    .modal p{margin:0 0 16px;color:var(--text-sec);font-size:13px;}
+    .modal-actions{display:flex;justify-content:flex-end;gap:10px;}
+    .err{color:#FCA5A5;font-size:13px;min-height:18px;}
+    .hidden{display:none !important;}
+    .backdrop{display:none;}
+    body.sidebar-open{overflow:hidden;}
+    body.sidebar-open .backdrop{display:block;position:fixed;inset:0;z-index:20;background:rgba(4,7,14,.6);}
+    @media (max-width:760px){
+      .app-shell{display:block;}
+      .wrap{padding:14px 14px 40px;}
+      .navbar{padding:10px 14px;}
+      .menu-btn{display:grid;place-items:center;}
+      .nav-actions .search{display:none;}
+      .top{align-items:stretch;flex-direction:column;}
+      .cards{grid-template-columns:repeat(2,minmax(0,1fr));}
+      .sidebar{position:fixed;inset:0 auto 0 0;z-index:30;width:min(300px,calc(100vw - 42px));height:100dvh;transform:translateX(-105%);transition:transform .2s ease;}
+      body.sidebar-open .sidebar{transform:translateX(0);}
+      .field-row{grid-template-columns:1fr;}
+      .scroll{max-height:calc(100vh - 340px);}
     }
+    @media (min-width:761px){ .mobile-search{display:none;} }
   </style>
 </head>
 <body>
   <main id="login" class="login">
     <form class="login-card" id="loginForm">
-      <h1>Snabbase</h1>
-      <div class="sub">Закрытый dashboard по форме Excel</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><span class="brand-dot"></span><h1>Снабжение</h1></div>
+      <div class="sub">Закрытый dashboard отдела снабжения</div>
       <div class="password-wrap">
         <input class="password" id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
         <button class="eye" id="togglePassword" type="button" aria-label="Показать пароль">
@@ -501,39 +738,34 @@ function pageHtml(): string {
         </button>
       </div>
       <div class="err" id="loginErr"></div>
-      <button class="btn" type="submit">Войти</button>
+      <button class="btn" type="submit" style="width:100%;">Войти</button>
     </form>
   </main>
   <main id="app" class="hidden">
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
-        <div class="side-brand">
-          <div class="side-logo">SB</div>
-          <div>
-            <div class="side-title">Snabbase</div>
-            <div class="side-caption">Dashboard</div>
-          </div>
+        <div class="side-brand"><span class="brand-dot"></span>
+          <div>FACTORY OS<div class="side-caption">Снабжение</div></div>
         </div>
-        <nav class="side-nav" aria-label="Разделы dashboard">
-          <a class="side-link active" href="#overview">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 13h6V4H4v9Zm10 7h6V4h-6v16ZM4 20h6v-5H4v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-            Обзор
-          </a>
-          <a class="side-link" href="#table">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16M8 5v14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            Таблица
-          </a>
-          <a class="side-link" href="#filters">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            Фильтры
-          </a>
-        </nav>
-        <section class="filter-panel" aria-label="Фильтры таблицы">
-          <h2>Фильтры</h2>
-          <p class="side-sub">Фильтры применяются к строкам таблицы сразу.</p>
-          <div id="filters" class="filter-list"></div>
-          <button id="clearFilters" class="btn secondary" type="button" style="width:100%; margin-top:12px;">Очистить</button>
-        </section>
+        <button class="btn side-cta" id="ctaNew" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+          Новая заявка
+        </button>
+        <div class="nav-sec">Меню</div>
+        <button class="side-link active" data-view="overview" type="button">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 13h6V4H4v9Zm10 7h6V4h-6v16ZM4 20h6v-5H4v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          Обзор
+        </button>
+        <button class="side-link" data-view="create" type="button">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Новая заявка
+        </button>
+        <div class="side-bottom">
+          <button class="side-link" id="logout" type="button">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 12H4m0 0 3.5-3.5M4 12l3.5 3.5M10 4h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Выйти
+          </button>
+        </div>
       </aside>
       <div class="backdrop" id="sidebarBackdrop"></div>
       <section class="main-pane">
@@ -542,22 +774,22 @@ function pageHtml(): string {
             <button class="menu-btn" id="menuToggle" type="button" aria-label="Открыть меню">
               <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
-            <div class="brand-mark">SB</div>
             <div>
-              <div class="brand-title">Snabbase Dashboard</div>
+              <div class="brand-title" id="navTitle">Обзор закупок</div>
               <div class="brand-sub" id="updated"></div>
             </div>
           </div>
-          <div class="nav-actions">
+          <div class="nav-actions" id="overviewActions">
             <input id="search" class="search" placeholder="Поиск по объекту, заявке, товару, поставщику..." />
-            <button id="logout" class="btn secondary">Выйти</button>
           </div>
         </header>
-        <div class="wrap" id="overview">
+
+        <!-- ── VIEW: overview (KPI + filters + table) ── -->
+        <div class="wrap" id="viewOverview">
           <div class="top">
             <div>
-              <h1>Snabbase Dashboard</h1>
-              <div class="sub">Excel-структура закупок, редактирование и фильтры</div>
+              <h1>Обзор закупок</h1>
+              <div class="sub">Excel-структура закупок: редактирование строк и фильтры</div>
             </div>
             <input id="mobileSearch" class="search mobile-search" placeholder="Поиск..." />
           </div>
@@ -567,9 +799,107 @@ function pageHtml(): string {
             <div class="card"><div class="k">Сумма</div><div class="v" id="kAmount">0</div></div>
             <div class="card"><div class="k">Поставщиков</div><div class="v" id="kSuppliers">0</div></div>
           </section>
+          <div class="toolbar">
+            <button class="btn ghost" id="toggleFilters" type="button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              Фильтры <span class="filter-count" id="filterCount">0</span>
+            </button>
+            <button class="btn ghost" id="clearFilters" type="button">Очистить</button>
+          </div>
+          <section class="filters-panel" id="filtersPanel" aria-label="Фильтры таблицы">
+            <div id="filters" class="filters-grid"></div>
+          </section>
           <section class="table-shell">
             <div class="scroll"><table id="table"></table></div>
           </section>
+        </div>
+
+        <!-- ── VIEW: create (ported from the confirmed «Новая заявка» mock) ── -->
+        <div class="wrap hidden" id="viewCreate">
+          <div class="top">
+            <div>
+              <h1>Новая заявка</h1>
+              <div class="sub">Все поля — на одном экране · заявка попадает в общий маршрут согласования</div>
+            </div>
+          </div>
+          <div class="form-wrap">
+            <div class="fcard">
+              <div class="fcard-title"><span class="num-badge">1</span>Тип и контекст заявки</div>
+              <label class="f">Тип заявки <span class="req">*</span></label>
+              <div class="type-grid" id="typeGrid"></div>
+              <div class="field-row">
+                <div class="field">
+                  <label class="f">Заявитель <span class="req">*</span></label>
+                  <select class="fin" id="fRequester"></select>
+                </div>
+                <div class="field">
+                  <label class="f">Отдел</label>
+                  <select class="fin" id="fDepartment"><option value="">—</option></select>
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label class="f">Объект</label>
+                  <select class="fin" id="fObject"><option value="">—</option></select>
+                </div>
+                <div class="field" id="whField">
+                  <label class="f">Склад назначения</label>
+                  <select class="fin" id="fWarehouse"><option value="">—</option></select>
+                </div>
+              </div>
+              <div class="field" id="originField">
+                <label class="f">Происхождение</label>
+                <div class="pill-group" id="originPills"></div>
+              </div>
+            </div>
+
+            <div class="fcard">
+              <div class="fcard-title"><span class="num-badge">2</span>Параметры заявки</div>
+              <div class="field-row">
+                <div class="field">
+                  <label class="f">Назначение / цель</label>
+                  <select class="fin" id="fPurpose"><option value="">—</option></select>
+                </div>
+                <div class="field">
+                  <label class="f">Необходимо к дате</label>
+                  <input class="fin" id="fNeeded" type="date" />
+                </div>
+              </div>
+              <label class="f">Степень срочности <span class="req">*</span></label>
+              <div class="pill-group" id="urgencyPills"></div>
+              <div class="warning-banner" id="emergencyWarning">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:1px;" aria-hidden="true"><path d="M12 3l10 18H2L12 3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                <div>Аварийная заявка требует немедленного согласования — маршрут будет ускорен.</div>
+              </div>
+            </div>
+
+            <div class="fcard">
+              <div class="fcard-title"><span class="num-badge">3</span>Позиции<small>по строкам, как в бумажной заявке</small></div>
+              <div class="items-shell">
+                <table class="items">
+                  <thead><tr>
+                    <th style="width:34px;">№</th><th style="width:26%;">Наименование *</th><th style="width:12%;">Код</th>
+                    <th style="width:9%;">Кол-во *</th><th style="width:10%;">Ед. изм</th><th style="width:12%;">Цена</th>
+                    <th style="width:11%;">Банк/Нал</th><th>Примечание</th><th style="width:36px;"></th>
+                  </tr></thead>
+                  <tbody id="itemsBody"></tbody>
+                </table>
+              </div>
+              <button class="add-row-btn" id="addRow" type="button">+ Добавить позицию</button>
+              <div class="total-row"><span class="lbl">Итого (ориентировочно):</span><span class="val" id="fTotal">0 UZS</span></div>
+            </div>
+
+            <div class="fcard">
+              <div class="fcard-title"><span class="num-badge">4</span>Комментарий</div>
+              <textarea class="fin" id="fComment" placeholder="Контекст для склада и снабжения: где используется, чем заменить нельзя, особые условия..."></textarea>
+            </div>
+
+            <div class="err-line" id="formErr"></div>
+            <div class="form-actions">
+              <button class="btn ghost" id="formCancel" type="button">Отмена</button>
+              <button class="btn" id="formSubmit" type="button">Отправить заявку →</button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -579,7 +909,7 @@ function pageHtml(): string {
         <h2>Удалить строку?</h2>
         <p>Строка исчезнет из dashboard. История заявки останется в системе.</p>
         <div class="modal-actions">
-          <button id="cancelDelete" class="btn secondary" type="button">Отмена</button>
+          <button id="cancelDelete" class="btn ghost" type="button">Отмена</button>
           <button id="confirmDelete" class="btn" type="button">Удалить</button>
         </div>
       </div>
@@ -592,22 +922,41 @@ function pageHtml(): string {
     const editableKeys = new Set(${JSON.stringify([...EDITABLE_KEYS])});
     let rows = [];
     let filtersReady = false;
+    let meta = null;
     const fmt = new Intl.NumberFormat('ru-RU');
     const money = (v) => fmt.format(Math.round(Number(v) || 0));
     const numericKeys = new Set(['quantity','unitPrice','exchangeRate','amount','usdAmount','ndsRate','amountWithNds','usdAmountWithNds']);
     let pendingDeleteRow = null;
     function pass() { return sessionStorage.getItem('snab_dashboard_password') || ''; }
-    function rowValue(r, key) {
-      return String(r[key] ?? '').toLowerCase();
-    }
-    function filterValues() {
-      const out = {};
-      for (const input of document.querySelectorAll('[data-filter-key]')) {
-        const v = input.value.trim().toLowerCase();
-        if (v) out[input.dataset.filterKey] = v;
-      }
+    function esc(v) { return String(v).replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])); }
+    async function api(path, body) {
+      const res = await fetch('/snab-dashboard/api/' + path, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(Object.assign({ password: pass() }, body || {})),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error || 'Ошибка запроса');
       return out;
     }
+
+    /* ── view switching (sidebar = navigation) ── */
+    function showView(view) {
+      const overview = view === 'overview';
+      document.getElementById('viewOverview').classList.toggle('hidden', !overview);
+      document.getElementById('viewCreate').classList.toggle('hidden', overview);
+      document.getElementById('overviewActions').style.visibility = overview ? 'visible' : 'hidden';
+      document.getElementById('navTitle').textContent = overview ? 'Обзор закупок' : 'Новая заявка';
+      for (const link of document.querySelectorAll('.side-link[data-view]')) {
+        link.classList.toggle('active', link.dataset.view === view);
+      }
+      if (!overview) ensureMeta();
+      closeSidebar();
+    }
+    document.querySelectorAll('.side-link[data-view]').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
+    document.getElementById('ctaNew').addEventListener('click', () => showView('create'));
+    document.getElementById('formCancel').addEventListener('click', () => showView('overview'));
+
+    /* ── overview: search / filters / table ── */
     function activeSearch() {
       const desktop = document.getElementById('search').value.trim();
       const mobile = document.getElementById('mobileSearch').value.trim();
@@ -622,30 +971,33 @@ function pageHtml(): string {
       document.body.classList.remove('sidebar-open');
       document.getElementById('menuToggle').setAttribute('aria-label', 'Открыть меню');
     }
+    function filterValues() {
+      const out = {};
+      for (const input of document.querySelectorAll('[data-filter-key]')) {
+        const v = input.value.trim().toLowerCase();
+        if (v) out[input.dataset.filterKey] = v;
+      }
+      return out;
+    }
     function renderFilters() {
       if (filtersReady) return;
       const box = document.getElementById('filters');
       box.innerHTML = keys.map((key, i) =>
-        '<div class="filter-field"><label>' + escapeHtml(headers[i]) + '</label><input data-filter-key="' + key + '" placeholder="Фильтр..." /></div>'
+        '<div class="filter-field"><label>' + esc(headers[i]) + '</label><input data-filter-key="' + key + '" placeholder="Фильтр..." /></div>'
       ).join('');
       box.addEventListener('input', render);
       filtersReady = true;
     }
+    function rowValue(r, key) { return String(r[key] ?? '').toLowerCase(); }
     function toast(message) {
       const el = document.getElementById('toast');
       el.textContent = message;
       el.classList.remove('hidden');
       clearTimeout(window.__snabToast);
-      window.__snabToast = setTimeout(() => el.classList.add('hidden'), 2600);
+      window.__snabToast = setTimeout(() => el.classList.add('hidden'), 3000);
     }
     async function load() {
-      const res = await fetch('/snab-dashboard/api/data', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ password: pass() }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || 'Ошибка загрузки');
+      const body = await api('data');
       rows = body.rows || [];
       document.getElementById('updated').textContent = 'Обновлено: ' + new Date().toLocaleString('ru-RU');
       renderFilters();
@@ -654,6 +1006,10 @@ function pageHtml(): string {
     function render() {
       const q = activeSearch();
       const fv = filterValues();
+      const fc = Object.keys(fv).length;
+      const badge = document.getElementById('filterCount');
+      badge.textContent = fc;
+      badge.style.display = fc ? 'inline-block' : 'none';
       const data = rows.filter((r) => {
         if (q && !JSON.stringify(r).toLowerCase().includes(q)) return false;
         for (const [key, value] of Object.entries(fv)) {
@@ -667,16 +1023,16 @@ function pageHtml(): string {
       document.getElementById('kSuppliers').textContent = fmt.format(new Set(data.map((r) => r.supplier).filter(Boolean)).size);
       const table = document.getElementById('table');
       table.innerHTML =
-        '<thead><tr>' + groups.map((g) => '<th class="group" colspan="' + g[1] + '">' + escapeHtml(g[0]) + '</th>').join('') + '<th class="group" colspan="1"></th></tr><tr>' +
-        headers.map((h) => '<th>' + escapeHtml(h) + '</th>').join('') + '<th>Действия</th></tr></thead><tbody>' +
-        data.map((r) => '<tr data-item-id="' + escapeHtml(r.itemId) + '">' + keys.map((k) => cellHtml(r, k)).join('') + actionsHtml(r) + '</tr>').join('') +
+        '<thead><tr>' + groups.map((g) => '<th class="group" colspan="' + g[1] + '">' + esc(g[0]) + '</th>').join('') + '<th class="group" colspan="1"></th></tr><tr>' +
+        headers.map((h) => '<th>' + esc(h) + '</th>').join('') + '<th>Действия</th></tr></thead><tbody>' +
+        data.map((r) => '<tr data-item-id="' + esc(r.itemId) + '">' + keys.map((k) => cellHtml(r, k)).join('') + actionsHtml(r) + '</tr>').join('') +
         '</tbody>';
     }
     function cellHtml(r, k) {
       const value = numericKeys.has(k) ? String(Math.round(Number(r[k]) || 0)) : String(r[k] ?? '');
       const cls = (numericKeys.has(k) ? 'num ' : '') + (editableKeys.has(k) ? 'editable' : '');
       const editable = editableKeys.has(k) ? ' contenteditable="true" data-key="' + k + '"' : '';
-      return '<td class="' + cls + '"' + editable + '>' + escapeHtml(numericKeys.has(k) ? money(value) : value) + '</td>';
+      return '<td class="' + cls + '"' + editable + '>' + esc(numericKeys.has(k) ? money(value) : value) + '</td>';
     }
     function actionsHtml() {
       return '<td><div class="actions"><button class="mini save" data-action="save">Save</button><button class="mini delete" data-action="delete">Delete</button></div></td>';
@@ -692,8 +1048,7 @@ function pageHtml(): string {
     }
     async function saveRow(tr) {
       const res = await fetch('/snab-dashboard/api/row/' + encodeURIComponent(tr.dataset.itemId), {
-        method:'PUT',
-        headers:{'Content-Type':'application/json'},
+        method:'PUT', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ password: pass(), row: rowPayload(tr) }),
       });
       const body = await res.json().catch(() => ({}));
@@ -703,8 +1058,7 @@ function pageHtml(): string {
     }
     async function deleteRow(tr) {
       const res = await fetch('/snab-dashboard/api/row/' + encodeURIComponent(tr.dataset.itemId), {
-        method:'DELETE',
-        headers:{'Content-Type':'application/json'},
+        method:'DELETE', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ password: pass() }),
       });
       const body = await res.json().catch(() => ({}));
@@ -712,9 +1066,158 @@ function pageHtml(): string {
       await load();
       toast('Удалено');
     }
-    function escapeHtml(v) {
-      return String(v).replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+
+    /* ── create view ── */
+    const form = { type:'', origin:'local', priority:'normal', items:[] };
+    function emptyItem() { return { name:'', code:'', qty:'', unit:'', price:'', pay:'Банк', note:'' }; }
+    async function ensureMeta() {
+      if (meta) return;
+      try {
+        meta = await api('meta');
+        buildForm();
+      } catch (err) {
+        document.getElementById('formErr').textContent = err instanceof Error ? err.message : 'Ошибка загрузки справочников';
+      }
     }
+    function fillSelect(id, options, valueKey, labelKey, empty) {
+      const sel = document.getElementById(id);
+      sel.innerHTML = (empty ? '<option value="">—</option>' : '') +
+        options.map((o) => '<option value="' + esc(o[valueKey]) + '">' + esc(o[labelKey]) + '</option>').join('');
+    }
+    function buildForm() {
+      form.type = (meta.types[0] || {}).value || 'material_request';
+      const tg = document.getElementById('typeGrid');
+      tg.innerHTML = meta.types.map((t) =>
+        '<div class="type-card' + (t.value === form.type ? ' selected' : '') + '" data-type="' + esc(t.value) + '">' + esc(t.label) + '</div>'
+      ).join('');
+      tg.addEventListener('click', (e) => {
+        const card = e.target.closest('[data-type]');
+        if (!card) return;
+        form.type = card.dataset.type;
+        for (const c of tg.children) c.classList.toggle('selected', c === card);
+        syncMaterialOnly();
+      });
+      fillSelect('fRequester', meta.users, 'id', 'name', false);
+      fillSelect('fDepartment', meta.departments, 'id', 'name', true);
+      fillSelect('fObject', meta.objects, 'value', 'label', true);
+      fillSelect('fWarehouse', meta.warehouses.map((w) => ({ v:w, l:w })), 'v', 'l', true);
+      fillSelect('fPurpose', meta.purposes, 'value', 'label', true);
+      const op = document.getElementById('originPills');
+      op.innerHTML = meta.origins.map((o) =>
+        '<button class="pill' + (o.value === form.origin ? ' sel-plain' : '') + '" data-origin="' + esc(o.value) + '" type="button">' + esc(o.label) + '</button>'
+      ).join('');
+      op.addEventListener('click', (e) => {
+        const p = e.target.closest('[data-origin]');
+        if (!p) return;
+        form.origin = p.dataset.origin;
+        for (const c of op.children) c.classList.toggle('sel-plain', c === p);
+      });
+      const up = document.getElementById('urgencyPills');
+      up.innerHTML = meta.priorities.map((o) =>
+        '<button class="pill" data-priority="' + esc(o.value) + '" type="button">' + esc(o.label) + '</button>'
+      ).join('');
+      up.addEventListener('click', (e) => {
+        const p = e.target.closest('[data-priority]');
+        if (!p) return;
+        form.priority = p.dataset.priority;
+        syncUrgency();
+      });
+      form.items = [emptyItem()];
+      renderItems();
+      syncUrgency();
+      syncMaterialOnly();
+    }
+    function syncMaterialOnly() {
+      const material = form.type.indexOf('material') === 0;
+      document.getElementById('whField').style.display = material ? '' : 'none';
+      document.getElementById('originField').style.display = material ? '' : 'none';
+    }
+    function syncUrgency() {
+      const emergency = form.priority === 'urgent' || form.priority === 'critical';
+      for (const p of document.querySelectorAll('[data-priority]')) {
+        const sel = p.dataset.priority === form.priority;
+        p.classList.toggle('sel-plain', sel && p.dataset.priority === 'normal');
+        p.classList.toggle('sel-urgent', sel && p.dataset.priority === 'high');
+        p.classList.toggle('sel-emergency', sel && (p.dataset.priority === 'urgent' || p.dataset.priority === 'critical'));
+      }
+      document.getElementById('emergencyWarning').classList.toggle('show', emergency);
+      document.getElementById('formSubmit').textContent = emergency ? 'Отправить как аварийную →' : 'Отправить заявку →';
+    }
+    function renderItems() {
+      const tb = document.getElementById('itemsBody');
+      tb.innerHTML = form.items.map((it, i) =>
+        '<tr data-i="' + i + '">' +
+        '<td class="idx">' + (i + 1) + '</td>' +
+        '<td><input data-f="name" placeholder="Например: Хлопковая пряжа 40/1" value="' + esc(it.name) + '"/></td>' +
+        '<td><input data-f="code" placeholder="Код" value="' + esc(it.code) + '"/></td>' +
+        '<td><input data-f="qty" type="number" min="0" placeholder="0" value="' + esc(it.qty) + '"/></td>' +
+        '<td><select data-f="unit"><option value="">—</option>' + meta.units.map((u) => '<option' + (u.value === it.unit ? ' selected' : '') + '>' + esc(u.label) + '</option>').join('') + '</select></td>' +
+        '<td><input data-f="price" type="number" min="0" placeholder="—" value="' + esc(it.price) + '"/></td>' +
+        '<td><select data-f="pay"><option' + (it.pay === 'Банк' ? ' selected' : '') + '>Банк</option><option' + (it.pay === 'Нал.' ? ' selected' : '') + '>Нал.</option></select></td>' +
+        '<td><input data-f="note" placeholder="—" value="' + esc(it.note) + '"/></td>' +
+        '<td><button class="row-x" data-action="rm" type="button"' + (form.items.length <= 1 ? ' disabled' : '') + '>×</button></td>' +
+        '</tr>'
+      ).join('');
+      recalcTotal();
+    }
+    function recalcTotal() {
+      const total = form.items.reduce((s, it) => s + (parseFloat(it.qty) || 0) * (parseFloat(it.price) || 0), 0);
+      document.getElementById('fTotal').textContent = money(total) + ' UZS';
+    }
+    document.getElementById('itemsBody').addEventListener('input', (e) => {
+      const cell = e.target.closest('[data-f]');
+      if (!cell) return;
+      const i = Number(cell.closest('tr').dataset.i);
+      form.items[i][cell.dataset.f] = cell.value;
+      if (cell.dataset.f === 'qty' || cell.dataset.f === 'price') recalcTotal();
+    });
+    document.getElementById('itemsBody').addEventListener('change', (e) => {
+      const cell = e.target.closest('select[data-f]');
+      if (!cell) return;
+      form.items[Number(cell.closest('tr').dataset.i)][cell.dataset.f] = cell.value;
+    });
+    document.getElementById('itemsBody').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action="rm"]');
+      if (!btn) return;
+      form.items.splice(Number(btn.closest('tr').dataset.i), 1);
+      if (!form.items.length) form.items.push(emptyItem());
+      renderItems();
+    });
+    document.getElementById('addRow').addEventListener('click', () => { form.items.push(emptyItem()); renderItems(); });
+    document.getElementById('formSubmit').addEventListener('click', async () => {
+      const errEl = document.getElementById('formErr');
+      errEl.textContent = '';
+      const btn = document.getElementById('formSubmit');
+      btn.disabled = true;
+      try {
+        const out = await api('requests', {
+          requesterId: document.getElementById('fRequester').value,
+          requestType: form.type,
+          departmentId: document.getElementById('fDepartment').value,
+          warehouseName: form.type.indexOf('material') === 0 ? document.getElementById('fWarehouse').value : '',
+          obyekt: document.getElementById('fObject').value,
+          origin: form.type.indexOf('material') === 0 ? form.origin : '',
+          purpose: document.getElementById('fPurpose').value,
+          priority: form.priority,
+          neededDate: document.getElementById('fNeeded').value,
+          comment: document.getElementById('fComment').value,
+          items: form.items,
+        });
+        toast('Заявка создана: ' + out.requestNumber);
+        form.items = [emptyItem()];
+        renderItems();
+        document.getElementById('fComment').value = '';
+        document.getElementById('fNeeded').value = '';
+        await load();
+        showView('overview');
+      } catch (err) {
+        errEl.textContent = err instanceof Error ? err.message : 'Не удалось создать заявку';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    /* ── shared chrome ── */
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       document.getElementById('loginErr').textContent = '';
@@ -736,8 +1239,8 @@ function pageHtml(): string {
       document.getElementById('menuToggle').setAttribute('aria-label', next ? 'Закрыть меню' : 'Открыть меню');
     });
     document.getElementById('sidebarBackdrop').addEventListener('click', closeSidebar);
-    document.getElementById('sidebar').addEventListener('click', (e) => {
-      if (e.target.closest('a')) closeSidebar();
+    document.getElementById('toggleFilters').addEventListener('click', () => {
+      document.getElementById('filtersPanel').classList.toggle('open');
     });
     document.getElementById('clearFilters').addEventListener('click', () => {
       for (const input of document.querySelectorAll('[data-filter-key]')) input.value = '';
@@ -807,28 +1310,41 @@ export function buildSnabDashboardRouter(db: Db): Router {
     res.type('html').send(pageHtml());
   });
 
-  r.post('/api/data', async (req: Request, res: Response) => {
+  const guard = (req: Request, res: Response): boolean => {
     if (!dashboardPassword()) {
       res.status(503).json({ error: 'Dashboard password is not configured' });
-      return;
+      return false;
     }
     if (!isAuthorized((req.body as { password?: unknown } | undefined)?.password)) {
       res.status(401).json({ error: 'Неверный пароль' });
-      return;
+      return false;
     }
+    return true;
+  };
+
+  r.post('/api/data', async (req: Request, res: Response) => {
+    if (!guard(req, res)) return;
     const rows = await fetchDashboardRows(db);
     res.json({ rows });
   });
 
+  r.post('/api/meta', async (req: Request, res: Response) => {
+    if (!guard(req, res)) return;
+    res.json(await fetchCreateMeta(db));
+  });
+
+  r.post('/api/requests', async (req: Request, res: Response) => {
+    if (!guard(req, res)) return;
+    try {
+      const out = await createFromDashboard(db, req.body as CreateBody);
+      res.json(out);
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message || 'Не удалось создать заявку' });
+    }
+  });
+
   r.put('/api/row/:itemId', async (req: Request, res: Response) => {
-    if (!dashboardPassword()) {
-      res.status(503).json({ error: 'Dashboard password is not configured' });
-      return;
-    }
-    if (!isAuthorized((req.body as { password?: unknown } | undefined)?.password)) {
-      res.status(401).json({ error: 'Неверный пароль' });
-      return;
-    }
+    if (!guard(req, res)) return;
     try {
       await updateDashboardRow(db, String(req.params.itemId), (req.body as { row?: unknown } | undefined)?.row);
       res.json({ ok: true });
@@ -838,14 +1354,7 @@ export function buildSnabDashboardRouter(db: Db): Router {
   });
 
   r.delete('/api/row/:itemId', async (req: Request, res: Response) => {
-    if (!dashboardPassword()) {
-      res.status(503).json({ error: 'Dashboard password is not configured' });
-      return;
-    }
-    if (!isAuthorized((req.body as { password?: unknown } | undefined)?.password)) {
-      res.status(401).json({ error: 'Неверный пароль' });
-      return;
-    }
+    if (!guard(req, res)) return;
     try {
       await deleteDashboardRow(db, String(req.params.itemId));
       res.json({ ok: true });
