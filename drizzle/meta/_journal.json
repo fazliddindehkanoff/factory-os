@@ -260,6 +260,13 @@
       "when": 1784624580000,
       "tag": "0036_remove_director_audit_view",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784624640000,
+      "tag": "0037_in_stock_branch",
+      "breakpoints": true
     }
   ]
 }

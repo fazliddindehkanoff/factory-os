@@ -168,7 +168,9 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   procurement: [
     { action: 'start_procurement', label: 'Я начал', perm: 'procurement.quote', setOrderStatus: 'started', advance: false },
     { action: 'add_quotation', label: 'Добавить предложение', perm: 'procurement.quote', amount: true, quote: 'add', advance: true },
-    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.quote', quote: 'select', sod: true, advance: false },
+    // FIXES 2026-07-20: выбор поставщика — ТОЛЬКО у руководителя снабжения
+    // (procurement.select_supplier), менеджер собирает КП, но не выбирает.
+    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: false },
     { action: 'submit_for_approval', label: 'В процессе оплаты', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, setOrderStatus: 'payment_in_progress', advance: true },
     // Повторный шаг закупки (поставщик уже выбран): закупить и двигать дальше.
     { action: 'mark_purchased', label: 'Закуплено — передать дальше', perm: 'procurement.quote', needsSelectedQuote: true, sod: true, advance: true },
@@ -178,6 +180,10 @@ export const STEP_KIND_ACTIONS: Record<StepKind, StepActionDef[]> = {
   // #7 Операционная проверка цены/переход дальше — у назначенного снабженца.
   price_approval: [
     { action: 'approve_price', label: 'Отправить предложение', perm: 'procurement.quote', setOrderStatus: 'payment_in_progress', advance: true },
+    // FIXES 2026-07-20: руководитель снабжения ВЫБИРАЕТ понравившееся КП из
+    // собранных на проверке цены (не только последнее авто-выбранное); дальше
+    // директор и остальные роли видят только выбранное предложение.
+    { action: 'select_supplier', label: 'Выбрать поставщика', perm: 'procurement.select_supplier', quote: 'select', sod: true, advance: false },
     // FIXES 2026-07-17 (лист G): «Пересмотреть цену» — возврат снабженцу на шаг
     // поиска с причиной из пресетов (Завышенная цена / Найти других поставщиков /
     // Найти на перечисление / Сделать конкурентный лист). Снабженец ставит новую

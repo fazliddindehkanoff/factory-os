@@ -122,7 +122,7 @@ describe('constructor / admin API', () => {
 
     const cfg = await request(app).get('/api/config').set('Authorization', `Bearer ${token}`).expect(200);
     expect(cfg.body.factoryName).toBe('Zelal');
-    expect(cfg.body.stages.length).toBe(9);
+    expect(cfg.body.stages.length).toBe(11);
 
     await request(app)
       .put('/api/admin/settings')

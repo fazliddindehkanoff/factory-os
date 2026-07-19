@@ -436,8 +436,9 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     if (a.reject || a.revision) continue;
     if (step.stepKind === 'procurement' && a.action !== 'add_quotation') continue;
     // FIXES 2026-07-17 (лист G): на проверке цены доступно и «Пересмотреть цену»
-    // (возврат снабженцу на шаг поиска с причиной).
-    if (step.stepKind === 'price_approval' && !['approve_price', 'return_research'].includes(a.action)) continue;
+    // (возврат снабженцу на шаг поиска с причиной). FIXES 2026-07-20: плюс
+    // «Выбрать поставщика» — руководитель снабжения выбирает КП из собранных.
+    if (step.stepKind === 'price_approval' && !['approve_price', 'return_research', 'select_supplier'].includes(a.action)) continue;
     // Assign-handoff on an APPROVAL step only before procurement; on procurement_intake
     // «Назначить снабженца» is a first-class action always available.
     if (a.assign && step.stepKind === 'approval' && !nextIsProcurement) continue;

@@ -108,7 +108,8 @@ describe('bug #8: assign to a specific procurement person', () => {
     const [afterProposal] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.id));
     expect(afterProposal.status).toBe('price_approval');
     expect(await availableActions(db, afterProposal, proc)).toEqual([]);
-    expect((await availableActions(db, afterProposal, head)).map((a) => a.action)).toEqual(['approve_price']);
+    // FIXES 2026-07-20: на проверке цены руководитель снабжения также выбирает КП.
+    expect((await availableActions(db, afterProposal, head)).map((a) => a.action)).toEqual(['approve_price', 'select_supplier']);
     const priced = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
     expect(priced.find((i: any) => i.name === 'A')!.estimatedPrice).toBe(100);
     expect(priced.find((i: any) => i.name === 'A')!.totalAmount).toBe(200);

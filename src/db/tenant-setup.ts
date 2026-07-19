@@ -26,13 +26,19 @@ interface StepSpec {
 const STEP_SPECS: StepSpec[] = [
   { code: 'dept_head', order: 1, name: 'Руководитель отдела', kind: 'approval' },
   { code: 'warehouse', order: 2, name: 'Проверка склада', kind: 'warehouse_check' },
-  { code: 'deputy_director', order: 3, name: 'Главный инженер', kind: 'approval' },
+  // FIXES 2026-07-20: гл. инженер тоже только для закупки — при полном наличии
+  // заявка возвращается руководителю отдела (ветка inStock:true ниже, 0037).
+  { code: 'deputy_director', order: 3, name: 'Главный инженер', kind: 'approval', condition: { inStock: false } },
   { code: 'procurement_head', order: 4, name: 'Руководитель снабжения — принятие заявки', kind: 'procurement_intake', condition: { inStock: false } },
   { code: 'procurement', order: 5, name: 'Снабженец — процесс поиска', kind: 'procurement', condition: { inStock: false } },
   { code: 'procurement_head', order: 6, name: 'Руководитель снабжения — проверка цены', kind: 'price_approval', condition: { inStock: false } },
   { code: 'director', order: 7, name: 'Директор', kind: 'approval', condition: { inStock: false } },
   { code: 'procurement', order: 8, name: 'Снабженец — оформление заказа', kind: 'ordering', condition: { inStock: false } },
   { code: 'warehouse', order: 9, name: 'Склад — приёмка', kind: 'receiving', condition: { inStock: false } },
+  // Ветка «есть в наличии»: склад подтвердил полное наличие → руководитель
+  // отдела одобряет выдачу → склад выдаёт (остаток списывается) → закрыта.
+  { code: 'dept_head', order: 10, name: 'Руководитель отдела — выдача со склада', kind: 'approval', condition: { inStock: true } },
+  { code: 'warehouse', order: 11, name: 'Склад — выдача в отдел', kind: 'issue', condition: { inStock: true } },
 ];
 
 async function roleIdByCode(db: Db, code: string): Promise<string | undefined> {

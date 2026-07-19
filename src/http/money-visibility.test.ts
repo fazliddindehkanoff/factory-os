@@ -82,13 +82,16 @@ describe('getMoneyVisibility — единый гейт сумм', () => {
     const requester = await user([await sysRoleId('requester')], 'req');
     await user([execRole.id], 'exec');
     const r = await createRequest(db, { holdingId: holding.id, requesterId: requester, factoryId: factory.id, items: [{ name: 'X', quantity: 1, unitPrice: 100 }] });
-    await db.insert(schema.quotations).values({ holdingId: holding.id, requestId: r.id, supplierName: 'ООО X', amount: 700, createdBy: requester });
+    // FIXES 2026-07-20: вне снабжения видно только ВЫБРАННОЕ КП — конкурирующее
+    // (не выбранное) предложение исп. диру не отдаётся.
+    await db.insert(schema.quotations).values({ holdingId: holding.id, requestId: r.id, supplierName: 'ООО X', amount: 700, createdBy: requester, selected: true });
+    await db.insert(schema.quotations).values({ holdingId: holding.id, requestId: r.id, supplierName: 'ООО Y', amount: 900, createdBy: requester, selected: false });
 
     const tk = await login('exec');
     const res = await request(app).get(`/api/requests/${r.id}`).set('Authorization', `Bearer ${tk}`).expect(200);
     expect(res.body.canSeeMoney).toBe(true);
     expect(res.body.estimatedAmount).not.toBeNull();
-    expect((res.body.quotations ?? []).length).toBe(1);
+    expect((res.body.quotations ?? []).map((q: { supplierName: string }) => q.supplierName)).toEqual(['ООО X']);
   });
 
   it('GET /requests/:id: рук. отдела (до закупки) сумму НЕ видит', async () => {

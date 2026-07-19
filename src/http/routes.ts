@@ -857,13 +857,19 @@ export function buildRouter(deps: RouterDeps): Router {
       const viewerCodes = await getUserPermissionCodes(db, u.id);
       const detailMoney = await getMoneyVisibility(db, u.id);
       const canSeeQuotes = detailMoney.canSee(reqRow);
-      const quotations = canSeeQuotes
+      // FIXES 2026-07-20: ВСЕ предложения видит только отдел снабжения; остальным
+      // (директор, исп. дир, финансы, аудит) отдаётся только ВЫБРАННОЕ КП —
+      // конкурирующие цены за пределы снабжения не выходят.
+      const isProcurementViewer = ['procurement.view', 'procurement.quote', 'procurement.select_supplier']
+        .some((p) => viewerCodes.includes(p));
+      const allQuotes = canSeeQuotes
         ? await db
             .select()
             .from(schema.quotations)
             .where(eq(schema.quotations.requestId, reqRow.id))
             .orderBy(schema.quotations.createdAt)
         : [];
+      const quotations = isProcurementViewer ? allQuotes : allQuotes.filter((q: { selected: boolean }) => q.selected);
       const actions = await availableActions(db, reqRow, u.id);
       // Build workflow timeline with per-step state + WHO/WHEN acted (bugs #4, #7, #10).
       type TLState = 'completed' | 'current' | 'future' | 'rejected' | 'cancelled' | 'returned';

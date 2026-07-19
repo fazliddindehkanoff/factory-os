@@ -16,7 +16,7 @@ async function freshDb() {
 }
 
 describe('setupTenant', () => {
-  it('creates the approved nine-step workflow (progress stages 2–10), idempotently', async () => {
+  it('creates the approved workflow incl. the in-stock branch, idempotently', async () => {
     const db = await freshDb();
     const a = await setupTenant(db, { holdingName: 'Zelal' });
     const steps1 = await db
@@ -33,6 +33,9 @@ describe('setupTenant', () => {
       'Директор',
       'Снабженец — оформление заказа',
       'Склад — приёмка',
+      // FIXES 2026-07-20: ветка «есть в наличии» — возврат руководителю отдела и выдача.
+      'Руководитель отдела — выдача со склада',
+      'Склад — выдача в отдел',
     ]);
 
     // Re-run: no duplicate holdings / workflows / steps.
@@ -43,7 +46,7 @@ describe('setupTenant', () => {
       .select()
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.workflowId, a.workflow.id));
-    expect(steps2.length).toBe(9);
+    expect(steps2.length).toBe(11);
     const holdings = await db.select().from(schema.holdings);
     expect(holdings.length).toBe(1);
   });

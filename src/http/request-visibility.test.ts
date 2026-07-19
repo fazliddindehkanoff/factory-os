@@ -101,6 +101,42 @@ describe('H3 — request detail visibility', () => {
     await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${tk}`).expect(404);
   });
 
+  // FIXES 2026-07-20: a request fulfilled from stock (inStock=true) drops out of
+  // the purchase chain — a workflow-role viewer who never ACTED on it loses
+  // visibility; the author keeps it; audit.view still sees all.
+  it('an in-stock request is hidden from workflow roles that did not act, visible to author and auditor', async () => {
+    const { app, db, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['director'], 'dir3');
+    await user(['auditor'], 'aud3');
+    const reqA = await mkReq(alice);
+    await db.update(schema.requests).set({ inStock: true }).where(eq(schema.requests.id, reqA.id));
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${await login('dir3')}`).expect(404);
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${await login('alice')}`).expect(200);
+    await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${await login('aud3')}`).expect(200);
+  });
+
+  // FIXES 2026-07-20: competing КП stay inside снабжение — non-procurement money
+  // viewers (director) receive ONLY the selected quotation; procurement sees all.
+  it('director sees only the selected quotation; procurement sees all', async () => {
+    const { app, db, holding, user, mkReq, login } = await make();
+    const alice = await user(['requester'], 'alice');
+    await user(['director'], 'dir4');
+    await user(['procurement'], 'proc4');
+    // Give the workflow a procurement step so proc4 passes role-in-workflow visibility.
+    const [wf] = await db.select().from(schema.workflows).where(eq(schema.workflows.holdingId, holding.id));
+    await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 3, stepName: 'Закуп', stepKind: 'procurement' });
+    const reqA = await mkReq(alice);
+    await db.insert(schema.quotations).values([
+      { holdingId: holding.id, requestId: reqA.id, supplierName: 'S1', amount: 100, selected: false },
+      { holdingId: holding.id, requestId: reqA.id, supplierName: 'S2', amount: 90, selected: true },
+    ]);
+    const dirRes = await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${await login('dir4')}`).expect(200);
+    expect(dirRes.body.quotations.map((q: { supplierName: string }) => q.supplierName)).toEqual(['S2']);
+    const procRes = await request(app).get(`/api/requests/${reqA.id}`).set('Authorization', `Bearer ${await login('proc4')}`).expect(200);
+    expect(procRes.body.quotations.length).toBe(2);
+  });
+
   // bug #2: a former "oversight" permission alone no longer grants visibility —
   // finance.view without a finance step in the workflow → cannot see the request.
   it('a role with finance.view but NO step in the workflow cannot see the request (404)', async () => {

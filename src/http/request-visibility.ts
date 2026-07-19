@@ -34,6 +34,7 @@ export interface RequestVisibility {
     companyId?: string | null;
     factoryId?: string | null;
     departmentId?: string | null;
+    inStock?: boolean | null;
   }) => boolean;
 }
 
@@ -221,6 +222,11 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
   conds.push(eq(schema.requests.responsibleUserId, userId));
   for (const p of perAssign) {
     const sub: SQL[] = [inArray(schema.requests.workflowId, [...p.wfSet])];
+    // FIXES 2026-07-20: заявка, закрываемая со склада (inStock=true), выпадает из
+    // закупочной цепочки — участникам маршрута, которые в ней НЕ действовали
+    // (директор, снабжение и т.д.), она не видна. Автор / ответственный / уже
+    // действовавшие (ветки выше и involvedIds ниже) и audit.view видят как раньше.
+    sub.push(sql`${schema.requests.inStock} IS DISTINCT FROM true`);
     if (p.companyId) sub.push(eq(schema.requests.companyId, p.companyId));
     if (p.factoryId) sub.push(eq(schema.requests.factoryId, p.factoryId));
     if (p.departmentId) sub.push(eq(schema.requests.departmentId, p.departmentId));
@@ -240,7 +246,8 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
     canSee: (req) =>
       req.requesterId === userId ||
       req.responsibleUserId === userId ||
-      perAssign.some((p) => req.workflowId != null && p.wfSet.has(req.workflowId) && assignCovers(p, req)) ||
+      (req.inStock !== true &&
+        perAssign.some((p) => req.workflowId != null && p.wfSet.has(req.workflowId) && assignCovers(p, req))) ||
       involvedSet.has(req.id),
   };
 }
