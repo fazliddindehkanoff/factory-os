@@ -2471,16 +2471,17 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
                         <div style={{ minWidth: 0, flex: 1 }}>
                           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)' }}>{name}</div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+                            {/* Labels grey / values dark — same rule as the request detail view (7ac397c). */}
                             {qty && (
                               <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                                <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Количество:</span>
-                                <span style={{ fontWeight: 600, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{qty}{unit ? ` ${unit}` : ''}</span>
+                                <span style={{ fontWeight: 500, color: 'var(--fg2)', flex: 'none' }}>Количество:</span>
+                                <span style={{ fontWeight: 700, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{qty}{unit ? ` ${unit}` : ''}</span>
                               </div>
                             )}
                             {rows.map((r, i) => (
                               <div key={i} style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                                {r.label && <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>{r.label}:</span>}
-                                <span style={{ fontWeight: 600, color: 'var(--fg)', whiteSpace: 'pre-wrap', minWidth: 0 }}>{r.value}</span>
+                                {r.label && <span style={{ fontWeight: 500, color: 'var(--fg2)', flex: 'none' }}>{r.label}:</span>}
+                                <span style={{ fontWeight: 700, color: 'var(--fg)', whiteSpace: 'pre-wrap', minWidth: 0 }}>{r.value}</span>
                               </div>
                             ))}
                           </div>
