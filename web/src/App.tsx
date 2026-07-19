@@ -190,6 +190,8 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const [theme, setTheme] = useState<Theme>(getTheme());
   const [unread, setUnread] = useState<number>(0);
+  // ≥1024px → Home renders as the desktop dashboard (sidebar nav); below — mobile Home.
+  const wideHome = useIsWide();
   // Test mode: the seeded test users for the DEV role-switcher. Stays null in
   // production — /api/dev/users answers 404 there, so no panel is ever rendered.
   const [devUsers, setDevUsers] = useState<DevUser[] | null>(null);
@@ -357,9 +359,18 @@ export default function App() {
             <Note>Вы не привязаны к организации. Попросите администратора назначить вам права.</Note>
           </div>
         )}
-        {screen.name === 'home' && (
+        {screen.name === 'home' && (wideHome ? (
+          <DashboardDesktop
+            me={me}
+            tick={tick}
+            unread={unread}
+            onNav={setScreen}
+            onOpen={(id) => setScreen({ name: 'detail', id, from: 'home' })}
+            onLogout={() => { clearToken(); setMe(null); }}
+          />
+        ) : (
           <Home me={me} tick={tick} onNav={setScreen} onOpen={(id) => setScreen({ name: 'detail', id, from: 'home' })} />
-        )}
+        ))}
         {screen.name === 'list' && (
           <RequestsList
             me={me}
@@ -840,6 +851,308 @@ function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id:
       </div>
     </div>
   );
+}
+
+// ── Desktop dashboard (redesign 2026-07-19) ──────────────────────────────────
+// ≥1024px the Home screen renders as a full-screen desktop dashboard in the dark
+// design language of the confirmed «Новая заявка» mock (indigo/cyan, Inter).
+// The left sidebar is NAVIGATION ONLY — brand, primary CTA, permission-gated
+// links, user/logout — never filters or summaries (standard SaaS pattern).
+// Below 1024px (Telegram Mini App) the existing mobile Home renders unchanged.
+
+function useIsWide(bp = 1024): boolean {
+  const [wide, setWide] = useState(() => window.matchMedia(`(min-width:${bp}px)`).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(`(min-width:${bp}px)`);
+    const on = () => setWide(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [bp]);
+  return wide;
+}
+
+const DASH_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+#dash{
+  /* Scoped dark tokens: reused components (RequestRowButton, tint tiles) read
+     the same CSS vars, so they adopt this palette without code changes. */
+  --bg:#080D19;--card:rgba(255,255,255,0.045);--card2:rgba(255,255,255,0.07);
+  --fg:#FFFFFF;--fg2:#94A3B8;--fg3:#64748B;
+  --accent:#A5B4FC;--accent-bg:rgba(99,102,241,0.16);
+  --success:#22C55E;--success-bg:rgba(34,197,94,0.13);
+  --warning:#F59E0B;--warning-bg:rgba(245,158,11,0.13);
+  --danger:#EF4444;--danger-bg:rgba(239,68,68,0.14);
+  --border:rgba(255,255,255,0.10);--line:rgba(255,255,255,0.07);
+  --chip:rgba(148,163,184,0.12);--skel:rgba(255,255,255,0.06);--skel2:rgba(255,255,255,0.09);
+  --shadow:none;--shadowSm:none;
+  position:fixed;inset:0;z-index:60;display:flex;overflow:hidden;
+  background:var(--bg);color:var(--fg);color-scheme:dark;
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
+}
+#dash *{box-sizing:border-box;}
+#dash button{font-family:inherit;}
+/* ── sidebar: navigation only ── */
+#dash .side{width:264px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--border);background:#0A0F1D;padding:20px 14px 16px;overflow-y:auto;}
+#dash .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:14px;letter-spacing:.03em;padding:2px 8px 18px;}
+#dash .brand-dot{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,#6366F1,#22D3EE);flex:none;}
+#dash .cta{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:11px;border:none;border-radius:12px;background:linear-gradient(135deg,#6366F1,#22D3EE);color:#fff;font-size:13.5px;font-weight:600;cursor:pointer;transition:filter .12s;}
+#dash .cta:hover{filter:brightness(1.1);}
+#dash .nav-sec{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--fg3);padding:18px 10px 6px;}
+#dash .nav-item{display:flex;align-items:center;gap:11px;width:100%;padding:9px 10px;border:none;border-radius:10px;background:none;color:var(--fg2);font-size:13.5px;font-weight:500;cursor:pointer;text-align:left;transition:background .12s,color .12s;}
+#dash .nav-item:hover{background:rgba(255,255,255,0.05);color:var(--fg);}
+#dash .nav-item.on{background:rgba(99,102,241,0.15);color:#A5B4FC;font-weight:600;}
+#dash .nav-badge{margin-left:auto;min-width:19px;height:19px;padding:0 5px;border-radius:10px;background:var(--danger);color:#fff;font-size:10.5px;font-weight:700;line-height:19px;text-align:center;}
+#dash .side-user{margin-top:auto;display:flex;align-items:center;gap:10px;border-top:1px solid var(--border);padding:14px 6px 0;}
+#dash .ava{width:34px;height:34px;border-radius:50%;background:rgba(99,102,241,0.2);color:#A5B4FC;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex:none;}
+#dash .side-user .out{margin-left:auto;border:none;background:none;color:var(--fg3);cursor:pointer;padding:6px;border-radius:8px;display:flex;}
+#dash .side-user .out:hover{background:rgba(255,255,255,0.06);color:var(--danger);}
+/* ── main ── */
+#dash .main{flex:1;overflow-y:auto;padding:26px 32px 48px;}
+#dash .inner{max-width:1180px;margin:0 auto;}
+#dash .mhead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px;}
+#dash h1{font-size:24px;font-weight:600;margin:3px 0 0;letter-spacing:-.01em;}
+#dash .rolepill{display:inline-flex;align-items:center;gap:7px;margin-top:9px;padding:4px 11px;border-radius:999px;background:rgba(99,102,241,0.16);color:#A5B4FC;font-size:12px;font-weight:600;}
+#dash .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px;margin-bottom:22px;}
+#dash .kpi{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:15px 16px;display:flex;flex-direction:column;gap:10px;text-align:left;cursor:pointer;transition:background .12s,border-color .12s;}
+#dash .kpi:hover{background:var(--card2);border-color:rgba(255,255,255,0.22);}
+#dash .kpi .num{font-family:'IBM Plex Mono',monospace;font-size:29px;font-weight:600;line-height:1;color:var(--fg);}
+#dash .cols{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start;}
+@media (max-width:1279px){#dash .cols{grid-template-columns:1fr;}}
+#dash .sec-title{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--fg2);margin:2px 0 10px;}
+#dash .see{border:none;background:none;color:#A5B4FC;font-size:12.5px;font-weight:600;cursor:pointer;padding:0;letter-spacing:0;text-transform:none;}
+#dash .see:hover{text-decoration:underline;}
+#dash .block{margin-bottom:22px;}
+#dash .rows{display:flex;flex-direction:column;gap:9px;}
+#dash .empty{background:var(--card);border:1px dashed var(--border);border-radius:14px;padding:22px 16px;text-align:center;font-size:13px;color:var(--fg3);}
+#dash .panel{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:18px;}
+#dash .st-row{display:flex;align-items:center;gap:10px;width:100%;padding:8.5px 8px;border:none;border-radius:10px;background:none;color:var(--fg2);font-size:13px;font-weight:500;cursor:pointer;text-align:left;transition:background .12s;}
+#dash .st-row:hover{background:rgba(255,255,255,0.05);color:var(--fg);}
+#dash .st-row b{margin-left:auto;font-family:'IBM Plex Mono',monospace;color:var(--fg);font-weight:600;}
+#dash .skel{border-radius:14px;background:var(--skel);animation:dashpulse 1.6s ease-in-out infinite;}
+@keyframes dashpulse{0%,100%{opacity:1}50%{opacity:.5}}
+#dash .err-box{background:var(--danger-bg);border:1px solid rgba(239,68,68,0.35);color:#FCA5A5;border-radius:14px;padding:14px 16px;font-size:13px;margin-bottom:20px;}
+`;
+
+function DashboardDesktop({ me, tick = 0, unread, onNav, onOpen, onLogout }: {
+  me: Me;
+  tick?: number;
+  unread: number;
+  onNav: (s: Screen) => void;
+  onOpen: (id: string) => void;
+  onLogout: () => void;
+}) {
+  const { t } = useI18n();
+  const [dash, setDash] = useState<DashboardData | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.dashboard().then((d) => { if (alive) { setDash(d); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
+    return () => { alive = false; };
+  }, [tick]);
+
+  const can = (p: string) => me.permissions.includes(p);
+  const canAct = INBOX_ACTOR_PERMS.some(can);
+  const isAdmin = ADMIN_PERMS.some(can);
+  const oversight = can('reports.view') || can('audit.view');
+
+  // KPI cards — same gates and click targets as the mobile Home (single source
+  // of truth is the /dashboard payload; permission-hiding via null values).
+  const cards: KpiCard[] = [];
+  if (can('requests.create') && dash && dash.myReturned > 0) cards.push({ key: 'returned', label: 'Возвращённые', value: dash.myReturned, tint: 'warning', ic: 'alert', onClick: () => onNav({ name: 'list', status: 'needs_revision' }) });
+  if (can('requests.create')) cards.push({ key: 'myActive', label: 'Созданные мной', value: dash?.myCreated ?? null, tint: 'accent', ic: 'file', onClick: () => onNav({ name: 'list', mine: true }) });
+  if (can('approvals.approve') || can('procurement.view')) cards.push({ key: 'pending', label: 'Ожидают меня', value: dash?.pendingForMe ?? null, tint: 'warning', ic: 'checkCircle', onClick: () => onNav({ name: 'approvals' }) });
+  if (oversight) cards.push({ key: 'total', label: 'Активных всего', value: dash?.totalActive ?? null, tint: 'success', ic: 'box', onClick: () => onNav({ name: 'list' }) });
+  if (dash?.awaitingPayment != null) cards.push({ key: 'awaiting', label: 'Ожидают оплаты', value: dash.awaitingPayment, tint: 'warning', ic: 'wallet', onClick: () => onNav({ name: 'list', status: 'finance_payment' }) });
+  if (dash && dash.inProcurement != null) cards.push({ key: 'proc', label: 'Для закупа', value: dash.inProcurement, tint: 'accent', ic: 'truck', onClick: () => onNav({ name: 'list', status: 'ordering' }) });
+  if (dash && dash.lowStock != null) cards.push({ key: 'low', label: 'Низкий остаток', value: dash.lowStock, tint: 'danger', ic: 'alert', onClick: () => onNav({ name: 'warehouse' }) });
+
+  const byStatusEntries = dash?.byStatus ? Object.entries(dash.byStatus).sort((a, b) => b[1] - a[1]) : [];
+
+  // Work queues (desktop layout renders them as columns, data same as mobile).
+  const [queue, setQueue] = useState<QueueItem[] | null>(null);
+  useEffect(() => {
+    if (!canAct) return;
+    let alive = true;
+    api.inbox().then((r) => { if (alive) setQueue(pickItems(r)); }).catch(() => { if (alive) setQueue([]); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick]);
+  const [procQueue, setProcQueue] = useState<QueueItem[] | null>(null);
+  useEffect(() => {
+    if (!can('procurement.view')) return;
+    let alive = true;
+    api.procurement.queue().then((r) => { if (alive) setProcQueue(pickItems(r)); }).catch(() => { if (alive) setProcQueue([]); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick]);
+
+  // Sidebar navigation — mirrors BottomNav permission gates exactly.
+  const nav: { key: Screen['name']; label: string; ic: string; badge?: number }[] = [{ key: 'home', label: 'Главная', ic: 'home' }];
+  if (can('requests.view')) nav.push({ key: 'list', label: 'Все заявки', ic: 'file' });
+  if (canAct) nav.push({ key: 'approvals', label: 'Согласования', ic: 'checkCircle' });
+  if (can('warehouse.view')) nav.push({ key: 'warehouse', label: 'Склад', ic: 'box' });
+  if (can('procurement.view')) nav.push({ key: 'procurement', label: 'Закуп', ic: 'truck' });
+  nav.push({ key: 'notifications', label: 'Уведомления', ic: 'bell', badge: unread });
+
+  const initials = (me.user.fullName || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+  const today = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  const body = (
+    <div id="dash">
+      <style>{DASH_CSS}</style>
+
+      {/* ── Sidebar: navigation only ── */}
+      <div className="side">
+        <div className="brand"><span className="brand-dot" />FACTORY OS</div>
+        {can('requests.create') && (
+          <button className="cta" onClick={() => onNav({ name: 'create' })}>
+            <Icon name="plus" size={17} sw={2.4} /> Новая заявка
+          </button>
+        )}
+        <div className="nav-sec">Меню</div>
+        {nav.map((n) => (
+          <button key={n.key} className={'nav-item' + (n.key === 'home' ? ' on' : '')} onClick={() => n.key !== 'home' && onNav({ name: n.key } as Screen)}>
+            <Icon name={n.ic} size={18} sw={n.key === 'home' ? 2.1 : 1.8} />
+            {n.label}
+            {n.badge != null && n.badge > 0 && <span className="nav-badge">{n.badge > 99 ? '99+' : n.badge}</span>}
+          </button>
+        ))}
+        {isAdmin && (
+          <>
+            <div className="nav-sec">Система</div>
+            <button className="nav-item" onClick={() => onNav({ name: 'admin' })}>
+              <Icon name="shield" size={18} sw={1.8} />
+              Администрирование
+            </button>
+          </>
+        )}
+        <div className="side-user">
+          <span className="ava">{initials}</span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{me.user.fullName}</div>
+            <div style={{ fontSize: 11, color: 'var(--fg3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{roleLabel(me.permissions, me.user.roleName, t)}</div>
+          </div>
+          <button className="out" aria-label="Выйти" title="Выйти" onClick={onLogout}><Icon name="logout" size={17} /></button>
+        </div>
+      </div>
+
+      {/* ── Main ── */}
+      <div className="main">
+        <div className="inner">
+          <div className="mhead">
+            <div>
+              <div style={{ fontSize: 13, color: 'var(--fg2)', fontWeight: 500 }}>Добрый день,</div>
+              <h1>{me.user.fullName}</h1>
+              <div className="rolepill">
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#A5B4FC' }} />
+                {roleLabel(me.permissions, me.user.roleName, t)}
+              </div>
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--fg3)', textAlign: 'right', paddingTop: 6, textTransform: 'capitalize' }}>{today}</div>
+          </div>
+
+          {err && <div className="err-box">Не удалось загрузить дашборд: {err}</div>}
+          {!err && !dash && <div className="skel" style={{ height: 110, marginBottom: 22 }} />}
+
+          {!err && cards.length > 0 && (
+            <div className="kpi-grid">
+              {cards.map((c) => (
+                <button key={c.key} className="kpi" onClick={c.onClick} style={c.onClick ? undefined : { cursor: 'default' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ width: 36, height: 36, borderRadius: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[c.tint], color: TINT_FG[c.tint] }}>
+                      <Icon name={c.ic} size={19} />
+                    </span>
+                    {c.onClick && <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={16} sw={2.2} /></span>}
+                  </div>
+                  <div className="num">{c.value ?? '—'}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{c.label}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="cols">
+            {/* Left: work queues + activity */}
+            <div>
+              {canAct && (
+                <div className="block">
+                  <div className="sec-title">
+                    Ждут моего решения
+                    <button className="see" onClick={() => onNav({ name: 'approvals' })}>все →</button>
+                  </div>
+                  {!queue && <div className="skel" style={{ height: 68 }} />}
+                  {queue && queue.length === 0 && <div className="empty">Нет заявок, ожидающих вашего решения.</div>}
+                  {queue && queue.length > 0 && (
+                    <div className="rows">
+                      {queue.slice(0, 4).map((r) => (
+                        <RequestRowButton key={r.id} id={r.id} title={r.title} requestNumber={r.requestNumber} status={r.status} obyekt={r.obyekt} departmentName={r.departmentName} createdAt={r.createdAt} onOpen={onOpen} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {can('procurement.view') && (
+                <div className="block">
+                  <div className="sec-title">
+                    Очередь снабжения
+                    <button className="see" onClick={() => onNav({ name: 'procurement' })}>все →</button>
+                  </div>
+                  {!procQueue && <div className="skel" style={{ height: 68 }} />}
+                  {procQueue && procQueue.length === 0 && <div className="empty">Нет заявок в закупке.</div>}
+                  {procQueue && procQueue.length > 0 && (
+                    <div className="rows">
+                      {procQueue.slice(0, 4).map((r) => (
+                        <RequestRowButton key={r.id} id={r.id} title={r.title} requestNumber={r.requestNumber} status={r.status} obyekt={r.obyekt} departmentName={r.departmentName} createdAt={r.createdAt} onOpen={onOpen} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="block">
+                <div className="sec-title">
+                  Последние события
+                  {can('requests.view') && <button className="see" onClick={() => onNav({ name: 'list' })}>все →</button>}
+                </div>
+                {!dash && !err && <div className="skel" style={{ height: 68 }} />}
+                {dash && dash.activity.length === 0 && <div className="empty">Пока нет событий — здесь появятся обновления по вашим заявкам.</div>}
+                {dash && dash.activity.length > 0 && (
+                  <div className="rows">
+                    {dash.activity.slice(0, 6).map((e) => (
+                      <RequestRowButton key={e.id} id={e.id} title={e.title} requestNumber={e.requestNumber} status={e.status} obyekt={e.obyekt} departmentName={e.departmentName} createdAt={e.createdAt} onOpen={onOpen} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right rail: read-only summary (deep links, not filter controls) */}
+            <div>
+              {byStatusEntries.length > 0 && (
+                <div className="panel">
+                  <div className="sec-title" style={{ margin: '0 0 8px' }}>Заявки по статусам</div>
+                  {byStatusEntries.map(([st, n]) => {
+                    const m = statusMeta(st);
+                    return (
+                      <button key={st} className="st-row" onClick={() => onNav({ name: 'list', status: st })}>
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: m.color, flex: 'none' }} />
+                        {m.label}
+                        <b>{n}</b>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(body, document.body);
 }
 
 function Home({
