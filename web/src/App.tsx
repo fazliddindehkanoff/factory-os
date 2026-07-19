@@ -190,8 +190,11 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'home' });
   const [theme, setTheme] = useState<Theme>(getTheme());
   const [unread, setUnread] = useState<number>(0);
-  // ≥1024px → Home renders as the desktop dashboard (sidebar nav); below — mobile Home.
+  // Desktop dashboard is for the СНАБЖЕНИЕ role only (owner 2026-07-19: «only
+  // snab-dashboard») — the snab team works on desktops; every other role keeps
+  // the mobile-first Home on all screen sizes.
   const wideHome = useIsWide();
+  const snabDashboard = wideHome && (me?.permissions ?? []).includes('procurement.view');
   // Test mode: the seeded test users for the DEV role-switcher. Stays null in
   // production — /api/dev/users answers 404 there, so no panel is ever rendered.
   const [devUsers, setDevUsers] = useState<DevUser[] | null>(null);
@@ -359,7 +362,7 @@ export default function App() {
             <Note>Вы не привязаны к организации. Попросите администратора назначить вам права.</Note>
           </div>
         )}
-        {screen.name === 'home' && (wideHome ? (
+        {screen.name === 'home' && (snabDashboard ? (
           <DashboardDesktop
             me={me}
             tick={tick}
