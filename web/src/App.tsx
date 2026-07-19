@@ -1373,8 +1373,6 @@ type DraftRequestItem = {
   files: Record<string, { name: string; size: number; data: string }[]>;
 };
 
-const emptyRequestItem = (): DraftRequestItem => ({ values: {}, files: {} });
-
 // Клик по любому месту поля даты открывает нативный date picker (а не только по
 // иконке-календарю). showPicker() требует пользовательского жеста — onClick подходит.
 const openDatePicker = (e: { currentTarget: HTMLInputElement & { showPicker?: () => void } }) => {
@@ -1382,42 +1380,204 @@ const openDatePicker = (e: { currentTarget: HTMLInputElement & { showPicker?: ()
   try { e.currentTarget.showPicker?.(); } catch { /* showPicker не поддержан — остаётся обычный фокус */ }
 };
 
-// ── Помощники превью (шаг «Проверьте заявку») ───────────────────────────────
-const isImageName = (name: string) => /\.(png|jpe?g|gif|webp)$/i.test(name);
-// Черновые файлы позиции хранятся как base64 без префикса — собираем data-URL,
-// mime берём по расширению (по умолчанию jpeg).
-const fileDataUrl = (f: { name: string; data: string }) => {
-  const ext = f.name.split('.').pop()?.toLowerCase();
-  const mime = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
-  return `data:${mime};base64,${f.data}`;
-};
-// Описание позиции — строки «Метка: значение»; строку «Вложения:» прячем (её
-// заменяют миниатюры фото).
-const parseDescRows = (desc?: string): { label: string; value: string }[] =>
-  !desc
-    ? []
-    : desc
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('Вложения:'))
-        .map((l) => {
-          const i = l.indexOf(': ');
-          return i > 0 ? { label: l.slice(0, i), value: l.slice(i + 2) } : { label: '', value: l };
-        });
+// ── New-request desktop form (redesign 2026-07-19) ──────────────────────────
+// Full-screen desktop layout ported from the confirmed design
+// (factory_os_new_request_form): dark indigo/cyan palette, two-column body with
+// a sticky sidebar (summary + approval route). Renders in a portal so it escapes
+// the app's 560px mobile frame. Options (type / warehouse / department / object /
+// purpose / unit / urgency) are still sourced from the admin form config; on
+// submit everything maps to the same CreateRequestData payload as before.
 
-/** Create wizard rendered entirely from the admin-configured schema (/api/form/request_create). */
+type NrqRow = {
+  name: string;
+  code: string;
+  qty: string;
+  unit: string;
+  price: string;
+  pay: string;
+  note: string;
+  files: { name: string; size: number; data: string }[];
+};
+const emptyNrqRow = (): NrqRow => ({ name: '', code: '', qty: '', unit: '', price: '', pay: 'Банк', note: '', files: [] });
+
+const NRQ_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+#nrq{
+  --bg:#080D19;--bg-elev:#0A0F1D;--card:rgba(255,255,255,0.04);--card-hover:rgba(255,255,255,0.06);
+  --border:rgba(255,255,255,0.10);--border-strong:rgba(255,255,255,0.20);
+  --text:#FFFFFF;--text-sec:#94A3B8;--text-muted:#64748B;
+  --accent1:#6366F1;--accent2:#22D3EE;
+  --green:#22C55E;--green-bg:rgba(34,197,94,0.13);--green-bd:rgba(34,197,94,0.35);
+  --amber:#F59E0B;--amber-bg:rgba(245,158,11,0.13);--amber-bd:rgba(245,158,11,0.35);
+  --red:#EF4444;--red-bg:rgba(239,68,68,0.13);--red-bd:rgba(239,68,68,0.35);
+  --blue:#3B82F6;--gray-bg:rgba(148,163,184,0.10);
+  --radius-card:20px;--radius-ctl:10px;
+  --font:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  position:fixed;inset:0;z-index:60;overflow-y:auto;overflow-x:hidden;
+  background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+#nrq *{box-sizing:border-box;}
+#nrq svg.icon{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;}
+#nrq .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 40px;border-bottom:1px solid var(--border);background:var(--bg-elev);}
+#nrq .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:14px;letter-spacing:0.02em;}
+#nrq .brand-dot{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent1),var(--accent2));}
+#nrq .crumb{color:var(--text-muted);font-weight:400;}
+#nrq .crumb b{color:var(--text-sec);font-weight:500;}
+#nrq .top-right{display:flex;align-items:center;gap:18px;color:var(--text-sec);}
+#nrq .avatar{width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--text-sec);}
+#nrq .page-wrap{max-width:1400px;margin:0 auto;padding:28px 40px 120px;}
+#nrq .page-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+#nrq .page-header h1{font-size:30px;font-weight:600;margin:0 0 6px;}
+#nrq .page-header .sub{color:var(--text-sec);font-size:13px;}
+#nrq .meta-box{text-align:right;font-size:12px;color:var(--text-muted);}
+#nrq .meta-box div{margin-bottom:3px;}
+#nrq .meta-box b{color:var(--text-sec);font-weight:500;}
+#nrq .layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px;align-items:start;}
+@media (max-width:1100px){#nrq .layout{grid-template-columns:1fr;}#nrq .sidebar{position:static !important;}}
+#nrq .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:22px 24px;margin-bottom:20px;}
+#nrq .card-title{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:600;margin:0 0 18px;}
+#nrq .num-badge{width:22px;height:22px;border-radius:7px;background:rgba(99,102,241,0.18);color:#A5B4FC;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;}
+#nrq .card-title small{font-weight:400;font-size:12px;color:var(--text-muted);margin-left:4px;}
+#nrq label{display:block;font-size:12px;color:var(--text-sec);margin-bottom:6px;font-weight:500;}
+#nrq label .req{color:var(--red);}
+#nrq .field{margin-bottom:16px;}
+#nrq .field-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:16px;}
+#nrq input[type=text],#nrq input[type=number],#nrq input[type=date],#nrq select,#nrq textarea{
+  width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius-ctl);
+  padding:10px 12px;color:var(--text);font-family:var(--font);font-size:13.5px;outline:none;transition:border-color .12s;}
+#nrq input::placeholder,#nrq textarea::placeholder{color:var(--text-muted);}
+#nrq input:focus,#nrq select:focus,#nrq textarea:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);}
+#nrq select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 10px center;background-size:16px;padding-right:32px;}
+#nrq select option{background:#0A0F1D;color:var(--text);}
+#nrq textarea{resize:vertical;min-height:72px;}
+#nrq .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:12px;margin-bottom:18px;}
+#nrq .type-card{border:1px solid var(--border);border-radius:14px;padding:16px 14px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;color:var(--text-sec);transition:border-color .12s,background .12s,color .12s;}
+#nrq .type-card:hover{background:var(--card-hover);}
+#nrq .type-card span{font-size:13px;font-weight:500;}
+#nrq .type-card.selected{border-color:var(--accent1);background:rgba(99,102,241,0.10);color:var(--text);}
+#nrq .type-card.selected svg{stroke:#A5B4FC;}
+#nrq .pill-group{display:flex;gap:10px;flex-wrap:wrap;}
+#nrq .pill{border:1px solid var(--border);border-radius:999px;padding:9px 16px;cursor:pointer;font-size:13px;color:var(--text-sec);transition:all .12s;}
+#nrq .pill:hover{background:var(--card-hover);}
+#nrq .pill .pill-sub{color:var(--text-muted);font-size:11.5px;}
+#nrq .pill.sel-standard{border-color:var(--border-strong);background:rgba(148,163,184,0.12);color:var(--text);}
+#nrq .pill.sel-urgent{border-color:var(--amber-bd);background:var(--amber-bg);color:var(--amber);}
+#nrq .pill.sel-emergency{border-color:var(--red-bd);background:var(--red-bg);color:var(--red);}
+#nrq .pill.sel-plain{border-color:var(--border-strong);background:rgba(148,163,184,0.12);color:var(--text);}
+#nrq .warning-banner{display:flex;align-items:flex-start;gap:10px;background:var(--red-bg);border:1px solid var(--red-bd);color:#FCA5A5;border-radius:12px;padding:12px 14px;margin-top:14px;font-size:12.5px;line-height:1.5;}
+#nrq .warning-banner svg{stroke:var(--red);margin-top:1px;}
+#nrq .table-wrap{border:1px solid var(--border);border-radius:14px;overflow-x:auto;}
+#nrq table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:760px;}
+#nrq thead th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);font-weight:600;padding:11px 8px;border-bottom:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#nrq tbody td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle;}
+#nrq tbody tr:last-child td{border-bottom:none;}
+#nrq tbody tr:hover{background:rgba(255,255,255,0.02);}
+#nrq td.idx{color:var(--text-muted);font-size:12.5px;text-align:center;}
+#nrq td input.cell,#nrq td select.cell{border:1px solid transparent;background:transparent;border-radius:8px;padding:7px 8px;font-size:13px;}
+#nrq td input.cell:hover,#nrq td select.cell:hover{border-color:var(--border);}
+#nrq td input.cell:focus,#nrq td select.cell:focus{border-color:var(--accent1);background:rgba(255,255,255,0.03);box-shadow:none;}
+#nrq td select.cell{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 6px center;background-size:14px;padding-right:22px;}
+#nrq .row-actions{display:flex;gap:2px;white-space:nowrap;}
+#nrq .icon-btn{width:28px;height:28px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-muted);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .12s;}
+#nrq .icon-btn:hover{background:var(--card-hover);border-color:var(--border);color:var(--text-sec);}
+#nrq .icon-btn.has-file{color:var(--accent2);}
+#nrq .icon-btn.remove-btn:hover{color:var(--red);border-color:var(--red-bd);}
+#nrq .icon-btn:disabled{opacity:.3;cursor:not-allowed;}
+#nrq .add-row-btn{width:100%;margin-top:12px;padding:11px;border:1px dashed var(--border-strong);border-radius:12px;background:transparent;color:var(--text-sec);font-size:13px;font-family:var(--font);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .12s;}
+#nrq .add-row-btn:hover{background:var(--card-hover);border-color:var(--accent1);color:var(--text);}
+#nrq .total-row{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);}
+#nrq .total-row .lbl{color:var(--text-sec);font-size:13px;}
+#nrq .total-row .val{font-size:19px;font-weight:600;}
+#nrq .dropzone{border:1px dashed var(--border-strong);border-radius:14px;padding:22px;text-align:center;color:var(--text-muted);font-size:12.5px;cursor:pointer;transition:all .12s;}
+#nrq .dropzone:hover,#nrq .dropzone.drag{background:var(--card-hover);border-color:var(--accent1);color:var(--text-sec);}
+#nrq .dropzone svg{stroke:var(--text-muted);margin-bottom:8px;}
+#nrq .dz-files{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;}
+#nrq .file-chip{background:var(--gray-bg);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-size:11.5px;color:var(--text-sec);}
+#nrq .chip-box{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;}
+#nrq .tag-chip{display:flex;align-items:center;gap:6px;background:rgba(99,102,241,0.14);color:#A5B4FC;border:1px solid rgba(99,102,241,0.30);border-radius:999px;padding:5px 6px 5px 12px;font-size:12px;}
+#nrq .tag-chip button{background:none;border:none;color:inherit;cursor:pointer;display:flex;padding:2px;}
+#nrq .tag-chip svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;}
+#nrq .accordion-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;}
+#nrq .accordion-header svg{transition:transform .15s;}
+#nrq .accordion-header.open svg{transform:rotate(180deg);}
+#nrq .sidebar{position:sticky;top:20px;}
+#nrq .sidebar .card{padding:20px;}
+#nrq .summary-line{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;}
+#nrq .summary-line:last-child{border-bottom:none;padding-bottom:0;}
+#nrq .summary-line .k{color:var(--text-sec);}
+#nrq .summary-line .v{font-weight:500;text-align:right;}
+#nrq .badge{padding:3px 9px;border-radius:999px;font-size:11px;font-weight:500;}
+#nrq .badge.gray{background:var(--gray-bg);color:var(--text-sec);}
+#nrq .badge.amber{background:var(--amber-bg);color:var(--amber);}
+#nrq .badge.red{background:var(--red-bg);color:var(--red);}
+#nrq .stepper{position:relative;padding-left:4px;}
+#nrq .step{display:flex;gap:12px;position:relative;padding-bottom:18px;}
+#nrq .step:last-child{padding-bottom:0;}
+#nrq .step::before{content:'';position:absolute;left:11px;top:24px;bottom:-4px;width:1px;background:var(--border);}
+#nrq .step:last-child::before{display:none;}
+#nrq .step-dot{width:23px;height:23px;border-radius:50%;border:1px solid var(--border-strong);background:var(--bg-elev);display:flex;align-items:center;justify-content:center;font-size:10.5px;color:var(--text-muted);flex-shrink:0;z-index:1;}
+#nrq .step.current .step-dot{border-color:var(--accent1);background:rgba(99,102,241,0.18);color:#A5B4FC;}
+#nrq .step-label{font-size:12.5px;color:var(--text-muted);padding-top:2px;}
+#nrq .step.current .step-label{color:var(--text);font-weight:500;}
+#nrq .step-you{font-size:10px;color:var(--accent2);font-weight:600;letter-spacing:.03em;margin-top:2px;}
+#nrq .route-note{font-size:11px;color:var(--text-muted);margin-top:14px;padding-top:14px;border-top:1px solid var(--border);line-height:1.6;}
+#nrq .route-note.emergency{color:#FCA5A5;}
+#nrq .footer-bar{position:sticky;bottom:0;left:0;right:0;width:100%;background:rgba(8,13,25,0.92);backdrop-filter:blur(6px);border-top:1px solid var(--border);}
+#nrq .footer-inner{max-width:1400px;margin:0 auto;padding:14px 40px;display:flex;justify-content:space-between;align-items:center;}
+#nrq .footer-actions{display:flex;gap:10px;}
+#nrq .btn{font-family:var(--font);font-size:13.5px;font-weight:500;border-radius:11px;padding:10px 18px;cursor:pointer;border:1px solid transparent;display:flex;align-items:center;gap:8px;transition:all .12s;}
+#nrq .btn-ghost{background:transparent;border-color:var(--border);color:var(--text-sec);}
+#nrq .btn-ghost:hover{background:var(--card-hover);color:var(--text);}
+#nrq .btn-secondary{background:rgba(255,255,255,0.06);border-color:var(--border);color:var(--text);}
+#nrq .btn-secondary:hover{background:rgba(255,255,255,0.09);}
+#nrq .btn-primary{background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;}
+#nrq .btn-primary:hover{filter:brightness(1.08);}
+#nrq .btn-primary:disabled{opacity:.5;cursor:not-allowed;}
+#nrq .btn-primary.danger{background:linear-gradient(135deg,#EF4444,#F59E0B);}
+#nrq .toast{position:fixed;left:50%;bottom:90px;transform:translate(-50%,10px);background:#111827;border:1px solid var(--border-strong);color:var(--text);padding:12px 20px;border-radius:12px;font-size:13px;opacity:0;pointer-events:none;transition:all .2s;z-index:70;box-shadow:0 8px 24px rgba(0,0,0,0.4);}
+#nrq .toast.show{opacity:1;transform:translate(-50%,0);}
+#nrq .err{background:var(--red-bg);border:1px solid var(--red-bd);color:#FCA5A5;border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:12.5px;}
+`;
+
+const TYPE_ICONS: Record<string, ReactNode> = {
+  material_request: <svg className="icon" viewBox="0 0 24 24"><path d="M3 8l9-5 9 5-9 5-9-5z" /><path d="M3 8v8l9 5 9-5V8" /><path d="M12 13v8" /></svg>,
+  service_request: <svg className="icon" viewBox="0 0 24 24"><path d="M4 13v-1a8 8 0 0116 0v1" /><rect x="2.5" y="13" width="4" height="6" rx="1.5" /><rect x="17.5" y="13" width="4" height="6" rx="1.5" /><path d="M20 19v1a3 3 0 01-3 3h-3" /></svg>,
+  repair: <svg className="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 005.4-5.4l-2.3 2.3-2-2 2.3-2.3z" /></svg>,
+};
+const nrqFmt = (n: number) => new Intl.NumberFormat('ru-RU').format(Math.round(n));
+
+/** New-request form — full desktop layout (see NRQ_CSS). Fields/options come from
+ *  /api/form/request_create + /api/config; submit → api.createRequest. */
 function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (id: string) => void }) {
   const [fields, setFields] = useState<FormField[] | null>(null);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [configUsers, setConfigUsers] = useState<{ id: string; fullName: string }[]>([]);
-  const [values, setValues] = useState<Record<string, string | boolean>>({});
-  const [idx, setIdx] = useState(0);
-  const [showErrors, setShowErrors] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const [requestType, setRequestType] = useState('material_request');
+  const [department, setDepartment] = useState('');
+  const [obyekt, setObyekt] = useState('');
+  const [origin, setOrigin] = useState('local');
+  const [warehouse, setWarehouse] = useState('');
+  const [purpose, setPurpose] = useState('');
+  const [neededDate, setNeededDate] = useState('');
+  const [urgency, setUrgency] = useState('normal');
+  const [comment, setComment] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [signers, setSigners] = useState<string[]>([]);
+  const [responsible, setResponsible] = useState('self');
+  const [advOpen, setAdvOpen] = useState(false);
+  const [items, setItems] = useState<NrqRow[]>([emptyNrqRow()]);
+  const [dzFiles, setDzFiles] = useState<{ name: string; size: number; data: string }[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+
   const [saving, setSaving] = useState(false);
-  const [requestItems, setRequestItems] = useState<DraftRequestItem[]>([emptyRequestItem()]);
+  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const submitLock = useRef(false);
+  const fileInputs = useRef<Record<number, HTMLInputElement | null>>({});
+  const dzInput = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     api
@@ -1439,794 +1599,454 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
         setWarehouses(whs);
         setDepartments(depts);
         setConfigUsers(usrs);
-        const init: Record<string, string | boolean> = {};
-        for (const fld of fs) {
-          if (fld.type === 'checkbox') init[fld.key] = false;
-          else if (fld.type === 'select') {
-            const opts = fld.key === 'warehouse' ? whs.map((w) => ({ value: w.name, label: w.name })) : fld.options;
-            init[fld.key] = fld.required && opts[0] ? opts[0].value : '';
-          } else init[fld.key] = '';
-        }
-        setValues(init);
+        const typeOpts = fs.find((x) => x.key === 'requestType')?.options ?? [];
+        if (typeOpts[0]) setRequestType(typeOpts[0].value);
+        const urgOpts = fs.find((x) => x.key === 'priority')?.options ?? [];
+        if (urgOpts[0]) setUrgency(urgOpts[0].value);
+        if (whs[0]) setWarehouse(whs[0].name);
+        if (depts[0]) setDepartment(depts[0].id);
       })
       .catch((e) => setError((e as Error).message));
   }, []);
 
-  const optionsFor = (f: FormField): { value: string; label: string; meta?: string }[] =>
-    f.key === 'cf_department'
-      ? departments.map((d) => ({ value: d.name, label: d.name }))
-      : f.key === 'department'
-        ? departments.map((d) => ({ value: d.id, label: d.name }))
-      : f.key === 'cf_dept_head'
-        ? configUsers.map((u) => ({ value: u.fullName, label: u.fullName }))
-        : f.key === 'warehouse'
-      ? warehouses.map((w) => ({ value: w.name, label: w.name }))
-      : Array.isArray(f.options)
-        ? f.options
-        : [];
-  const set = (key: string, v: string | boolean) => setValues((p) => ({ ...p, [key]: v }));
+  const fieldByKey = (k: string) => (fields ?? []).find((f) => f.key === k);
+  const optsOf = (k: string, fallback: { value: string; label: string; meta?: string }[] = []) => {
+    const o = fieldByKey(k)?.options;
+    return Array.isArray(o) && o.length ? o : fallback;
+  };
+  const typeOptions = optsOf('requestType', [
+    { value: 'material_request', label: 'Материал' },
+    { value: 'service_request', label: 'Услуга' },
+  ]);
+  const purposeOptions = optsOf('purpose');
+  const obyektOptions = optsOf('obyekt');
+  const originOptions = optsOf('origin', [
+    { value: 'local', label: 'Местный' },
+    { value: 'import', label: 'Импорт' },
+  ]);
+  const unitOptions = optsOf('unit', ['шт', 'кг', 'г', 'л', 'м', 'т', 'м²', 'рулон', 'упак'].map((u) => ({ value: u, label: u })));
+  const urgencyOptions = optsOf('priority', [
+    { value: 'normal', label: 'Стандартная', meta: '3–7 дн.' },
+    { value: 'high', label: 'Срочная', meta: '1–3 дн.' },
+    { value: 'urgent', label: 'Аварийная', meta: 'Немедленно' },
+  ]);
 
-  const steps = fields ? [...new Set(fields.map((f) => f.step))].sort((a, b) => a - b) : [];
-  const total = steps.length + 1; // field steps + review
-  const onReview = fields !== null && idx === steps.length;
-  const productStep = (fields ?? []).find((f) => f.system && f.key === 'itemName')?.step ?? null;
-  const stepFieldsRaw = (s: number) => (fields ?? []).filter((f) => f.step === s);
-  const movedToProductKeys = new Set(['warehouse', 'purpose', 'priority', 'neededDate', 'note', 'attachment']);
-  const productFieldOrder = ['itemName', 'itemCode', 'quantity', 'unit', 'warehouse', 'purpose', 'priority', 'neededDate', 'note', 'attachment'];
-  const stepFields = (s: number) =>
-    stepFieldsRaw(s).filter((f) => {
-      if (movedToProductKeys.has(f.key)) return false;
-      return productStep == null || s !== productStep || f.key === 'itemName';
-    });
-  const productListEnabled = (fields ?? []).some((f) => f.system && f.key === 'itemName');
-  const productFields = productFieldOrder
-    .map((key) => (fields ?? []).find((f) => f.key === key))
-    .filter(Boolean) as FormField[];
-  const productFieldLabels = new Map(productFields.map((f) => [f.key, f.label]));
-  const productOptionLabel = (key: string, value: unknown): string => {
-    const f = productFields.find((x) => x.key === key);
-    if (!f) return String(value ?? '');
-    return optionsFor(f).find((o) => o.value === value)?.label ?? String(value ?? '');
-  };
-  const productDescription = (it: DraftRequestItem): string | undefined => {
-    const lines: string[] = [];
-    const push = (key: string, value: unknown, display?: string) => {
-      if (value == null || value === '' || value === false) return;
-      const label = productFieldLabels.get(key) ?? key;
-      lines.push(`${label}: ${display ?? String(value)}`);
-    };
-    push('itemCode', it.values.itemCode);
-    push('warehouse', it.values.warehouse, productOptionLabel('warehouse', it.values.warehouse));
-    push('purpose', it.values.purpose, productOptionLabel('purpose', it.values.purpose));
-    push('priority', it.values.priority, productOptionLabel('priority', it.values.priority));
-    push('neededDate', it.values.neededDate);
-    push('note', it.values.note);
-    const files = Object.values(it.files).flat();
-    if (files.length) lines.push(`Вложения: ${files.map((f) => f.name).join(', ')}`);
-    return lines.length ? lines.join('\n') : undefined;
-  };
-  const normalizedDraftItems = () =>
-    requestItems
-      .map((it) => {
-        const name = String(it.values.itemName ?? '').trim();
-        return {
-          name,
-          quantity: Number(it.values.quantity) || 0,
-          unit: String(it.values.unit ?? '').trim() || undefined,
-          unitPrice: 0,
-          description: productDescription(it),
-        };
-      })
-      .filter((it) => it.name);
-  const updateRequestItemValue = (index: number, key: string, value: string | boolean) => {
-    setRequestItems((prev) =>
-      prev.map((it, i) => (i === index ? { ...it, values: { ...it.values, [key]: value } } : it)),
-    );
-  };
-  const addRequestItemAfter = (index: number) => {
-    setRequestItems((prev) => {
-      const next = [...prev];
-      next.splice(index + 1, 0, emptyRequestItem());
-      return next;
-    });
-    setError(null);
-  };
-  const removeRequestItem = (index: number) => {
-    setRequestItems((prev) => (prev.length === 1 ? [emptyRequestItem()] : prev.filter((_, i) => i !== index)));
-  };
-  const updateRequestItemFiles = (index: number, key: string, updater: (files: { name: string; size: number; data: string }[]) => { name: string; size: number; data: string }[]) => {
-    setRequestItems((prev) =>
-      prev.map((it, i) => (i === index ? { ...it, files: { ...it.files, [key]: updater(it.files[key] ?? []) } } : it)),
-    );
+  const isMaterial = requestType === 'material_request';
+  const isEmergency = urgency === 'urgent' || urgency === 'critical';
+  const total = items.reduce((s, it) => s + (parseFloat(it.qty) || 0) * (parseFloat(it.price) || 0), 0);
+  const typeLabel = typeOptions.find((o) => o.value === requestType)?.label ?? '—';
+  const deptLabel = departments.find((d) => d.id === department)?.name ?? '—';
+  const urgMeta = urgencyOptions.find((o) => o.value === urgency);
+  const urgencyBadgeCls = urgency === 'urgent' || urgency === 'critical' ? 'red' : urgency === 'high' ? 'amber' : 'gray';
+
+  const setRow = (i: number, patch: Partial<NrqRow>) => setItems((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const addRow = () => setItems((prev) => [...prev, emptyNrqRow()]);
+  const removeRow = (i: number) => setItems((prev) => (prev.length <= 1 ? prev : prev.filter((_, j) => j !== i)));
+
+  const readFiles = (list: FileList | null, onDone: (files: { name: string; size: number; data: string }[]) => void) => {
+    if (!list || !list.length) return;
+    const out: { name: string; size: number; data: string }[] = [];
+    let pending = list.length;
+    const finish = () => { pending--; if (pending <= 0) onDone(out); };
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      if (file.size > 2 * 1024 * 1024) { setError('Файл ' + file.name + ' больше 2 МБ'); finish(); continue; }
+      const reader = new FileReader();
+      reader.onload = () => { out.push({ name: file.name, size: file.size, data: (reader.result as string).split(',')[1] || '' }); finish(); };
+      reader.onerror = finish;
+      reader.readAsDataURL(file);
+    }
   };
 
-  const productFieldFilled = (f: FormField, item: DraftRequestItem): boolean => {
-    const v = item.values[f.key];
-    if (f.type === 'select' && optionsFor(f).length === 0) return true;
-    if (f.type === 'checkbox') return v === true;
-    if (f.type === 'number') return Number(v) > 0;
-    if (f.type === 'file') return (item.files[f.key] ?? []).length > 0;
-    return String(v ?? '').trim().length > 0;
+  const flash = (msg: string) => {
+    setToast(msg);
+    clearTimeout((window as unknown as { _nrqToast?: number })._nrqToast);
+    (window as unknown as { _nrqToast?: number })._nrqToast = window.setTimeout(() => setToast(null), 2600);
   };
-  const filled = (f: FormField): boolean => {
-    if (f.system && f.key === 'itemName') return !productListEnabled || normalizedDraftItems().length > 0;
-    if (f.system && (f.key === 'quantity' || f.key === 'unit')) return true;
-    const v = values[f.key];
-    // Urgency ↔ Date: if one is filled, the other becomes optional
-    if (f.key === 'cf_urgency' && String(values['cf_urgency'] ?? '').trim() === '') {
-      // urgency not filled — check if date IS filled (then urgency is optional)
-      const dateVal = String(values[
-        (fields ?? []).find((ff) => ff.type === 'date')?.key ?? ''
-      ] ?? '').trim();
-      if (dateVal) return true; // date is filled, urgency not required
-    }
-    if (f.type === 'date' && f.key !== 'cf_urgency') {
-      // date field — check if urgency IS filled (then date is optional)
-      const urgVal = String(values['cf_urgency'] ?? '').trim();
-      if (urgVal) return true; // urgency is filled, date not required
-    }
-    // A required select with no available options (e.g. warehouse with no warehouses
-    // configured) can't be filled — don't let it dead-lock the wizard.
-    if (f.type === 'select' && optionsFor(f).length === 0) return true;
-    if (f.type === 'checkbox') return v === true;
-    if (f.type === 'number') return Number(v) > 0;
-    return String(v ?? '').trim().length > 0;
+
+  const addChip = (which: 'tag' | 'signer', value: string) => {
+    const v = value.trim();
+    if (!v) return;
+    if (which === 'tag') setTags((p) => (p.includes(v) ? p : [...p, v]));
+    else setSigners((p) => (p.includes(v) ? p : [...p, v]));
   };
-  const missingRequired = stepFields(steps[idx] ?? -1).filter((f) => f.required && !filled(f));
-  // №5: атрибут min закрывает только пикер — руками прошлую дату всё ещё можно
-  // впечатать. Валидируем значение и блокируем «Далее» (сервер дублирует).
-  const todayISO = new Date().toISOString().slice(0, 10);
-  const pastDate = (f: FormField): boolean => {
-    if (f.type !== 'date') return false;
-    const v = String(values[f.key] ?? '').trim();
-    return v !== '' && v < todayISO;
-  };
-  const pastDates = stepFields(steps[idx] ?? -1).filter(pastDate);
-  const onProductStep = productStep != null && steps[idx] === productStep;
-  const productMissingRequired = onProductStep
-    ? requestItems.flatMap((item, itemIndex) =>
-        productFields
-          .filter((f) => f.required && !productFieldFilled(f, item))
-          .map((f) => `Позиция ${itemIndex + 1}: ${f.label}`),
-      )
-    : [];
-  const productPastDates = onProductStep
-    ? requestItems.flatMap((item, itemIndex) =>
-        productFields
-          .filter((f) => f.type === 'date' && String(item.values[f.key] ?? '').trim() !== '' && String(item.values[f.key] ?? '').trim() < todayISO)
-          .map((f) => `Позиция ${itemIndex + 1}: ${f.label}`),
-      )
-    : [];
 
   const submit = async () => {
     if (submitLock.current) return;
+    const named = items.filter((it) => it.name.trim());
+    if (!named.length) { flash('Укажите хотя бы одну позицию перед отправкой'); return; }
+    const badQty = named.find((it) => !((parseFloat(it.qty) || 0) > 0));
+    if (badQty) { setError('Укажите количество больше нуля для каждой позиции'); return; }
     submitLock.current = true;
     setSaving(true);
     setError(null);
     try {
-      const payload: CreateRequestData = { items: [] };
       const custom: Record<string, unknown> = {};
-      let firstText = '';
-      for (const f of fields ?? []) {
-        if (movedToProductKeys.has(f.key)) continue;
-        if (productStep != null && f.step === productStep) continue;
-        const v = values[f.key];
-        const sval = typeof v === 'string' ? v.trim() : '';
-        if (f.system) {
-          switch (f.key) {
-            case 'requestType': if (v) payload.requestType = String(v); break;
-            // №7: заявка адресуется отделу — по departmentId её увидит нужный
-            // руководитель отдела (роль с зоной ответственности этого отдела).
-            case 'department': if (v) payload.departmentId = String(v); break;
-            case 'warehouse': if (v) payload.warehouseName = String(v); break;
-            case 'priority': if (v) payload.priority = String(v); break;
-            case 'neededDate': payload.neededDate = v ? String(v) : null; break;
-            case 'note': if (sval) payload.description = sval; break;
-          }
-        } else if (v !== '' && v !== false && v != null) {
-          custom[f.key] = v;
-        }
-        if (!firstText && (f.type === 'text' || f.type === 'textarea') && sval) firstText = sval;
-      }
-      // Title falls back to the first text field so a fully-custom form (no item name)
-      // still produces a readable request. Items are optional — build one only if named.
-      const items = productListEnabled ? normalizedDraftItems() : [];
-      const invalidItem = items.find((it) => !(it.quantity > 0));
-      if (invalidItem) throw new Error('Укажите количество больше нуля для каждого продукта');
-      const title = items[0]?.name || firstText;
-      if (title) payload.title = title;
-      payload.items = items;
+      if (obyekt) custom.obyekt = obyekt;
+      if (isMaterial && origin) custom.origin = origin;
+      if (purpose) custom.purpose = purpose;
+      if (tags.length) custom.tags = tags;
+      if (signers.length) custom.extraSigners = signers;
+      if (responsible !== 'self') custom.responsible = responsible;
+
+      const payloadItems = named.map((it) => {
+        const descLines: string[] = [];
+        if (it.code.trim()) descLines.push(`Код: ${it.code.trim()}`);
+        if (it.pay) descLines.push(`Оплата: ${it.pay}`);
+        if (it.note.trim()) descLines.push(`Примечание: ${it.note.trim()}`);
+        return {
+          name: it.name.trim(),
+          quantity: parseFloat(it.qty) || 0,
+          unit: it.unit || undefined,
+          unitPrice: parseFloat(it.price) || 0,
+          description: descLines.length ? descLines.join('\n') : undefined,
+        };
+      });
+
+      const payload: CreateRequestData = { items: payloadItems };
+      payload.requestType = requestType;
+      if (department) payload.departmentId = department;
+      if (isMaterial && warehouse) payload.warehouseName = warehouse;
+      payload.priority = urgency;
+      payload.neededDate = neededDate ? neededDate : null;
+      if (comment.trim()) payload.description = comment.trim();
+      payload.title = payloadItems[0]?.name;
       if (Object.keys(custom).length) payload.customFields = custom;
+
       const res = await api.createRequest(payload);
-      // Upload attached files (if any)
-      for (const f of fields ?? []) {
-        if (f.type !== 'file') continue;
-        const fileList = ((values as any)['__files_' + f.key] ?? []) as { name: string; data: string }[];
-        for (const file of fileList) {
-          try { await api.attachments.upload(res.id, { filename: file.name, dataBase64: file.data }); } catch { /* best-effort */ }
+
+      for (const f of dzFiles) {
+        try { await api.attachments.upload(res.id, { filename: f.name, dataBase64: f.data }); } catch { /* best-effort */ }
+      }
+      for (const it of named) {
+        for (const f of it.files) {
+          const filename = it.name.trim() ? `${it.name.trim()} - ${f.name}` : f.name;
+          try { await api.attachments.upload(res.id, { filename, dataBase64: f.data }); } catch { /* best-effort */ }
         }
       }
-      for (const item of requestItems) {
-        const itemName = String(item.values.itemName ?? '').trim();
-        for (const files of Object.values(item.files)) {
-          for (const file of files) {
-            const filename = itemName ? `${itemName} - ${file.name}` : file.name;
-            try { await api.attachments.upload(res.id, { filename, dataBase64: file.data }); } catch { /* best-effort */ }
-          }
-        }
-      }
-      // Макет 09.07: после отправки сразу открываем карточку заявки —
-      // сверху полная информация, ниже процесс согласования.
       onCreated(res.id);
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setSaving(false);
       submitLock.current = false;
+      setSaving(false);
     }
   };
 
-  const fieldLabel: CSSProperties = { display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 10 };
-  const input: CSSProperties = { width: '100%', padding: '14px 16px', fontSize: 15, fontWeight: 500, border: '1.5px solid var(--border)', borderRadius: 11, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" };
-  const chip = (on: boolean): CSSProperties => ({ padding: '9px 14px', borderRadius: 10, border: `1.5px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent-bg)' : 'var(--card)', color: on ? 'var(--accent)' : 'var(--fg2)', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' });
+  const today = new Date().toLocaleDateString('ru-RU');
+  const todayISO = new Date().toISOString().slice(0, 10);
 
-  const displayValue = (f: FormField): string => {
-    const v = values[f.key];
-    if (f.type === 'checkbox') return v === true ? 'Да' : 'Нет';
-    if (f.type === 'select') return optionsFor(f).find((o) => o.value === v)?.label ?? '—';
-    if (f.type === 'file') {
-      // Файлы лежат отдельно (__files_<key>), обычное значение поля всегда пусто —
-      // без этой ветки в ревью у «Вложений» стоял «—» даже с прикреплёнными файлами.
-      const files = ((values as any)['__files_' + f.key] ?? []) as { name: string }[];
-      if (files.length === 0) return 'нет';
-      const names = files.map((x) => x.name).join(', ');
-      return names.length > 60 ? `${files.length} файл(ов)` : names;
-    }
-    return String(v ?? '').trim() || '—';
-  };
+  const ROUTE = ['Заявитель', 'Руководитель отдела', 'Проверка склада', 'Заместитель директора', 'Руководитель снабжения', 'Снабжение / менеджер', 'Исполнительный директор', 'Директор'];
 
-  const renderField = (f: FormField) => {
-    const optional = pastDate(f) ? (
-      <span style={{ fontWeight: 600, color: 'var(--danger)' }}> — дата в прошлом, выберите сегодня или позже</span>
-    ) : !f.required ? (
-      <span style={{ fontWeight: 400, color: 'var(--fg3)' }}> (необязательно)</span>
-    ) : showErrors && !filled(f) ? (
-      <span style={{ fontWeight: 600, color: 'var(--danger)' }}> — заполните</span>
-    ) : null;
-    if (f.type === 'select') {
-      const opts = optionsFor(f);
-      if (f.key === 'warehouse' && opts.length === 0) {
-        return (
-          <div>
-            <div style={fieldLabel}>{f.label}{optional}</div>
-            <div style={{ fontSize: 13, color: 'var(--fg3)', padding: '6px 0', lineHeight: 1.45 }}>
-              Склады ещё не настроены. Добавьте их в админке → «Структура».
-            </div>
-          </div>
-        );
-      }
-      // Long lists (>30 options like "Назначение и цель") become a compact dropdown.
-      if (opts.length > 30) {
-        return (
-          <div>
-            <div style={fieldLabel}>{f.label}{optional}</div>
-            <div style={{ position: 'relative' }}>
-              <select
-                value={String(values[f.key] ?? '')}
-                onChange={(e) => set(f.key, e.target.value)}
-                style={{ ...input, appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', paddingRight: 38, cursor: 'pointer' }}
-              >
-                {!f.required && <option value="">— выберите —</option>}
-                {opts.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                    {o.meta ? ` · ${o.meta}` : ''}
-                  </option>
-                ))}
-              </select>
-              <span style={{ position: 'absolute', right: 14, top: '50%', marginTop: -8, pointerEvents: 'none', color: 'var(--fg3)', display: 'inline-block', transform: 'rotate(90deg)' }}>
-                <Icon name="chev" size={16} sw={2.2} />
-              </span>
-            </div>
-          </div>
-        );
-      }
-      const hasMeta = opts.some((o) => o.meta);
-      if (hasMeta) {
-        return (
-          <div>
-            <div style={fieldLabel}>{f.label}{optional}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {opts.map((o) => {
-                const on = values[f.key] === o.value;
-                return (
-                  <button key={o.value} onClick={() => set(f.key, on && !f.required ? '' : o.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 11, border: `1.5px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent-bg)' : 'var(--card)', cursor: 'pointer', textAlign: 'left' }}>
-                    <span style={{ width: 11, height: 11, borderRadius: '50%', flex: 'none', background: on ? 'var(--accent)' : 'var(--fg3)' }} />
-                    <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: on ? 'var(--accent)' : 'var(--fg)' }}>{o.label}</span>
-                    {o.meta && <span style={{ fontSize: 12, color: 'var(--fg3)', fontFamily: "'IBM Plex Mono', monospace" }}>{o.meta}</span>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        );
-      }
-      // Split into primary chips + overflow roller when >4 options
-      const PRIMARY_COUNT = 4;
-      const hasManyOpts = opts.length > PRIMARY_COUNT;
-      const primaryOpts = hasManyOpts ? opts.slice(0, PRIMARY_COUNT) : opts;
-      const overflowOpts = hasManyOpts ? opts.slice(PRIMARY_COUNT) : [];
-      const currentInOverflow = hasManyOpts && overflowOpts.some((o) => o.value === values[f.key]);
-      return (
-        <div>
-          <div style={fieldLabel}>{f.label}{optional}</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {primaryOpts.map((o) => {
-              const on = values[f.key] === o.value;
-              return (
-                <button key={o.value} onClick={() => set(f.key, on && !f.required ? '' : o.value)} style={{ ...chip(on), flex: 'none' }}>{o.label}</button>
-              );
-            })}
-          </div>
-          {hasManyOpts && (
-            <div style={{ marginTop: 10, position: 'relative' }}>
-              <select
-                value={currentInOverflow ? String(values[f.key] ?? '') : ''}
-                onChange={(e) => set(f.key, e.target.value)}
-                style={{ ...input, appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', paddingRight: 38, cursor: 'pointer', fontSize: 13, color: currentInOverflow ? 'var(--fg)' : 'var(--fg3)' }}
-              >
-                <option value="">Другое...</option>
-                {overflowOpts.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-              <span style={{ position: 'absolute', right: 14, top: '50%', marginTop: -8, pointerEvents: 'none', color: 'var(--fg3)', display: 'inline-block', transform: 'rotate(90deg)' }}>
-                <Icon name="chev" size={16} sw={2.2} />
-              </span>
-            </div>
-          )}
-        </div>
-      );
-    }
-    if (f.type === 'textarea') {
-      return (
-        <div>
-          <label style={fieldLabel}>{f.label}{optional}</label>
-          <textarea value={String(values[f.key] ?? '')} onChange={(e) => set(f.key, e.target.value)} placeholder={f.placeholder ?? ''} rows={3} style={{ ...input, resize: 'none', lineHeight: 1.45 }} />
-        </div>
-      );
-    }
-    if (f.type === 'checkbox') {
-      const on = values[f.key] === true;
-      return (
-        <button onClick={() => set(f.key, !on)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 14px', borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', cursor: 'pointer', textAlign: 'left' }}>
-          <span style={{ width: 22, height: 22, borderRadius: 6, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: on ? 'var(--accent)' : 'var(--card2)', border: `1.5px solid ${on ? 'var(--accent)' : 'var(--border)'}`, color: '#fff' }}>{on ? <Icon name="check" size={14} sw={3} /> : null}</span>
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{f.label}</span>
-        </button>
-      );
-    }
-    if (f.type === 'file') {
-      const files = ((values as any)['__files_' + f.key] ?? []) as { name: string; size: number }[];
-      return (
-        <div>
-          <label style={fieldLabel}>{f.label}{optional}</label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 13, padding: 14, borderRadius: 12, border: '1.5px dashed var(--border)', background: 'var(--card)', cursor: 'pointer' }}>
-            <span style={{ width: 38, height: 38, borderRadius: 10, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-bg)', color: 'var(--accent)' }}><Icon name="camera" size={20} /></span>
-            <div style={{ fontSize: 13, color: 'var(--fg2)' }}>{files.length ? `${files.length} файл(ов) выбрано` : 'Нажмите чтобы выбрать файл'}</div>
-            <input type="file" multiple style={{ display: 'none' }} onChange={(e) => {
-              const selected = e.target.files;
-              if (!selected) return;
-              const newFiles: { name: string; size: number; data: string }[] = [];
-              let pending = selected.length;
-              for (let i = 0; i < selected.length; i++) {
-                const file = selected[i];
-                if (file.size > 2 * 1024 * 1024) { setError('Файл ' + file.name + ' больше 2 МБ'); pending--; if (pending <= 0) { setValues((p) => ({ ...p, ['__files_' + f.key]: [...((p as any)['__files_' + f.key] || []), ...newFiles] as any })); } continue; }
-                const reader = new FileReader();
-                reader.onload = () => {
-                  const base64 = (reader.result as string).split(',')[1] || '';
-                  newFiles.push({ name: file.name, size: file.size, data: base64 });
-                  pending--;
-                  if (pending <= 0) {
-                    setValues((p) => ({ ...p, ['__files_' + f.key]: [...((p as any)['__files_' + f.key] || []), ...newFiles] as any }));
-                  }
-                };
-                reader.readAsDataURL(file);
-              }
-            }} />
-          </label>
-          {files.length > 0 && (
-            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {files.map((file, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderRadius: 8, background: 'var(--chip)', fontSize: 12 }}>
-                  <span style={{ color: 'var(--fg)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{file.name}</span>
-                  <button onClick={() => setValues((p) => ({ ...p, ['__files_' + f.key]: (((p as any)['__files_' + f.key]) || []).filter((_: unknown, j: number) => j !== i) as any }))} style={{ border: 'none', background: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '2px 6px' }}>x</button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    }
-    if (f.system && f.key === 'itemName') {
-      const renderProductField = (pf: FormField, item: DraftRequestItem, itemIndex: number) => {
-        const v = item.values[pf.key];
-        const basePlaceholder = pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
-        // FIXES 2026-07-17: без префикса «Выберите:» — в плейсхолдере остаётся только название поля.
-        const placeholder = pf.type === 'select' ? pf.label : basePlaceholder;
-        if (pf.type === 'select') {
-          const opts = optionsFor(pf);
-          return (
-            <div style={{ position: 'relative' }}>
-              <select
-                aria-label={pf.label}
-                value={String(v ?? '')}
-                onChange={(e) => updateRequestItemValue(itemIndex, pf.key, e.target.value)}
-                style={{ ...input, appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', cursor: 'pointer', color: v ? 'var(--fg)' : 'var(--fg3)', paddingRight: 40 }}
-              >
-                <option value="">{placeholder}</option>
-                {opts.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}{o.meta ? ` · ${o.meta}` : ''}</option>
-                ))}
-              </select>
-              <span style={{ position: 'absolute', right: 14, top: '50%', marginTop: -8, pointerEvents: 'none', color: 'var(--fg3)', transform: 'rotate(90deg)' }}>
-                <Icon name="chev" size={16} sw={2.2} />
-              </span>
-            </div>
-          );
-        }
-        if (pf.type === 'textarea') {
-          return (
-            <textarea
-              aria-label={pf.label}
-              value={String(v ?? '')}
-              onChange={(e) => updateRequestItemValue(itemIndex, pf.key, e.target.value)}
-              placeholder={placeholder}
-              rows={3}
-              style={{ ...input, resize: 'none', lineHeight: 1.45 }}
-            />
-          );
-        }
-        if (pf.type === 'file') {
-          const files = item.files[pf.key] ?? [];
-          return (
-            <div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 13, padding: 14, borderRadius: 12, border: '1.5px dashed var(--border)', background: 'var(--card2)', cursor: 'pointer' }}>
-                <span style={{ width: 38, height: 38, borderRadius: 10, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-bg)', color: 'var(--accent)' }}><Icon name="camera" size={20} /></span>
-                <div style={{ fontSize: 13, color: files.length ? 'var(--fg)' : 'var(--fg3)', fontWeight: 600 }}>{files.length ? `${files.length} файл(ов) выбрано` : placeholder}</div>
-                <input aria-label={pf.label} type="file" multiple style={{ display: 'none' }} onChange={(e) => {
-                  const selected = e.target.files;
-                  if (!selected) return;
-                  const newFiles: { name: string; size: number; data: string }[] = [];
-                  let pending = selected.length;
-                  for (let x = 0; x < selected.length; x++) {
-                    const file = selected[x];
-                    if (file.size > 2 * 1024 * 1024) {
-                      setError('Файл ' + file.name + ' больше 2 МБ');
-                      pending--;
-                      if (pending <= 0) updateRequestItemFiles(itemIndex, pf.key, (old) => [...old, ...newFiles]);
-                      continue;
-                    }
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      const base64 = (reader.result as string).split(',')[1] || '';
-                      newFiles.push({ name: file.name, size: file.size, data: base64 });
-                      pending--;
-                      if (pending <= 0) updateRequestItemFiles(itemIndex, pf.key, (old) => [...old, ...newFiles]);
-                    };
-                    reader.readAsDataURL(file);
-                  }
-                }} />
-              </label>
-              {files.length > 0 && (
-                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {files.map((file, fileIndex) => (
-                    <div key={fileIndex} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderRadius: 8, background: 'var(--chip)', fontSize: 12 }}>
-                      <span style={{ color: 'var(--fg)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{file.name}</span>
-                      <button onClick={() => updateRequestItemFiles(itemIndex, pf.key, (old) => old.filter((_, j) => j !== fileIndex))} style={{ border: 'none', background: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '2px 6px' }}>x</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        }
-        if (pf.type === 'date') {
-          const hasValue = String(v ?? '').trim().length > 0;
-          return (
-            <div style={{ position: 'relative' }}>
-              <input
-                aria-label={pf.label}
-                value={String(v ?? '')}
-                onChange={(e) => updateRequestItemValue(itemIndex, pf.key, e.target.value)}
-                onClick={openDatePicker}
-                type="date"
-                min={new Date().toISOString().slice(0, 10)}
-                style={{ ...input, color: hasValue ? 'var(--fg)' : 'transparent' }}
-              />
-              {!hasValue && (
-                <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--fg3)', fontSize: 15, fontWeight: 500, background: 'var(--card)', paddingRight: 8 }}>
-                  {placeholder}
-                </span>
-              )}
-            </div>
-          );
-        }
-        return (
-          <input
-            aria-label={pf.label}
-            value={String(v ?? '')}
-            onChange={(e) => updateRequestItemValue(itemIndex, pf.key, pf.type === 'number' ? e.target.value.replace(/[^\d]/g, '') : e.target.value)}
-            type="text"
-            inputMode={pf.type === 'number' ? 'numeric' : undefined}
-            placeholder={placeholder}
-            style={{ ...input, fontFamily: pf.type === 'number' ? "'IBM Plex Mono', monospace" : input.fontFamily, color: String(v ?? '') ? 'var(--fg)' : 'var(--fg3)' }}
-          />
-        );
-      };
-      const renderProductFields = (item: DraftRequestItem, itemIndex: number) => {
-        const rendered: ReactNode[] = [];
-        for (let n = 0; n < productFields.length; n++) {
-          const pf = productFields[n];
-          if (pf.key === 'quantity') {
-            const unitField = productFields.find((x) => x.key === 'unit');
-            rendered.push(
-              <div key="quantity-unit" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 10 }}>
-                <div>{renderProductField(pf, item, itemIndex)}</div>
-                {unitField && <div>{renderProductField(unitField, item, itemIndex)}</div>}
-              </div>,
-            );
-            if (productFields[n + 1]?.key === 'unit') n++;
-          } else if (pf.key === 'priority') {
-            const dateField = productFields.find((x) => x.key === 'neededDate');
-            rendered.push(
-              <div key="priority-date" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 10 }}>
-                <div>{renderProductField(pf, item, itemIndex)}</div>
-                {dateField && <div>{renderProductField(dateField, item, itemIndex)}</div>}
-              </div>,
-            );
-            if (productFields[n + 1]?.key === 'neededDate') n++;
-          } else if (pf.key === 'neededDate') {
-            continue;
-          } else if (pf.key !== 'unit') {
-            rendered.push(<div key={pf.key}>{renderProductField(pf, item, itemIndex)}</div>);
-          }
-        }
-        return rendered;
-      };
-      return (
-        <div>
-          <div style={fieldLabel}>{f.label}{optional}</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {requestItems.map((it, i) => (
-              <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 12, borderRadius: 12, background: 'var(--card)', border: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg3)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Позиция {i + 1}</div>
-                  {renderProductFields(it, i)}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <button
-                    aria-label="Добавить продукт"
-                    onClick={() => addRequestItemAfter(i)}
-                    style={{ minHeight: 44, border: 'none', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'var(--accent-bg)', color: 'var(--accent)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
-                  >
-                    <Icon name="plus" size={18} sw={2.4} />
-                    Добавить
-                  </button>
-                  <button
-                    aria-label="Удалить продукт"
-                    onClick={() => removeRequestItem(i)}
-                    style={{ minHeight: 44, border: 'none', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'var(--danger-bg)', color: 'var(--danger)', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
-                  >
-                    <Icon name="x" size={17} sw={2.4} />
-                    Удалить
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-    if (productStep != null && f.step === productStep) return null;
-    if (f.type === 'number') {
-      // №4: быстрый ввод количества — степпер −/+ и чипы популярных значений,
-      // ручной ввод остаётся (колесо-пикер сознательно не делаем: для произвольных
-      // количеств оно медленнее клавиатуры).
-      const cur = Number(values[f.key]) || 0;
-      const setNum = (n: number) => set(f.key, n > 0 ? String(Math.round(n)) : '');
-      const stepBtn: CSSProperties = { flex: 'none', width: 52, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg)', fontSize: 22, fontWeight: 700, cursor: 'pointer' };
-      return (
-        <div>
-          <label style={fieldLabel}>{f.label}{optional}</label>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
-            <button aria-label="Минус" onClick={() => setNum(cur - 1)} style={stepBtn}>−</button>
-            <input
-              value={String(values[f.key] ?? '')}
-              onChange={(e) => {
-                const raw = e.target.value.replace(/[^\d]/g, '');
-                set(f.key, raw);
-              }}
-              type="text"
-              inputMode="numeric"
-              placeholder={f.placeholder ?? '0'}
-              style={{ ...input, flex: 1, textAlign: 'center', fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 600 }}
-            />
-            <button aria-label="Плюс" onClick={() => setNum(cur + 1)} style={stepBtn}>+</button>
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-            {[1, 5, 10, 50, 100, 500].map((n) => (
-              <button key={n} onClick={() => setNum(n)} style={{ ...chip(cur === n), flex: 'none', fontFamily: "'IBM Plex Mono', monospace" }}>{n}</button>
-            ))}
-          </div>
-        </div>
-      );
-    }
-    return (
-      <div>
-        <label style={fieldLabel}>{f.label}{optional}</label>
-        <input
-          value={String(values[f.key] ?? '')}
-          onChange={(e) => set(f.key, e.target.value)}
-          onClick={openDatePicker}
-          type={f.type === 'date' ? 'date' : 'text'}
-          // №5: прошлые даты выбрать нельзя — минимум сегодня (сервер дублирует проверку).
-          min={f.type === 'date' ? new Date().toISOString().slice(0, 10) : undefined}
-          placeholder={f.placeholder ?? ''}
-          style={input}
-        />
-      </div>
-    );
-  };
+  const body = (
+    <div id="nrq">
+      <style>{NRQ_CSS}</style>
 
-  if (error && !fields) return <div style={{ padding: 18 }}><Err>{error}</Err></div>;
-  if (!fields) return <div style={{ padding: 18 }}><Skeleton /></div>;
-  if (fields.length === 0)
-    return (
-      <div style={{ padding: 18 }}>
-        <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '24px 16px', textAlign: 'center', fontSize: 13.5, color: 'var(--fg2)', lineHeight: 1.5 }}>
-          Форма создания заявки ещё не настроена. Добавьте поля в админке → «Форма заявки».
-        </div>
-      </div>
-    );
-
-  const stepTitle = onReview ? 'Проверьте заявку' : `Шаг ${idx + 1}`;
-
-  return (
-    <div style={{ padding: '18px 20px 28px' }}>
-      {(
-        <>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 13 }}>
-            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)' }}>{stepTitle}</span>
-            <span style={{ fontSize: 12, color: 'var(--fg2)', fontFamily: "'IBM Plex Mono', monospace" }}>Шаг {idx + 1} из {total}</span>
-          </div>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 24 }}>
-            {Array.from({ length: total }, (_, n) => (
-              <span key={n} style={{ flex: 1, height: 5, borderRadius: 3, background: n <= idx ? 'var(--accent)' : 'var(--chip)' }} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {!onReview && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {stepFields(steps[idx]).map((f) => (
-            <div key={f.key}>{renderField(f)}</div>
-          ))}
-        </div>
-      )}
-
-      {onReview && (() => {
-        // Превью заявки = как она будет выглядеть в карточке: только заполненные
-        // «общие» поля (без перенесённых в позиции и без пустых «—»), а сами
-        // позиции — отдельными блоками с наименованием, количеством, деталями и фото.
-        const infoRows = (fields ?? [])
-          .filter((f) => f.key !== 'itemName' && !(productStep != null && f.step === productStep) && !movedToProductKeys.has(f.key))
-          .map((f) => ({ label: f.label, value: displayValue(f) }))
-          .filter((r) => r.value && r.value !== '—' && r.value !== 'нет');
-        const draftItems = requestItems.filter((it) => String(it.values.itemName ?? '').trim());
-        return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div style={SECTION_LABEL}>Информация о заявке</div>
-              {infoRows.length === 0 ? (
-                <span style={{ fontSize: 13, color: 'var(--fg3)' }}>Нет данных</span>
-              ) : (
-                infoRows.map((r) => (
-                  <div key={r.label} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 16 }}>
-                    <span style={{ fontSize: 14, color: 'var(--fg3)', fontWeight: 500, flex: 'none' }}>{r.label}</span>
-                    <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--fg)', textAlign: 'right', minWidth: 0 }}>{r.value}</span>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {draftItems.length > 0 && (
-              <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16 }}>
-                <div style={SECTION_LABEL}>Позиции</div>
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  {draftItems.map((it, idx) => {
-                    const rows = parseDescRows(productDescription(it));
-                    const photos = Object.values(it.files).flat().filter((f) => isImageName(f.name));
-                    const name = String(it.values.itemName ?? '').trim();
-                    const qty = String(it.values.quantity ?? '').trim();
-                    const unit = String(it.values.unit ?? '').trim();
-                    return (
-                      <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '12px 0', borderTop: '1px solid var(--line)' }}>
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)' }}>{name}</div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-                            {qty && (
-                              <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                                <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>Количество:</span>
-                                <span style={{ fontWeight: 600, color: 'var(--fg)', fontFamily: "'IBM Plex Mono', monospace" }}>{qty}{unit ? ` ${unit}` : ''}</span>
-                              </div>
-                            )}
-                            {rows.map((r, i) => (
-                              <div key={i} style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
-                                {r.label && <span style={{ fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>{r.label}:</span>}
-                                <span style={{ fontWeight: 600, color: 'var(--fg)', whiteSpace: 'pre-wrap', minWidth: 0 }}>{r.value}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                        {photos.length > 0 && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 'none' }}>
-                            {photos.map((p, i) => (
-                              <img key={i} src={fileDataUrl(p)} alt={p.name} style={{ width: 64, height: 64, borderRadius: 8, objectFit: 'cover', flex: 'none' }} />
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
-      {error && <Err>{error}</Err>}
-
-      {!onReview && showErrors && (missingRequired.length > 0 || productMissingRequired.length > 0) && (
-        <div style={{ marginTop: 16, borderRadius: 12, background: 'var(--danger-bg)', color: 'var(--danger)', padding: '12px 14px', fontSize: 13, lineHeight: 1.45 }}>
-          Заполните обязательные поля: {[...missingRequired.map((f) => f.label), ...productMissingRequired].join(', ')}.
-        </div>
-      )}
-      {!onReview && showErrors && productPastDates.length > 0 && (
-        <div style={{ marginTop: 16, borderRadius: 12, background: 'var(--danger-bg)', color: 'var(--danger)', padding: '12px 14px', fontSize: 13, lineHeight: 1.45 }}>
-          Дата ожидаемого получения не может быть в прошлом: {productPastDates.join(', ')}.
-        </div>
-      )}
-
-      <div style={{ display: 'flex', gap: 12, marginTop: 18 }}>
-        {idx === 0 && (
-          <button onClick={onDone} style={{ flex: '0 0 auto', padding: '15px 22px', borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Отмена</button>
-        )}
-        {idx > 0 && (
-          <button onClick={() => { setShowErrors(false); setIdx((i) => i - 1); }} style={{ flex: '0 0 auto', padding: '15px 22px', borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--fg)', fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Назад</button>
-        )}
-        {!onReview && (
-          <button
-            onClick={() => {
-              if (missingRequired.length === 0 && pastDates.length === 0 && productMissingRequired.length === 0 && productPastDates.length === 0) {
-                setShowErrors(false);
-                setIdx((i) => i + 1);
-              } else {
-                setShowErrors(true);
-              }
-            }}
-            style={{ flex: 1, padding: 15, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: pastDates.length > 0 || productPastDates.length > 0 ? 0.6 : 1 }}
-          >
-            Далее
+      <div className="topbar">
+        <div className="brand"><div className="brand-dot" />FACTORY OS <span className="crumb">&nbsp;/&nbsp;Заявки&nbsp;/&nbsp;<b>Новая заявка</b></span></div>
+        <div className="top-right">
+          <span style={{ fontSize: 12 }}>RU</span>
+          <button className="icon-btn" onClick={onDone} aria-label="Закрыть">
+            <svg className="icon" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
-        )}
-        {onReview && (
-          <button onClick={submit} disabled={saving} style={{ flex: 1, padding: 15, borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.5 : 1 }}>{saving ? '…' : 'Создать заявку'}</button>
-        )}
+          <div className="avatar">ФО</div>
+        </div>
       </div>
+
+      <div className="page-wrap">
+        <div className="page-header">
+          <div>
+            <h1>Новая заявка</h1>
+            <div className="sub">Все поля — на одном экране, без переходов между шагами</div>
+          </div>
+          <div className="meta-box">
+            <div><b>Номер:</b> будет присвоен при отправке</div>
+            <div><b>Дата составления:</b> {today}</div>
+          </div>
+        </div>
+
+        {error && <div className="err">{error}</div>}
+
+        <div className="layout">
+          <div className="main-col">
+
+            {/* 1. TYPE + CONTEXT */}
+            <div className="card">
+              <div className="card-title"><span className="num-badge">1</span>Тип и контекст заявки</div>
+
+              <label>Тип заявки <span className="req">*</span></label>
+              <div className="type-grid">
+                {typeOptions.map((o) => (
+                  <div key={o.value} className={'type-card' + (requestType === o.value ? ' selected' : '')} onClick={() => setRequestType(o.value)}>
+                    {TYPE_ICONS[o.value] ?? TYPE_ICONS.material_request}
+                    <span>{o.label}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="field-row">
+                <div className="field">
+                  <label>Отдел</label>
+                  <select value={department} onChange={(e) => setDepartment(e.target.value)}>
+                    {departments.length === 0 && <option value="">—</option>}
+                    {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Объект</label>
+                  <select value={obyekt} onChange={(e) => setObyekt(e.target.value)}>
+                    <option value="">—</option>
+                    {obyektOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {isMaterial && (
+                <div className="field-row">
+                  <div className="field">
+                    <label>Происхождение</label>
+                    <div className="pill-group">
+                      {originOptions.map((o) => (
+                        <span key={o.value} className={'pill' + (origin === o.value ? ' sel-plain' : '')} onClick={() => setOrigin(o.value)}>{o.label}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label>Склад назначения</label>
+                    <select value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
+                      {warehouses.length === 0 && <option value="">—</option>}
+                      {warehouses.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2. PARAMETERS */}
+            <div className="card">
+              <div className="card-title"><span className="num-badge">2</span>Параметры заявки</div>
+
+              <div className="field-row">
+                <div className="field">
+                  <label>Назначение / цель</label>
+                  <select value={purpose} onChange={(e) => setPurpose(e.target.value)}>
+                    <option value="">—</option>
+                    {purposeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Необходимо к дате</label>
+                  <input type="date" min={todayISO} value={neededDate} onChange={(e) => setNeededDate(e.target.value)} />
+                </div>
+              </div>
+
+              <label>Степень срочности <span className="req">*</span></label>
+              <div className="pill-group">
+                {urgencyOptions.map((o) => {
+                  const sel = urgency === o.value;
+                  const cls = o.value === 'urgent' || o.value === 'critical' ? 'sel-emergency' : o.value === 'high' ? 'sel-urgent' : 'sel-standard';
+                  return (
+                    <span key={o.value} className={'pill' + (sel ? ' ' + cls : '')} onClick={() => setUrgency(o.value)}>
+                      {o.label}{o.meta ? <span className="pill-sub"> · {o.meta}</span> : null}
+                    </span>
+                  );
+                })}
+              </div>
+              {isEmergency && (
+                <div className="warning-banner">
+                  <svg className="icon" viewBox="0 0 24 24"><path d="M12 3l10 18H2L12 3z" /><path d="M12 9v5" /><circle cx="12" cy="17" r="0.6" style={{ fill: 'currentColor', stroke: 'none' }} /></svg>
+                  <div>Аварийная заявка требует немедленного согласования с директором. Маршрут будет ускорен — часть шагов согласуется параллельно.</div>
+                </div>
+              )}
+            </div>
+
+            {/* 3. ITEMS */}
+            <div className="card">
+              <div className="card-title"><span className="num-badge">3</span>Позиции<small>заполняется как в бумажной заявке — по строкам</small></div>
+
+              <div className="table-wrap">
+                <table>
+                  <colgroup>
+                    <col style={{ width: '4%' }} /><col style={{ width: '25%' }} /><col style={{ width: '10%' }} />
+                    <col style={{ width: '7%' }} /><col style={{ width: '9%' }} /><col style={{ width: '11%' }} />
+                    <col style={{ width: '9%' }} /><col style={{ width: '17%' }} /><col style={{ width: '8%' }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>№</th><th>Наименование *</th><th>Код</th><th>Кол-во *</th><th>Ед. изм</th>
+                      <th>Цена</th><th>Банк/Нал</th><th>Примечание</th><th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((it, i) => (
+                      <tr key={i}>
+                        <td className="idx">{i + 1}</td>
+                        <td><input type="text" className="cell" placeholder="Например: Хлопковая пряжа 40/1" value={it.name} onChange={(e) => setRow(i, { name: e.target.value })} /></td>
+                        <td><input type="text" className="cell" placeholder="Код" value={it.code} onChange={(e) => setRow(i, { code: e.target.value })} /></td>
+                        <td><input type="number" min="0" className="cell" placeholder="0" value={it.qty} onChange={(e) => setRow(i, { qty: e.target.value })} /></td>
+                        <td>
+                          <select className="cell" value={it.unit} onChange={(e) => setRow(i, { unit: e.target.value })}>
+                            <option value="">—</option>
+                            {unitOptions.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
+                          </select>
+                        </td>
+                        <td><input type="number" min="0" className="cell" placeholder="—" value={it.price} onChange={(e) => setRow(i, { price: e.target.value })} /></td>
+                        <td>
+                          <select className="cell" value={it.pay} onChange={(e) => setRow(i, { pay: e.target.value })}>
+                            <option>Банк</option><option>Нал.</option>
+                          </select>
+                        </td>
+                        <td><input type="text" className="cell" placeholder="—" value={it.note} onChange={(e) => setRow(i, { note: e.target.value })} /></td>
+                        <td className="row-actions">
+                          <button type="button" className={'icon-btn' + (it.files.length ? ' has-file' : '')} title={it.files.length ? it.files.map((f) => f.name).join(', ') : 'Прикрепить файл'} onClick={() => fileInputs.current[i]?.click()}>
+                            <svg className="icon" viewBox="0 0 24 24"><path d="M21 11.5l-9.19 9.19a4.5 4.5 0 01-6.36-6.36l9.19-9.19a3 3 0 014.24 4.24l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48" /></svg>
+                          </button>
+                          <input ref={(el) => { fileInputs.current[i] = el; }} type="file" style={{ display: 'none' }} onChange={(e) => { readFiles(e.target.files, (fs) => setItems((prev) => prev.map((r, j) => (j === i ? { ...r, files: [...r.files, ...fs] } : r)))); e.target.value = ''; }} />
+                          <button type="button" className="icon-btn remove-btn" title="Удалить позицию" onClick={() => removeRow(i)} disabled={items.length <= 1}>
+                            <svg className="icon" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <button type="button" className="add-row-btn" onClick={addRow}>
+                <svg className="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+                Добавить позицию
+              </button>
+
+              <div className="total-row">
+                <span className="lbl">Итого (ориентировочно):</span>
+                <span className="val">{nrqFmt(total)} UZS</span>
+              </div>
+            </div>
+
+            {/* 4. COMMENTS + ATTACHMENTS */}
+            <div className="card">
+              <div className="card-title"><span className="num-badge">4</span>Комментарий и вложения</div>
+              <div className="field">
+                <label>Общий комментарий / спецификация</label>
+                <textarea placeholder="Контекст для склада и снабжения: где используется, чем заменить нельзя, особые условия..." value={comment} onChange={(e) => setComment(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Вложения</label>
+                <div
+                  className={'dropzone' + (dragOver ? ' drag' : '')}
+                  onClick={() => dzInput.current?.click()}
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); setDragOver(false); }}
+                  onDrop={(e) => { e.preventDefault(); setDragOver(false); readFiles(e.dataTransfer.files, (fs) => setDzFiles((p) => [...p, ...fs])); }}
+                >
+                  <svg className="icon" viewBox="0 0 24 24" style={{ width: 22, height: 22, margin: '0 auto 8px', display: 'block' }}><path d="M21 11.5l-9.19 9.19a4.5 4.5 0 01-6.36-6.36l9.19-9.19a3 3 0 014.24 4.24l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48" /></svg>
+                  Перетащите файлы сюда или нажмите, чтобы выбрать<br />чертежи, спецификации, фото детали
+                  <input ref={dzInput} type="file" multiple style={{ display: 'none' }} onChange={(e) => { readFiles(e.target.files, (fs) => setDzFiles((p) => [...p, ...fs])); e.target.value = ''; }} />
+                  {dzFiles.length > 0 && (
+                    <div className="dz-files">
+                      {dzFiles.map((f, i) => <span key={i} className="file-chip">{f.name}</span>)}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Теги (необязательно)</label>
+                <input type="text" placeholder="Введите тег и нажмите Enter" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChip('tag', (e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ''; } }} />
+                {tags.length > 0 && (
+                  <div className="chip-box">
+                    {tags.map((tg) => (
+                      <span key={tg} className="tag-chip">{tg}
+                        <button type="button" onClick={() => setTags((p) => p.filter((x) => x !== tg))}><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 5. ADVANCED */}
+            <div className="card">
+              <div className={'accordion-header' + (advOpen ? ' open' : '')} onClick={() => setAdvOpen((v) => !v)}>
+                <div className="card-title" style={{ margin: 0 }}><span className="num-badge">5</span>Дополнительно <small>ответственный, доп. согласующие</small></div>
+                <svg className="icon" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+              </div>
+              {advOpen && (
+                <div style={{ marginTop: 16 }}>
+                  <div className="field-row">
+                    <div className="field">
+                      <label>Ответственный</label>
+                      <select value={responsible} onChange={(e) => setResponsible(e.target.value)}>
+                        <option value="self">Вы (по умолчанию)</option>
+                        {configUsers.map((u) => <option key={u.id} value={u.id}>{u.fullName}</option>)}
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label>Добавить согласующего</label>
+                      <input type="text" placeholder="Введите имя и нажмите Enter" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChip('signer', (e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ''; } }} />
+                    </div>
+                  </div>
+                  {signers.length > 0 && (
+                    <div className="chip-box">
+                      {signers.map((s) => (
+                        <span key={s} className="tag-chip">{s}
+                          <button type="button" onClick={() => setSigners((p) => p.filter((x) => x !== s))}><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* SIDEBAR */}
+          <div className="sidebar">
+            <div className="card">
+              <div className="card-title" style={{ fontSize: 14, marginBottom: 14 }}>Сводка</div>
+              <div className="summary-line"><span className="k">Тип</span><span className="v">{typeLabel}</span></div>
+              <div className="summary-line"><span className="k">Отдел</span><span className="v">{deptLabel}</span></div>
+              <div className="summary-line"><span className="k">Срочность</span><span className="v"><span className={'badge ' + urgencyBadgeCls}>{urgMeta?.label ?? '—'}</span></span></div>
+              <div className="summary-line"><span className="k">Позиций</span><span className="v">{items.filter((it) => it.name.trim()).length || items.length}</span></div>
+              <div className="summary-line"><span className="k">Итого</span><span className="v">{nrqFmt(total)} UZS</span></div>
+            </div>
+
+            <div className="card">
+              <div className="card-title" style={{ fontSize: 14, marginBottom: 14 }}>Маршрут согласования</div>
+              <div className="stepper">
+                {ROUTE.map((label, i) => (
+                  <div key={label} className={'step' + (i === 0 ? ' current' : '')}>
+                    <div className="step-dot">{i + 1}</div>
+                    <div><div className="step-label">{label}{i === 0 && <div className="step-you">ВЫ ЗДЕСЬ</div>}</div></div>
+                  </div>
+                ))}
+              </div>
+              <div className={'route-note' + (isEmergency ? ' emergency' : '')}>
+                {isEmergency
+                  ? 'Аварийная заявка: шаги 2–6 согласуются параллельно, решение — сразу у Директора.'
+                  : 'Маршрут может измениться в зависимости от суммы и срочности заявки.'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="footer-bar">
+        <div className="footer-inner">
+          <button className="btn btn-ghost" onClick={onDone}>Отмена</button>
+          <div className="footer-actions">
+            <button className="btn btn-secondary" onClick={() => flash('Черновик сохранён')}>Сохранить черновик</button>
+            <button className={'btn btn-primary' + (isEmergency ? ' danger' : '')} disabled={saving} onClick={submit}>
+              <svg className="icon" viewBox="0 0 24 24" style={{ width: 16, height: 16 }}><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+              {saving ? 'Отправка…' : isEmergency ? 'Отправить как аварийную' : 'Отправить заявку'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {toast && <div className="toast show">{toast}</div>}
     </div>
   );
+
+  return createPortal(body, document.body);
 }
 
 function ImageThumb({ attachmentId, alt, size = 40 }: { attachmentId: string; alt: string; size?: number }) {
