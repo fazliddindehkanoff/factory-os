@@ -33,8 +33,8 @@ describe('setupTenant', () => {
       'Директор',
       'Снабженец — оформление заказа',
       'Склад — приёмка',
-      // FIXES 2026-07-20: ветка «есть в наличии» — возврат руководителю отдела и выдача.
-      'Руководитель отдела — выдача со склада',
+      // FIXES 2026-07-20: ветка «есть в наличии» — выдача сразу со склада,
+      // руководителю отдела только уведомление (без согласования).
       'Склад — выдача в отдел',
     ]);
 
@@ -46,7 +46,7 @@ describe('setupTenant', () => {
       .select()
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.workflowId, a.workflow.id));
-    expect(steps2.length).toBe(11);
+    expect(steps2.length).toBe(10);
     const holdings = await db.select().from(schema.holdings);
     expect(holdings.length).toBe(1);
   });

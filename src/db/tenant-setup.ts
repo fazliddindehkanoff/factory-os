@@ -35,10 +35,10 @@ const STEP_SPECS: StepSpec[] = [
   { code: 'director', order: 7, name: 'Директор', kind: 'approval', condition: { inStock: false } },
   { code: 'procurement', order: 8, name: 'Снабженец — оформление заказа', kind: 'ordering', condition: { inStock: false } },
   { code: 'warehouse', order: 9, name: 'Склад — приёмка', kind: 'receiving', condition: { inStock: false } },
-  // Ветка «есть в наличии»: склад подтвердил полное наличие → руководитель
-  // отдела одобряет выдачу → склад выдаёт (остаток списывается) → закрыта.
-  { code: 'dept_head', order: 10, name: 'Руководитель отдела — выдача со склада', kind: 'approval', condition: { inStock: true } },
-  { code: 'warehouse', order: 11, name: 'Склад — выдача в отдел', kind: 'issue', condition: { inStock: true } },
+  // Ветка «есть в наличии»: склад подтвердил полное наличие → склад сразу
+  // выдаёт (остаток списывается) → закрыта. Руководитель отдела НЕ согласует —
+  // ему уходит только уведомление (routes, FIXES 2026-07-20).
+  { code: 'warehouse', order: 10, name: 'Склад — выдача в отдел', kind: 'issue', condition: { inStock: true } },
 ];
 
 async function roleIdByCode(db: Db, code: string): Promise<string | undefined> {

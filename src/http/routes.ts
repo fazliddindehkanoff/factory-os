@@ -224,6 +224,45 @@ async function notifyDeptHeadAfterReceiving(
   }
 }
 
+/**
+ * FIXES 2026-07-20 (2): ветка «есть в наличии» руководителя отдела НЕ спрашивает —
+ * он получает только уведомление о том, что заявка закрывается со склада
+ * (согласующий шаг ветки удалён миграцией 0038).
+ */
+async function notifyDeptHeadInStock(
+  db: Db,
+  notify: Notifier | undefined,
+  requestId: string,
+  opts: { actorId?: string } = {},
+): Promise<void> {
+  try {
+    const [reqRow] = await db.select().from(schema.requests).where(eq(schema.requests.id, requestId));
+    if (!reqRow) return;
+    const [role] = await db
+      .select({ id: schema.roles.id })
+      .from(schema.roles)
+      .where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, 'dept_head')));
+    if (!role) return;
+    const userIds = await stepActorIds(db, reqRow, { stepKind: 'approval', approverRoleId: role.id });
+    if (!userIds.length) return;
+    const push = (await digestIntervalMinutes(db, reqRow.holdingId)) ? undefined : notify;
+    for (const uId of userIds) {
+      if (uId === opts.actorId) continue;
+      await notifyUser(db, push, {
+        holdingId: reqRow.holdingId,
+        recipientUserId: uId,
+        title: `Товар в наличии — ${reqRow.requestNumber}`,
+        message: `По заявке ${reqRow.requestNumber} всё есть на складе — будет выдано в отдел без закупки. Действий не требуется.`,
+        kind: 'stage_passed',
+        entityType: 'request',
+        entityId: reqRow.id,
+      });
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
 export function buildRouter(deps: RouterDeps): Router {
   const { db, botToken, sessionSecret, devAuth, notify } = deps;
   const r = Router();
@@ -1379,6 +1418,11 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       if (!result.currentStepId && result.status === 'closed' && fromStep?.stepKind === 'receiving') {
         notifyDeptHeadAfterReceiving(db, notify, result.id, { actorId: u.id }).catch(() => {});
+      }
+      // Ветка «есть в наличии»: руководителю отдела — только уведомление (без
+      // согласования); заявка уходит на выдачу со склада (FIXES 2026-07-20).
+      if (['wh_in_stock', 'wh_partial'].includes(String(body.action)) && result.inStock === true) {
+        notifyDeptHeadInStock(db, notify, result.id, { actorId: u.id }).catch(() => {});
       }
       // Автору — о ходе ЕГО заявки, но не о его же собственных действиях
       // (resubmit/close: автор — актор, пуш самому себе — шум).
