@@ -114,6 +114,10 @@ export const api = {
   },
   inbox: () => call('/requests/inbox'),
   getRequest: (id: string) => call('/requests/' + id),
+  // Override учредителя/директора (approvals.override): разрешить или отклонить
+  // заявку мимо оставшихся шагов — PIN и причина обязательны.
+  overrideRequest: (id: string, data: { action: 'approve' | 'cancel'; pin: string; reason: string }) =>
+    call(`/requests/${id}/override`, { method: 'POST', body: JSON.stringify(data) }),
   cancelRequest: (id: string, reason?: string) =>
     call(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason ?? '' }) }),
   rejectReasons: (id: string, action?: string) => call(`/requests/${id}/reject-reasons?action=${encodeURIComponent(action ?? '')}`),

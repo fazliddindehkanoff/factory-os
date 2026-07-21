@@ -69,6 +69,9 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'requests.view',
       'procurement.view',
       'procurement.quote',
+      // FIXES 2026-07-20 (тест): КП прикладывает именно снабженец — право на
+      // вложения нужно закупочным ролям, не только автору заявки.
+      'requests.upload_attachment',
       'suppliers.view',
       'suppliers.manage',
     ],
@@ -120,6 +123,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'procurement.view',
       'procurement.quote',
       'procurement.select_supplier',
+      'requests.upload_attachment',
       'suppliers.view',
       'suppliers.manage',
       'approvals.approve',
@@ -191,6 +195,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'requests.view',
       'procurement.view',
       'procurement.quote',
+      'requests.upload_attachment',
       'suppliers.view',
       'suppliers.manage',
     ],

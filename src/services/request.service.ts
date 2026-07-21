@@ -123,13 +123,41 @@ export async function sanitizeCustomFields(
   return Object.keys(out).length ? out : null;
 }
 
+// FIXES 2026-07-20 (тест, дыры валидации): верхние границы против «10¹⁵ штук» —
+// дальше bigint-суммы переполняют отчёты, а опечатка в количестве превращается
+// в закупку на квадриллион. Границы щедрые для реального производства.
+export const MAX_ITEM_QUANTITY = 1_000_000_000; // 10⁹
+export const MAX_ITEM_PRICE = 10_000_000_000_000; // 10¹³ UZS за единицу
+const MAX_TITLE_LENGTH = 300;
+
 export async function createRequest(db: Db, input: CreateRequestInput) {
-  // Items are optional: an admin can delete the name/quantity fields and build a
-  // fully-custom form. Keep only items that actually carry a name; drop blanks.
+  // Items are optional ONLY for fully-custom forms (admin deleted the itemName
+  // field). With the standard form, a request without a single named position —
+  // or with нулевым количеством — is a validation hole, not a use-case.
   const items = (input.items ?? []).filter((it) => it.name?.trim());
   for (const it of items) {
-    assertFiniteNonNeg(it.quantity, 'Количество должно быть неотрицательным числом');
+    if (!Number.isFinite(it.quantity) || it.quantity <= 0) throw new ValidationError('Количество должно быть больше нуля');
+    if (it.quantity > MAX_ITEM_QUANTITY) throw new ValidationError('Количество слишком велико (максимум 1 млрд)');
     assertFiniteNonNeg(it.unitPrice, 'Цена должна быть неотрицательным числом');
+    if (it.unitPrice > MAX_ITEM_PRICE) throw new ValidationError('Цена за единицу слишком велика');
+    if (it.name!.trim().length > MAX_TITLE_LENGTH) throw new ValidationError('Название позиции слишком длинное (максимум 300 символов)');
+  }
+  if (items.length === 0) {
+    const [itemNameField] = await db
+      .select({ id: schema.formFields.id })
+      .from(schema.formFields)
+      .where(
+        and(
+          eq(schema.formFields.holdingId, input.holdingId),
+          eq(schema.formFields.screen, 'request_create'),
+          eq(schema.formFields.fieldKey, 'itemName'),
+          eq(schema.formFields.enabled, true),
+        ),
+      );
+    if (itemNameField) throw new ValidationError('Добавьте хотя бы одну позицию');
+  }
+  if (input.title != null) {
+    input.title = String(input.title).trim().slice(0, MAX_TITLE_LENGTH) || undefined;
   }
   const estimatedAmount = Math.round(items.reduce((s, it) => s + it.quantity * it.unitPrice, 0));
 

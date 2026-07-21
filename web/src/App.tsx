@@ -2428,6 +2428,11 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
   const [atts, setAtts] = useState<{ id: string; filename: string; mime: string | null; size: number }[]>([]);
   // #11 приёмка по позициям: фактически принятое количество на позицию (itemId → qty).
   const [itemReceipts, setItemReceipts] = useState<Record<string, string>>({});
+  // Override учредителя/директора (approvals.override): причина + PIN.
+  const [ovOpen, setOvOpen] = useState(false);
+  const [ovReason, setOvReason] = useState('');
+  const [ovPin, setOvPin] = useState('');
+  const [ovBusy, setOvBusy] = useState(false);
   const actionLock = useRef(false);
 
   useEffect(() => {
@@ -2514,6 +2519,10 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
     req.requesterId === me.user.id &&
     !TERMINAL.includes(req.status) &&
     !(req.approvals ?? []).some((a) => a.status === 'approved');
+  // FIXES 2026-07-20 (тест): override учредителя/директора — право
+  // approvals.override теперь обслуживается основным API (эндпоинт портирован
+  // из compat-слоя); кнопка видна держателям права на незавершённой заявке.
+  const canOverride = me.permissions.includes('approvals.override') && !TERMINAL.includes(req.status);
   const doCancel = async () => {
     if (!(await confirmDialog('Удалить заявку? Отменить это действие будет нельзя.'))) return;
     try {
@@ -2521,6 +2530,21 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
       onBack();
     } catch (e) {
       setError((e as Error).message);
+    }
+  };
+  const doOverride = async (action: 'approve' | 'cancel') => {
+    setOvBusy(true);
+    setError(null);
+    try {
+      await api.overrideRequest(id, { action, pin: ovPin, reason: ovReason.trim() });
+      setOvOpen(false);
+      setOvReason('');
+      setOvPin('');
+      load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setOvBusy(false);
     }
   };
 
@@ -2593,8 +2617,25 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
               Удалить заявку
             </button>
           )}
+          {canOverride && (
+            <button onClick={() => setOvOpen((v) => !v)} style={{ background: 'none', border: '1px solid var(--warning)', color: 'var(--warning)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', padding: '6px 11px', borderRadius: 9 }}>
+              Override
+            </button>
+          )}
         </div>
       </div>
+
+      {canOverride && ovOpen && (
+        <div style={{ background: 'var(--card)', border: '1px solid var(--warning)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--fg)' }}>Override — решение мимо оставшихся шагов</div>
+          <textarea value={ovReason} onChange={(e) => setOvReason(e.target.value)} placeholder="Причина (обязательно)" style={{ width: '100%', minHeight: 56, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card2)', color: 'var(--fg)', fontSize: 13.5, fontFamily: 'inherit', resize: 'vertical' }} />
+          <input value={ovPin} onChange={(e) => setOvPin(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="PIN" inputMode="numeric" style={{ width: 120, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card2)', color: 'var(--fg)', fontSize: 14, fontFamily: "'IBM Plex Mono', monospace", letterSpacing: '.2em' }} />
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button disabled={ovBusy || !ovReason.trim() || ovPin.length < 4} onClick={() => doOverride('approve')} style={{ flex: 1, padding: 12, borderRadius: 10, border: 'none', background: 'var(--success)', color: '#fff', fontSize: 13.5, fontWeight: 700, cursor: 'pointer', opacity: ovBusy || !ovReason.trim() || ovPin.length < 4 ? 0.5 : 1 }}>Разрешить</button>
+            <button disabled={ovBusy || !ovReason.trim() || ovPin.length < 4} onClick={() => doOverride('cancel')} style={{ flex: 1, padding: 12, borderRadius: 10, border: 'none', background: 'var(--danger)', color: '#fff', fontSize: 13.5, fontWeight: 700, cursor: 'pointer', opacity: ovBusy || !ovReason.trim() || ovPin.length < 4 ? 0.5 : 1 }}>Отклонить</button>
+          </div>
+        </div>
+      )}
 
       <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>

@@ -8,7 +8,7 @@ import { requireAuth, type AuthedRequest } from './auth.middleware.js';
 import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility, getMoneyVisibility } from './request-visibility.js';
 import { isTerminalStatus, statusForStep } from '../workflow/step-kinds.js';
-import { createRequest, sanitizeCustomFields } from '../services/request.service.js';
+import { createRequest, sanitizeCustomFields, MAX_ITEM_QUANTITY, MAX_ITEM_PRICE } from '../services/request.service.js';
 import { performAction, availableActions, statusLabelFor, inboxCandidates, markItemStock } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
@@ -1451,6 +1451,97 @@ export function buildRouter(deps: RouterDeps): Router {
     }
   });
 
+  // FIXES 2026-07-20 (тест): override учредителя жил только в compat-слое,
+  // который на стендах не смонтирован — право approvals.override (owner,
+  // директор) было мёртвым, при том что эскалация L2 сигналит именно его
+  // держателям. Портировано в основной API: PIN + обязательная причина,
+  // разрешение/отклонение мимо оставшихся шагов, полная история + аудит.
+  r.post('/requests/:id/override', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      const b = req.body ?? {};
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'approvals.override', u.holdingId))) {
+        res.status(403).json({ error: 'Нужно право approvals.override' });
+        return;
+      }
+      if (!['approve', 'cancel'].includes(String(b.action))) {
+        res.status(400).json({ error: 'action: approve | cancel' });
+        return;
+      }
+      const reason = String(b.reason ?? b.comment ?? '').trim();
+      if (!reason) {
+        res.status(400).json({ error: 'Причина обязательна' });
+        return;
+      }
+      const [usr] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
+      if (!usr?.pinHash) {
+        res.status(403).json({ error: 'PIN не задан — задайте PIN в настройках' });
+        return;
+      }
+      const lockMs = pinLockoutRemaining(u.id);
+      if (lockMs > 0) {
+        res.status(403).json({ error: `PIN заблокирован, повторите через ${Math.ceil(lockMs / 60000)} мин` });
+        return;
+      }
+      if (!verifyPin(String(b.pin ?? ''), usr.pinHash)) {
+        const locked = recordPinFailure(u.id);
+        res.status(403).json({ error: locked ? 'Слишком много попыток — блокировка 15 мин' : 'Неверный PIN' });
+        return;
+      }
+      clearPinFailures(u.id);
+      const [rq] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.params.id as string));
+      if (!rq || rq.holdingId !== u.holdingId) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      if (isTerminalStatus(rq.status)) {
+        res.status(400).json({ error: 'Заявка уже завершена' });
+        return;
+      }
+      const newStatus = b.action === 'approve' ? 'approved' : 'rejected';
+      await db.transaction(async (tx: Db) => {
+        await tx
+          .update(schema.approvals)
+          .set({
+            status: b.action === 'approve' ? 'approved' : 'rejected',
+            approverUserId: u.id,
+            comment: 'OWNER OVERRIDE: ' + reason,
+            approvedAt: new Date(),
+          })
+          .where(and(eq(schema.approvals.requestId, rq.id), eq(schema.approvals.status, 'pending')));
+        await tx
+          .update(schema.requests)
+          .set({ status: newStatus, currentStepId: null, updatedAt: new Date(), closedAt: new Date() })
+          .where(eq(schema.requests.id, rq.id));
+        await tx.insert(schema.requestStatusHistory).values({
+          requestId: rq.id,
+          oldStatus: rq.status,
+          newStatus,
+          changedBy: u.id,
+          comment: 'OWNER OVERRIDE: ' + reason,
+          source: 'api',
+        });
+        await tx.insert(schema.auditLogs).values({
+          holdingId: rq.holdingId,
+          userId: u.id,
+          action: 'OWNER_OVERRIDE',
+          module: 'approvals',
+          entityType: 'request',
+          entityId: rq.id,
+          newValue: { action: String(b.action), reason },
+          source: 'api',
+        });
+      });
+      if (rq.requesterId !== u.id) {
+        if (newStatus === 'approved') notifyRequester(db, notify, rq.id, 'approved_final', (rn) => approvedFinalMessage(rn));
+        else notifyRequester(db, notify, rq.id, 'rejected', (rn) => rejectedMessage(rn, reason));
+      }
+      res.json({ ok: true, status: newStatus });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Set / change the current user's sign-off PIN.
   r.put('/me/profile', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -1677,8 +1768,15 @@ export function buildRouter(deps: RouterDeps): Router {
             if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
               throw new ValidationError('Количество продукта должно быть больше нуля');
             }
+            // FIXES 2026-07-20 (тест): верхние границы — как при создании заявки.
+            if (it.quantity > MAX_ITEM_QUANTITY) {
+              throw new ValidationError('Количество слишком велико (максимум 1 млрд)');
+            }
             if (!Number.isFinite(it.unitPrice) || it.unitPrice < 0) {
               throw new ValidationError('Цена продукта должна быть неотрицательным числом');
+            }
+            if (it.unitPrice > MAX_ITEM_PRICE) {
+              throw new ValidationError('Цена за единицу слишком велика');
             }
           }
           patch.estimatedAmount = Math.round(cleaned.reduce((sum: number, it: any) => sum + it.quantity * it.unitPrice, 0));

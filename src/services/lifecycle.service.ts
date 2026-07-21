@@ -457,7 +457,10 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     isHandler = true;
   }
   // Reject/return-for-revision are shown ONLY to whoever handles the current step.
-  if (isHandler && !['procurement', 'price_approval'].includes(step.stepKind)) {
+  // FIXES 2026-07-20 (тест): price_approval больше не исключается — «Отклонить
+  // закупку» (reject_purchase, perm procurement.select_supplier) снова доступна
+  // руководителю снабжения; у менеджера права нет, у шага нет revision-действия.
+  if (isHandler && step.stepKind !== 'procurement') {
     const rev = defs.find((d) => d.revision);
     if (rev && (await hasPermission(db, userId, rev.perm, reqScope(req)))) out.push(toUi(rev));
     const rej = defs.find((d) => d.reject);
@@ -849,6 +852,9 @@ export async function performAction(db: Db, input: PerformInput) {
           ndsIncluded,
           paymentType,
           leadTime: String(input.leadTime ?? '').trim() || null,
+          // FIXES 2026-07-20 (тест): комментарий снабженца к КП сохраняется в
+          // note — раньше терялся (quote.note всегда null).
+          note: String(input.comment ?? '').trim() || null,
           selected: true,
           createdBy: input.actor.id,
         })
