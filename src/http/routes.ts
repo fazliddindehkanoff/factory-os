@@ -541,7 +541,10 @@ export function buildRouter(deps: RouterDeps): Router {
         res.json([]);
         return;
       }
-      if (!(await hasPermissionInHolding(db, u.id, 'requests.view', u.holdingId))) {
+      const canViewRequests =
+        (await hasPermissionInHolding(db, u.id, 'requests.view', u.holdingId)) ||
+        (await hasPermissionInHolding(db, u.id, 'requests.view_own', u.holdingId));
+      if (!canViewRequests) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
@@ -2281,7 +2284,7 @@ export function buildRouter(deps: RouterDeps): Router {
   });
 
   // Constructor / admin API.
-  r.use('/admin', buildAdminRouter(db, auth));
+  r.use('/admin', buildAdminRouter(db, auth, sessionSecret));
 
   return r;
 }

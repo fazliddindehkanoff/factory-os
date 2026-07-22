@@ -23,6 +23,7 @@ export const SYSTEM_ROLES: SystemRoleDef[] = [
       'settings.manage',
       'audit.view',
       'requests.view',
+      'requests.view_own',
       'reports.view',
       'suppliers.view',
       'suppliers.manage',

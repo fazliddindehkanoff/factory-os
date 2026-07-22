@@ -12,7 +12,8 @@ export interface PermissionDef {
 
 export const PERMISSIONS: PermissionDef[] = [
   // requests
-  { code: 'requests.view', name: 'Просмотр заявок', module: 'requests' },
+  { code: 'requests.view', name: 'Просмотр всех заявок', module: 'requests' },
+  { code: 'requests.view_own', name: 'Просмотр только своих заявок', module: 'requests' },
   { code: 'requests.create', name: 'Создание заявок', module: 'requests' },
   { code: 'requests.edit', name: 'Редактирование заявок', module: 'requests' },
   // 'requests.comment' removed (M5): no comments endpoint exists — re-add together

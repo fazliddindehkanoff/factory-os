@@ -281,6 +281,20 @@
       "when": 1784624760000,
       "tag": "0039_snab_upload_attachment",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1784705000000,
+      "tag": "0040_dashboard_user_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1784705400000,
+      "tag": "0041_request_view_own_permission",
+      "breakpoints": true
     }
   ]
 }

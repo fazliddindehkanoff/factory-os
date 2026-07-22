@@ -2,7 +2,7 @@
  * Idempotent seed of the global permission catalog and system roles.
  * Safe to run repeatedly (used by db:seed and by tests).
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as schema from './schema.js';
 import { PERMISSIONS } from '../rbac/permissions.js';
 import { SYSTEM_ROLES } from '../rbac/system-roles.js';
@@ -14,7 +14,13 @@ export async function seedSystemRolesAndPermissions(db: Db): Promise<void> {
   await db
     .insert(schema.permissions)
     .values(PERMISSIONS)
-    .onConflictDoNothing({ target: schema.permissions.code });
+    .onConflictDoUpdate({
+      target: schema.permissions.code,
+      set: {
+        name: sql`excluded.name`,
+        module: sql`excluded.module`,
+      },
+    });
 
   const permRows = await db.select().from(schema.permissions);
   const permByCode = new Map<string, string>(

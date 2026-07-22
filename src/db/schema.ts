@@ -125,6 +125,9 @@ export const users = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     holdingId: uuid('holding_id').references(() => holdings.id),
     telegramId: text('telegram_id').unique(),
+    // The same person may authenticate through Telegram, the web dashboard, or both.
+    username: text('username'),
+    passwordHash: text('password_hash'),
     fullName: text('full_name').notNull(),
     phone: text('phone'),
     email: text('email'),

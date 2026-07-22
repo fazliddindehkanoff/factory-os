@@ -17,7 +17,10 @@ const ROOT = process.cwd();
 
 /** Эндпоинты, осознанно живущие без обёртки в api.ts (причина обязательна). */
 const ENDPOINTS_WITHOUT_CLIENT: string[] = [
-  // (пусто — новых добавлять только с причиной в комментарии)
+  // Dashboard-only account management is consumed by the self-contained
+  // /snab-dashboard client, not by the Telegram React client in web/src/api.ts.
+  'POST /admin/users',
+  'PUT /admin/users/{}',
 ];
 
 /** Обёртки api.*, осознанно не вызываемые из компонентов (причина обязательна). */

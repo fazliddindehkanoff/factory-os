@@ -8,8 +8,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type RequestHandler } from 'express';
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
+import { hashPassword } from '../auth/password.js';
 import { hasPermission, type Scope } from '../rbac/rbac.js';
 import { PERMISSIONS } from '../rbac/permissions.js';
 import { STEP_KINDS, TERMINAL_STATUSES, ON_REJECT_POLICIES, actionsForKind, type OnRejectPolicy } from '../workflow/step-kinds.js';
@@ -249,7 +250,7 @@ async function assertStepMutationInvariants(tx: Db, workflowId: string): Promise
   }
 }
 
-export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
+export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: string): Router {
   const r = Router();
   r.use(auth); // every admin route requires an authenticated user
 
@@ -569,10 +570,14 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
       const users = await db.select().from(schema.users).where(inArray(schema.users.id, userIds));
       const roles = await db.select().from(schema.roles);
       const roleCodeById = new Map<string, string>(roles.map((rr: { id: string; code: string }) => [rr.id, rr.code]));
-      const out = users.map((usr: { id: string; fullName: string; telegramId: string | null; status: string }) => ({
+      const out = users.map((usr: { id: string; fullName: string; telegramId: string | null; username: string | null; email: string | null; phone: string | null; position: string | null; status: string }) => ({
         id: usr.id,
         fullName: usr.fullName,
         telegramId: usr.telegramId,
+        username: usr.username,
+        email: usr.email,
+        phone: usr.phone,
+        position: usr.position,
         status: usr.status,
         roles: assigns
           .filter((a) => a.userId === usr.id)
@@ -580,6 +585,137 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
           .filter(Boolean),
       }));
       res.json(out);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  /** Create a shared Factory OS identity that can use the web dashboard, Telegram,
+   *  or both. Role assignment stays on the existing scoped endpoint so the same
+   *  anti-escalation rules are applied to every channel. */
+  r.post('/users', requirePerm('users.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const fullName = str(body.fullName ?? body.name);
+      const username = str(body.username).toLowerCase();
+      const password = String(body.password ?? '');
+      const telegramId = str(body.telegramId ?? body.telegram_id) || null;
+      const email = str(body.email) || null;
+      const phone = str(body.phone) || null;
+      const position = str(body.position) || null;
+      if (!fullName) throw new ValidationError('Укажите имя пользователя');
+      if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(username)) {
+        throw new ValidationError('Логин: 3–64 символа, латиница, цифры, точка, дефис или подчёркивание');
+      }
+      if (password.length < 8) throw new ValidationError('Пароль должен содержать минимум 8 символов');
+
+      const [sameUsername] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(sql`lower(${schema.users.username}) = ${username}`)
+        .limit(1);
+      if (sameUsername) throw new ConflictError('Этот логин уже используется');
+      if (telegramId) {
+        const [sameTelegram] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.telegramId, telegramId));
+        if (sameTelegram) throw new ConflictError('Этот Telegram ID уже используется');
+      }
+
+      const created = await db.transaction(async (tx: Db) => {
+        const [row] = await tx
+          .insert(schema.users)
+          .values({
+            holdingId: u.holdingId,
+            fullName,
+            username,
+            passwordHash: hashPassword(password, sessionSecret),
+            telegramId,
+            email,
+            phone,
+            position,
+            status: 'active',
+          })
+          .returning();
+        await writeAudit(tx, {
+          holdingId: u.holdingId as string,
+          userId: u.id,
+          action: 'user.created',
+          module: 'admin',
+          entityType: 'user',
+          entityId: row.id,
+          newValue: { fullName, username, telegramId, email, phone, position },
+        });
+        return row;
+      });
+      const { passwordHash: _passwordHash, pinHash: _pinHash, ...safe } = created;
+      res.status(201).json(safe);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  /** Update profile, dashboard login, password, or account status. */
+  r.put('/users/:id', requirePerm('users.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const id = req.params.id as string;
+      const current = await loadHoldingRow(db, schema.users, id, u.holdingId as string) as any;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if ('fullName' in body || 'name' in body) {
+        const value = str(body.fullName ?? body.name);
+        if (!value) throw new ValidationError('Имя не может быть пустым');
+        patch.fullName = value;
+      }
+      if ('username' in body) {
+        const value = str(body.username).toLowerCase();
+        if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(value)) {
+          throw new ValidationError('Логин: 3–64 символа, латиница, цифры, точка, дефис или подчёркивание');
+        }
+        const [same] = await db
+          .select({ id: schema.users.id })
+          .from(schema.users)
+          .where(sql`lower(${schema.users.username}) = ${value}`)
+          .limit(1);
+        if (same && same.id !== id) throw new ConflictError('Этот логин уже используется');
+        patch.username = value;
+      }
+      if ('password' in body && String(body.password ?? '')) {
+        const password = String(body.password);
+        if (password.length < 8) throw new ValidationError('Пароль должен содержать минимум 8 символов');
+        patch.passwordHash = hashPassword(password, sessionSecret);
+      }
+      for (const key of ['email', 'phone', 'position'] as const) {
+        if (key in body) patch[key] = str(body[key]) || null;
+      }
+      if ('telegramId' in body || 'telegram_id' in body) {
+        const telegramId = str(body.telegramId ?? body.telegram_id) || null;
+        if (telegramId) {
+          const [same] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.telegramId, telegramId));
+          if (same && same.id !== id) throw new ConflictError('Этот Telegram ID уже используется');
+        }
+        patch.telegramId = telegramId;
+      }
+      if ('status' in body) {
+        const status = str(body.status);
+        if (!['active', 'suspended', 'disabled'].includes(status)) throw new ValidationError('Недопустимый статус');
+        if (id === u.id && status !== 'active') throw new ValidationError('Нельзя отключить собственную учётную запись');
+        patch.status = status;
+      }
+
+      const [updated] = await db.update(schema.users).set(patch).where(eq(schema.users.id, id)).returning();
+      await writeAudit(db, {
+        holdingId: u.holdingId as string,
+        userId: u.id,
+        action: 'user.updated',
+        module: 'admin',
+        entityType: 'user',
+        entityId: id,
+        oldValue: { fullName: current.fullName, username: current.username, telegramId: current.telegramId, status: current.status },
+        newValue: Object.fromEntries(Object.entries(patch).filter(([key]) => !['passwordHash', 'updatedAt'].includes(key))),
+      });
+      const { passwordHash: _passwordHash, pinHash: _pinHash, ...safe } = updated;
+      res.json(safe);
     } catch (e) {
       next(e);
     }
@@ -667,10 +803,14 @@ export function buildAdminRouter(db: Db, auth: RequestHandler): Router {
         .where(eq(schema.userRoles.holdingId, hid));
       const roles = await db.select().from(schema.roles);
       const roleById = new Map<string, { code: string }>(roles.map((rr: { id: string; code: string }) => [rr.id, rr]));
-      const out = users.map((usr: { id: string; fullName: string; telegramId: string | null; status: string }) => ({
+      const out = users.map((usr: { id: string; fullName: string; telegramId: string | null; username: string | null; email: string | null; phone: string | null; position: string | null; status: string }) => ({
         id: usr.id,
         fullName: usr.fullName,
         telegramId: usr.telegramId,
+        username: usr.username,
+        email: usr.email,
+        phone: usr.phone,
+        position: usr.position,
         status: usr.status,
         roles: assigns
           .filter((a: { userId: string; status: string }) => a.userId === usr.id && a.status === 'active')

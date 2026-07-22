@@ -23,7 +23,7 @@ export function createApp(deps: RouterDeps) {
   app.use(express.json({ limit: '4mb' })); // design uploads base64 attachments
 
   app.get('/healthz', (_req: Request, res: Response) => res.json({ ok: true, uptime: process.uptime() }));
-  app.use('/snab-dashboard', buildSnabDashboardRouter(deps.db));
+  app.use('/snab-dashboard', buildSnabDashboardRouter(deps.db, deps.sessionSecret));
 
   // Request logging (non-static, non-health)
   app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
