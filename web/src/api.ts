@@ -254,9 +254,9 @@ export const api = {
 
     // Materials
     materials: () => call('/admin/materials'),
-    createMaterial: (data: { name: string; sku?: string; defaultUnit?: string }) =>
+    createMaterial: (data: { name: string; sku?: string; category?: string; defaultUnit?: string; characteristics?: string; brand?: string }) =>
       call('/admin/materials', { method: 'POST', body: JSON.stringify(data) }),
-    updateMaterial: (id: string, data: { name?: string; sku?: string; defaultUnit?: string }) =>
+    updateMaterial: (id: string, data: { name?: string; sku?: string; category?: string; defaultUnit?: string; characteristics?: string; brand?: string }) =>
       call('/admin/materials/' + id, { method: 'PUT', body: JSON.stringify(data) }),
     deleteMaterial: (id: string) => call('/admin/materials/' + id, { method: 'DELETE' }),
 

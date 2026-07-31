@@ -6,7 +6,7 @@
  * the Procurement and Finance Mini App screens have something to exercise:
  *
  *   Demo Full Workflow: approval → warehouse_check → procurement →
- *                       finance_payment → receiving → issue → close
+ *                       finance_payment → receiving
  *   • «Demo: заявка в закупке»  — parked at the procurement step
  *   • «Demo: заявка на оплате»  — parked at finance_payment (no invoice yet,
  *                                 so finance can exercise «Выставить счёт»)
@@ -38,8 +38,6 @@ const STEP_SPECS = [
   { code: 'procurement_head', order: 4, name: 'Снабжение — менеджер', kind: 'price_approval' },
   { code: 'finance', order: 5, name: 'Оплата', kind: 'finance_payment' },
   { code: 'warehouse', order: 6, name: 'Приёмка', kind: 'receiving' },
-  { code: 'warehouse', order: 7, name: 'Выдача', kind: 'issue' },
-  { code: 'requester', order: 8, name: 'Закрытие', kind: 'close' },
 ];
 
 async function roleId(db: Db, code: string): Promise<string | undefined> {

@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type RequestHandler } from 'express';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import * as XLSX from 'xlsx';
 import * as schema from '../db/schema.js';
 import { hashPassword } from '../auth/password.js';
 import { hasPermission, type Scope } from '../rbac/rbac.js';
@@ -37,6 +38,10 @@ function actor(req: Request): AuthedUser {
 
 function str(v: unknown): string {
   return String(v ?? '').trim();
+}
+
+function normKey(v: unknown): string {
+  return str(v).toLowerCase().replace(/ё/g, 'е').replace(/[\s._/\\|()-]+/g, '');
 }
 
 interface AuditEntry {
@@ -1791,7 +1796,10 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
           holdingId: u.holdingId,
           name,
           sku: str(body.sku) || null,
+          category: str(body.category) || null,
           defaultUnit: str(body.defaultUnit) || null,
+          characteristics: str(body.characteristics) || null,
+          brand: str(body.brand) || null,
         })
         .returning();
       await writeAudit(db, {
@@ -1801,9 +1809,123 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         module: 'admin',
         entityType: 'material',
         entityId: mat.id,
-        newValue: { name },
+        newValue: { name, sku: str(body.sku) || null, category: str(body.category) || null, defaultUnit: str(body.defaultUnit) || null, characteristics: str(body.characteristics) || null, brand: str(body.brand) || null },
       });
       res.status(201).json(mat);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/materials/import', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const filename = str(body.filename);
+      const rawBase64 = str(body.dataBase64).replace(/^data:.*?;base64,/, '');
+      if (!rawBase64) throw new ValidationError('Файл обязателен');
+      const buffer = Buffer.from(rawBase64, 'base64');
+      if (!buffer.length) throw new ValidationError('Файл пустой');
+      if (buffer.length > 8 * 1024 * 1024) throw new ValidationError('Файл слишком большой');
+
+      const workbook = XLSX.read(buffer, { type: 'buffer', raw: false });
+      const sheetName = workbook.SheetNames[0];
+      if (!sheetName) throw new ValidationError('В Excel-файле нет листов');
+      const sheet = workbook.Sheets[sheetName];
+      const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+      const rows = matrix.filter((row) => Array.isArray(row) && row.some((cell) => str(cell)));
+      if (rows.length < 2) throw new ValidationError('В файле нет строк для импорта');
+
+      const aliases: Record<string, string[]> = {
+        sku: ['код', 'sku', 'артикул', 'code'],
+        name: ['наименование', 'название', 'товар', 'материал', 'name'],
+        category: ['категория', 'category'],
+        defaultUnit: ['едизмерения', 'единицаизмерения', 'едизм', 'unit', 'ед'],
+        characteristics: ['характеристики', 'характеристика', 'description', 'описание'],
+        brand: ['бренд', 'brand', 'марка'],
+      };
+      const fieldByAlias = new Map<string, string>();
+      for (const [field, keys] of Object.entries(aliases)) {
+        for (const key of keys) fieldByAlias.set(normKey(key), field);
+      }
+
+      let headerIndex = -1;
+      let indexByField: Record<string, number> = {};
+      for (let i = 0; i < Math.min(rows.length, 10); i += 1) {
+        const next: Record<string, number> = {};
+        rows[i].forEach((cell, index) => {
+          const field = fieldByAlias.get(normKey(cell));
+          if (field && next[field] === undefined) next[field] = index;
+        });
+        if (next.name !== undefined) {
+          headerIndex = i;
+          indexByField = next;
+          break;
+        }
+      }
+      if (headerIndex < 0) {
+        headerIndex = 0;
+        indexByField = { sku: 0, name: 1, category: 2, defaultUnit: 3, characteristics: 4, brand: 5 };
+      }
+
+      const parsed = rows.slice(headerIndex + 1).map((row) => {
+        const pick = (field: string) => str(row[indexByField[field]]);
+        return {
+          sku: pick('sku') || null,
+          name: pick('name'),
+          category: pick('category') || null,
+          defaultUnit: pick('defaultUnit') || null,
+          characteristics: pick('characteristics') || null,
+          brand: pick('brand') || null,
+        };
+      }).filter((row) => row.name);
+      if (!parsed.length) throw new ValidationError('Не найдено товаров для импорта');
+
+      const existing = await db
+        .select()
+        .from(schema.materials)
+        .where(eq(schema.materials.holdingId, u.holdingId as string));
+      const bySku = new Map<string, { id: string }>();
+      for (const item of existing as Array<{ id: string; sku: string | null }>) {
+        const key = normKey(item.sku);
+        if (key && !bySku.has(key)) bySku.set(key, item);
+      }
+
+      const result = await db.transaction(async (tx: Db) => {
+        let created = 0;
+        let updated = 0;
+        for (const item of parsed) {
+          const existingItem = item.sku ? bySku.get(normKey(item.sku)) : undefined;
+          const values = {
+            name: item.name,
+            normalizedName: item.name.toLowerCase(),
+            sku: item.sku,
+            category: item.category,
+            defaultUnit: item.defaultUnit,
+            characteristics: item.characteristics,
+            brand: item.brand,
+            status: 'active' as const,
+          };
+          if (existingItem) {
+            await tx.update(schema.materials).set(values).where(eq(schema.materials.id, existingItem.id));
+            updated += 1;
+          } else {
+            const [inserted] = await tx.insert(schema.materials).values({ holdingId: u.holdingId, ...values }).returning({ id: schema.materials.id, sku: schema.materials.sku });
+            if (inserted?.sku) bySku.set(normKey(inserted.sku), inserted);
+            created += 1;
+          }
+        }
+        return { created, updated, skipped: rows.length - headerIndex - 1 - parsed.length, total: parsed.length };
+      });
+      await writeAudit(db, {
+        holdingId: u.holdingId as string,
+        userId: u.id,
+        action: 'materials.imported',
+        module: 'admin',
+        entityType: 'material',
+        newValue: { filename, ...result },
+      });
+      res.json(result);
     } catch (e) {
       next(e);
     }
@@ -1823,7 +1945,10 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         patch.name = name;
       }
       if (body.sku !== undefined) patch.sku = str(body.sku) || null;
+      if (body.category !== undefined) patch.category = str(body.category) || null;
       if (body.defaultUnit !== undefined) patch.defaultUnit = str(body.defaultUnit) || null;
+      if (body.characteristics !== undefined) patch.characteristics = str(body.characteristics) || null;
+      if (body.brand !== undefined) patch.brand = str(body.brand) || null;
       if (Object.keys(patch).length === 0) {
         res.json(mat);
         return;

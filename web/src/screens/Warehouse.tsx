@@ -1,6 +1,7 @@
 import { useState, useEffect, type CSSProperties } from 'react';
 import { api } from '../api';
 import { Icon } from '../icons';
+import { useI18n } from '../i18n';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Balance {
@@ -110,6 +111,7 @@ const movementBadge = (type: string): { label: string; fg: string; bg: string } 
 
 // ── Component ────────────────────────────────────────────────────────────────
 export function WarehouseScreen({ permissions = [] }: { permissions?: string[] }) {
+  const { tl } = useI18n();
   const [tab, setTab] = useState<Tab>('balances');
   const tabs = TABS.filter((t) => !t.perm || permissions.includes(t.perm));
 
@@ -146,7 +148,7 @@ export function WarehouseScreen({ permissions = [] }: { permissions?: string[] }
               fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
             }}
           >
-            {t.label}
+            {tl(t.label)}
           </button>
         ))}
       </div>
@@ -161,6 +163,7 @@ export function WarehouseScreen({ permissions = [] }: { permissions?: string[] }
 
 // ── Balances ─────────────────────────────────────────────────────────────────
 function BalancesTab() {
+  const { tl } = useI18n();
   const [data, setData] = useState<Balance[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -197,7 +200,7 @@ function BalancesTab() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Поиск по материалу или складу..."
+          placeholder={tl('Поиск по материалу или складу...')}
           style={{ ...inputStyle, paddingLeft: 42 }}
         />
       </div>
@@ -239,7 +242,7 @@ function BalancesTab() {
             color: 'var(--fg3)',
           }}
         >
-          {search ? 'Ничего не найдено' : 'Нет остатков на складе'}
+          {tl(search ? 'Ничего не найдено' : 'Нет остатков на складе')}
         </div>
       )}
 
@@ -309,12 +312,12 @@ function BalancesTab() {
                   </div>
                   {b.reservedQty > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--fg3)', marginTop: 1 }}>
-                      резерв: {b.reservedQty}
+                      {tl('резерв')}: {b.reservedQty}
                     </div>
                   )}
                   {b.minQty > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--fg3)', marginTop: 1 }}>
-                      мин: {b.minQty}
+                      {tl('мин')}: {b.minQty}
                     </div>
                   )}
                 </div>
@@ -332,6 +335,7 @@ interface MatOpt { id: string; name: string; defaultUnit: string | null; }
 interface WhOpt { id: string; name: string; }
 
 function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
+  const { tl } = useI18n();
   const [materialId, setMaterialId] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
   const [quantity, setQuantity] = useState('');
@@ -402,7 +406,7 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
           }}
         >
           <Icon name="check" size={16} sw={2.5} />
-          {mode === 'receive' ? 'Материал принят на склад' : 'Материал выдан со склада'}
+          {tl(mode === 'receive' ? 'Материал принят на склад' : 'Материал выдан со склада')}
         </div>
       )}
 
@@ -425,41 +429,41 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
       {/* Material */}
       <div>
         <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6, display: 'block' }}>
-          Материал <span style={{ color: 'var(--danger)' }}>*</span>
+          {tl('Материал')} <span style={{ color: 'var(--danger)' }}>*</span>
         </label>
         {materials.length > 0 ? (
           <select value={materialId} onChange={(e) => setMaterialId(e.target.value)} style={{ ...inputStyle, appearance: 'none', cursor: 'pointer' }}>
-            <option value="">-- Выберите материал --</option>
+            <option value="">-- {tl('Выберите материал')} --</option>
             {materials.map((m) => (
               <option key={m.id} value={m.id}>{m.name}{m.defaultUnit ? ` (${m.defaultUnit})` : ''}</option>
             ))}
           </select>
         ) : (
-          <input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder="ID материала (каталог пуст)" style={inputStyle} />
+          <input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder={tl('ID материала (каталог пуст)')} style={inputStyle} />
         )}
       </div>
 
       {/* Warehouse */}
       <div>
         <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6, display: 'block' }}>
-          Склад <span style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 400 }}>(необяз.)</span>
+          {tl('Склад')} <span style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 400 }}>{tl('(необяз.)')}</span>
         </label>
         {warehouses.length > 0 ? (
           <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} style={{ ...inputStyle, appearance: 'none', cursor: 'pointer' }}>
-            <option value="">-- Любой склад --</option>
+            <option value="">-- {tl('Любой склад')} --</option>
             {warehouses.map((w) => (
               <option key={w.id} value={w.id}>{w.name}</option>
             ))}
           </select>
         ) : (
-          <input value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} placeholder="ID склада (необязательно)" style={inputStyle} />
+          <input value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} placeholder={tl('ID склада (необязательно)')} style={inputStyle} />
         )}
       </div>
 
       {/* Quantity */}
       <div>
         <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6, display: 'block' }}>
-          Количество <span style={{ color: 'var(--danger)' }}>*</span>
+          {tl('Количество')} <span style={{ color: 'var(--danger)' }}>*</span>
         </label>
         <input
           value={quantity}
@@ -473,12 +477,12 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
       {/* Reason */}
       <div>
         <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6, display: 'block' }}>
-          Причина <span style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 400 }}>(необяз.)</span>
+          {tl('Причина')} <span style={{ fontSize: 11, color: 'var(--fg3)', fontWeight: 400 }}>{tl('(необяз.)')}</span>
         </label>
         <input
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          placeholder="Укажите причину"
+          placeholder={tl('Укажите причину')}
           style={inputStyle}
         />
       </div>
@@ -486,10 +490,10 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
       {/* Submit */}
       <button onClick={submit} disabled={!canSubmit} style={btnPrimary(!canSubmit)}>
         {saving
-          ? 'Отправка...'
+          ? tl('Отправка...')
           : mode === 'receive'
-            ? 'Принять на склад'
-            : 'Выдать со склада'}
+            ? tl('Принять на склад')
+            : tl('Выдать со склада')}
       </button>
     </div>
   );
@@ -497,6 +501,7 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
 
 // ── Journal ──────────────────────────────────────────────────────────────────
 function JournalTab() {
+  const { tl } = useI18n();
   const [data, setData] = useState<Movement[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -546,7 +551,7 @@ function JournalTab() {
             color: 'var(--fg3)',
           }}
         >
-          Нет записей в журнале
+          {tl('Нет записей в журнале')}
         </div>
       )}
 
@@ -580,7 +585,7 @@ function JournalTab() {
                     marginTop: 2,
                   }}
                 >
-                  {badge.label}
+                  {tl(badge.label)}
                 </span>
 
                 {/* Details */}

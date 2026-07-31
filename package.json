@@ -2,7 +2,9 @@
   "name": "factory-os",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "type": "module",
   "description": "Factory OS — configurable procurement & approval platform (multi-tenant)",
   "scripts": {
@@ -30,6 +32,7 @@
     "grammy": "^1.44.0",
     "helmet": "^8.2.0",
     "pg": "^8.22.0",
+    "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {

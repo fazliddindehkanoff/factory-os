@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import crypto from 'node:crypto';
+import * as XLSX from 'xlsx';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
@@ -51,9 +52,22 @@ async function setupUser(app: any, db: any, tgId: number, roleCode: string) {
 }
 
 describe('Paginated GET /requests', () => {
+  it('rejects request creation from the owner/founder role', async () => {
+    const { app, db } = await makeApp();
+    const { token, holdingId } = await setupUser(app, db, 99, 'owner');
+    const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'W', isActive: true }).returning();
+    await db.insert(schema.workflowSteps).values({
+      workflowId: wf.id, stepOrder: 1, stepName: 'S',
+      approverRoleId: await roleId(db, 'dept_head'),
+    });
+
+    await request(app).post('/api/requests').set('Authorization', `Bearer ${token}`)
+      .send({ items: [{ name: 'Owner item', quantity: 1, unitPrice: 100 }] }).expect(403);
+  });
+
   it('returns {items, hasMore} with pagination', async () => {
     const { app, db } = await makeApp();
-    const { token, holdingId, userId } = await setupUser(app, db, 100, 'owner');
+    const { token, holdingId, userId } = await setupUser(app, db, 100, 'requester');
 
     // Create a workflow so requests aren't auto-approved without steps
     const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'W', isActive: true }).returning();
@@ -83,7 +97,7 @@ describe('Paginated GET /requests', () => {
 describe('PUT /requests/:id (edit)', () => {
   it('allows the author to edit title and description', async () => {
     const { app, db } = await makeApp();
-    const { token, holdingId } = await setupUser(app, db, 200, 'owner');
+    const { token, holdingId } = await setupUser(app, db, 200, 'requester');
     const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'W', isActive: true }).returning();
     await db.insert(schema.workflowSteps).values({
       workflowId: wf.id, stepOrder: 1, stepName: 'S',
@@ -103,7 +117,7 @@ describe('PUT /requests/:id (edit)', () => {
 
   it('allows the author to edit request items while the request is editable', async () => {
     const { app, db } = await makeApp();
-    const { token, holdingId } = await setupUser(app, db, 201, 'owner');
+    const { token, holdingId } = await setupUser(app, db, 201, 'requester');
     const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'W', isActive: true }).returning();
     await db.insert(schema.workflowSteps).values({
       workflowId: wf.id, stepOrder: 1, stepName: 'S',
@@ -184,7 +198,7 @@ describe('Warehouse endpoints', () => {
 describe('Attachments endpoints', () => {
   it('upload + list + delete cycle works', async () => {
     const { app, db } = await makeApp();
-    const { token, holdingId } = await setupUser(app, db, 400, 'owner');
+    const { token, holdingId } = await setupUser(app, db, 400, 'requester');
     const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'W', isActive: true }).returning();
     await db.insert(schema.workflowSteps).values({
       workflowId: wf.id, stepOrder: 1, stepName: 'S',
@@ -226,7 +240,7 @@ describe('Attachments endpoints', () => {
 
   it('rejects files > 2MB', async () => {
     const { app, db } = await makeApp();
-    const { token, holdingId } = await setupUser(app, db, 401, 'owner');
+    const { token, holdingId } = await setupUser(app, db, 401, 'requester');
     const [wf] = await db.insert(schema.workflows).values({ holdingId, name: 'W', isActive: true }).returning();
     await db.insert(schema.workflowSteps).values({
       workflowId: wf.id, stepOrder: 1, stepName: 'S',
@@ -251,9 +265,12 @@ describe('Admin materials CRUD', () => {
     // Create
     const created = await request(app).post('/api/admin/materials')
       .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Bolt M8', sku: 'BLT-M8', defaultUnit: 'pcs' })
+      .send({ name: 'Bolt M8', sku: 'BLT-M8', category: 'Fasteners', defaultUnit: 'pcs', characteristics: 'M8 x 40', brand: 'Bosch' })
       .expect(201);
     expect(created.body.name).toBe('Bolt M8');
+    expect(created.body.category).toBe('Fasteners');
+    expect(created.body.characteristics).toBe('M8 x 40');
+    expect(created.body.brand).toBe('Bosch');
 
     // List
     const list = await request(app).get('/api/admin/materials')
@@ -263,8 +280,11 @@ describe('Admin materials CRUD', () => {
     // Update
     const updated = await request(app).put(`/api/admin/materials/${created.body.id}`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Bolt M10' }).expect(200);
+      .send({ name: 'Bolt M10', category: 'Hardware', characteristics: 'M10 x 50', brand: 'Makita' }).expect(200);
     expect(updated.body.name).toBe('Bolt M10');
+    expect(updated.body.category).toBe('Hardware');
+    expect(updated.body.characteristics).toBe('M10 x 50');
+    expect(updated.body.brand).toBe('Makita');
 
     // Delete (archive)
     await request(app).delete(`/api/admin/materials/${created.body.id}`)
@@ -274,5 +294,51 @@ describe('Admin materials CRUD', () => {
     const list2 = await request(app).get('/api/admin/materials')
       .set('Authorization', `Bearer ${token}`).expect(200);
     expect(list2.body.length).toBe(0);
+  });
+
+  it('imports catalog from Excel and updates existing products by code', async () => {
+    const { app, db } = await makeApp();
+    const { token } = await setupUser(app, db, 501, 'owner');
+
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Код', 'Наименование', 'Категория', 'Ед. измерения', 'Характеристики', 'Бренд'],
+      ['BLT-M8', 'Bolt M8', 'Fasteners', 'шт', 'M8 x 40', 'Bosch'],
+      ['NUT-M8', 'Nut M8', 'Fasteners', 'кг', 'M8', 'Makita'],
+    ]);
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Каталог');
+    const dataBase64 = Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' })).toString('base64');
+
+    const imported = await request(app).post('/api/admin/materials/import')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ filename: 'catalog.xlsx', dataBase64 })
+      .expect(200);
+    expect(imported.body).toMatchObject({ created: 2, updated: 0, total: 2 });
+
+    const updateSheet = XLSX.utils.aoa_to_sheet([
+      ['Код', 'Наименование', 'Категория', 'Ед. измерения', 'Характеристики', 'Бренд'],
+      ['BLT-M8', 'Bolt M8 updated', 'Hardware', 'шт', 'M8 x 50', 'Bosch Pro'],
+    ]);
+    const updateBook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(updateBook, updateSheet, 'Каталог');
+    const updateBase64 = Buffer.from(XLSX.write(updateBook, { type: 'buffer', bookType: 'xlsx' })).toString('base64');
+
+    const updated = await request(app).post('/api/admin/materials/import')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ filename: 'catalog-update.xlsx', dataBase64: updateBase64 })
+      .expect(200);
+    expect(updated.body).toMatchObject({ created: 0, updated: 1, total: 1 });
+
+    const list = await request(app).get('/api/admin/materials')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(list.body).toHaveLength(2);
+    expect(list.body.find((m: { sku: string }) => m.sku === 'BLT-M8')).toMatchObject({
+      name: 'Bolt M8 updated',
+      category: 'Hardware',
+      defaultUnit: 'шт',
+      characteristics: 'M8 x 50',
+      brand: 'Bosch Pro',
+    });
   });
 });

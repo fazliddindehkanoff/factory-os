@@ -213,6 +213,15 @@ async function actorHoldsRoleInScope(db: Db, userId: string, roleId: string, sco
   return rows.some((r: Scope) => scopeCovers(r, scope));
 }
 
+async function actorHasRoleCode(db: Db, userId: string, code: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: schema.userRoles.id })
+    .from(schema.userRoles)
+    .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
+    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active'), eq(schema.roles.code, code)));
+  return rows.length > 0;
+}
+
 /**
  * Whether `userId` may perform `def` on `step` of `req`. An approval step also
  * requires the actor to hold the step's configured approver role (in scope);
@@ -398,6 +407,7 @@ export async function inboxCandidates(db: Db, userId: string, holdingId: string)
 
 /** Actions the user may take on this request right now (step kind × permission × scope × role). */
 export async function availableActions(db: Db, req: RequestRow, userId: string): Promise<UiAction[]> {
+  if (await actorHasRoleCode(db, userId, 'owner')) return [];
   if (!req.currentStepId) {
     // «На доработке»: автор (и только он) отправляет заявку повторно.
     if (

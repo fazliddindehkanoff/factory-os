@@ -2,14 +2,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { confirmDialog } from '../telegram';
-import { BottomSheet, Empty, Err, Field, GhostBtn, Label, MiniBtn, Pill, PrimaryBtn, Skeleton } from './ui';
+import { BottomSheet, Empty, Err, Field, GhostBtn, Label, MiniBtn, Pill, PrimaryBtn, Select, Skeleton } from './ui';
 
 interface Material {
   id: string;
   name: string;
   sku: string | null;
+  category: string | null;
   defaultUnit: string | null;
+  characteristics: string | null;
+  brand: string | null;
   status: string;
+}
+
+const UNIT_OPTIONS = ['шт', 'кг', 'г', 'л', 'м', 'т', 'м²', 'рулон', 'упак'];
+
+function unitOptions(current = '') {
+  return current && !UNIT_OPTIONS.includes(current) ? [current, ...UNIT_OPTIONS] : UNIT_OPTIONS;
 }
 
 export function Materials() {
@@ -40,10 +49,10 @@ export function Materials() {
     <div className="space-y-4">
       {error && <Err>{error}</Err>}
       <PrimaryBtn className="w-full" onClick={() => setAddOpen(true)}>
-        + Добавить материал
+        + Добавить товар
       </PrimaryBtn>
 
-      {items.length === 0 && <Empty>Материалов нет. Добавьте первый.</Empty>}
+      {items.length === 0 && <Empty>Товаров нет. Добавьте первый.</Empty>}
 
       <div className="space-y-2.5">
         {items.map((m) => (
@@ -54,9 +63,12 @@ export function Materials() {
             <button onClick={() => setEditing(m)} className="min-w-0 flex-1 text-left">
               <div className="text-sm font-semibold text-fg">{m.name}</div>
               <div className="mt-1 flex flex-wrap gap-1.5">
-                {m.sku && <Pill tone="muted">SKU: {m.sku}</Pill>}
+                {m.sku && <Pill tone="muted">Код: {m.sku}</Pill>}
+                {m.category && <Pill tone="system">{m.category}</Pill>}
                 {m.defaultUnit && <Pill tone="system">{m.defaultUnit}</Pill>}
+                {m.brand && <Pill tone="muted">{m.brand}</Pill>}
               </div>
+              {m.characteristics && <div className="mt-1 text-xs text-muted">{m.characteristics}</div>}
             </button>
             <MiniBtn className="bg-danger/15 text-danger" onClick={() => remove(m)}>
               Удалить
@@ -91,7 +103,10 @@ function AddMaterialSheet({
 }) {
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
+  const [category, setCategory] = useState('');
   const [unit, setUnit] = useState('');
+  const [characteristics, setCharacteristics] = useState('');
+  const [brand, setBrand] = useState('');
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
@@ -101,9 +116,12 @@ function AddMaterialSheet({
       await api.admin.createMaterial({
         name: name.trim(),
         ...(sku.trim() ? { sku: sku.trim() } : {}),
+        ...(category.trim() ? { category: category.trim() } : {}),
         ...(unit.trim() ? { defaultUnit: unit.trim() } : {}),
+        ...(characteristics.trim() ? { characteristics: characteristics.trim() } : {}),
+        ...(brand.trim() ? { brand: brand.trim() } : {}),
       });
-      setName(''); setSku(''); setUnit('');
+      setName(''); setSku(''); setCategory(''); setUnit(''); setCharacteristics(''); setBrand('');
       onDone();
     } catch (e) {
       setError((e as Error).message);
@@ -113,16 +131,33 @@ function AddMaterialSheet({
   };
 
   return (
-    <BottomSheet open={open} title="Новый материал" onClose={onClose}>
-      <Label>Название</Label>
+    <BottomSheet open={open} title="Новый товар" onClose={onClose}>
+      <Label>Наименование</Label>
       <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="напр. Болт М8×40" />
       <div className="mt-4">
-        <Label>Артикул / SKU (необязательно)</Label>
+        <Label>Код</Label>
         <Field value={sku} onChange={(e) => setSku(e.target.value)} placeholder="напр. BLT-M8-40" />
       </div>
       <div className="mt-4">
+        <Label>Категория</Label>
+        <Field value={category} onChange={(e) => setCategory(e.target.value)} placeholder="напр. Крепёж" />
+      </div>
+      <div className="mt-4">
         <Label>Единица измерения</Label>
-        <Field value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="напр. шт, кг, м" />
+        <Select value={unit} onChange={(e) => setUnit(e.target.value)}>
+          <option value="">—</option>
+          {unitOptions(unit).map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </Select>
+      </div>
+      <div className="mt-4">
+        <Label>Характеристики</Label>
+        <Field value={characteristics} onChange={(e) => setCharacteristics(e.target.value)} placeholder="Размер, состав, цвет, модель..." />
+      </div>
+      <div className="mt-4">
+        <Label>Бренд</Label>
+        <Field value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="напр. Bosch" />
       </div>
       <div className="mt-5 flex gap-2.5">
         <GhostBtn className="flex-1" onClick={onClose}>Отмена</GhostBtn>
@@ -141,7 +176,10 @@ function EditMaterialSheet({
 }) {
   const [name, setName] = useState(material.name);
   const [sku, setSku] = useState(material.sku ?? '');
+  const [category, setCategory] = useState(material.category ?? '');
   const [unit, setUnit] = useState(material.defaultUnit ?? '');
+  const [characteristics, setCharacteristics] = useState(material.characteristics ?? '');
+  const [brand, setBrand] = useState(material.brand ?? '');
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
@@ -151,7 +189,10 @@ function EditMaterialSheet({
       await api.admin.updateMaterial(material.id, {
         name: name.trim(),
         sku: sku.trim() || undefined,
+        category: category.trim() || undefined,
         defaultUnit: unit.trim() || undefined,
+        characteristics: characteristics.trim() || undefined,
+        brand: brand.trim() || undefined,
       });
       onDone();
     } catch (e) {
@@ -162,16 +203,33 @@ function EditMaterialSheet({
   };
 
   return (
-    <BottomSheet open title={`Материал: ${material.name}`} onClose={onClose}>
-      <Label>Название</Label>
+    <BottomSheet open title={`Товар: ${material.name}`} onClose={onClose}>
+      <Label>Наименование</Label>
       <Field value={name} onChange={(e) => setName(e.target.value)} />
       <div className="mt-4">
-        <Label>Артикул / SKU</Label>
-        <Field value={sku} onChange={(e) => setSku(e.target.value)} placeholder="SKU" />
+        <Label>Код</Label>
+        <Field value={sku} onChange={(e) => setSku(e.target.value)} placeholder="Код" />
+      </div>
+      <div className="mt-4">
+        <Label>Категория</Label>
+        <Field value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Категория" />
       </div>
       <div className="mt-4">
         <Label>Единица измерения</Label>
-        <Field value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="шт, кг, м" />
+        <Select value={unit} onChange={(e) => setUnit(e.target.value)}>
+          <option value="">—</option>
+          {unitOptions(unit).map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </Select>
+      </div>
+      <div className="mt-4">
+        <Label>Характеристики</Label>
+        <Field value={characteristics} onChange={(e) => setCharacteristics(e.target.value)} placeholder="Характеристики" />
+      </div>
+      <div className="mt-4">
+        <Label>Бренд</Label>
+        <Field value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Бренд" />
       </div>
       <div className="mt-5 flex gap-2.5">
         <GhostBtn className="flex-1" onClick={onClose}>Отмена</GhostBtn>

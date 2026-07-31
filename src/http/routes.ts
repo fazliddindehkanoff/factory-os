@@ -36,6 +36,15 @@ type Db = any;
  *  Единый список для PUT /requests/:id и флага canEdit в деталях. */
 const EDITABLE_STATUSES = ['draft', 'pending_approval', 'needs_revision'];
 
+async function userHasRoleCode(db: Db, userId: string, code: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: schema.userRoles.id })
+    .from(schema.userRoles)
+    .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
+    .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active'), eq(schema.roles.code, code)));
+  return rows.length > 0;
+}
+
 function canEditRequestRow(
   reqRow: { status: string; requesterId: string | null },
   userId: string,
@@ -367,7 +376,10 @@ export function buildRouter(deps: RouterDeps): Router {
   r.get('/me', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
-      const permissions = u.holdingId ? await getUserPermissionCodes(db, u.id) : [];
+      let permissions = u.holdingId ? await getUserPermissionCodes(db, u.id) : [];
+      if (await userHasRoleCode(db, u.id, 'owner')) {
+        permissions = permissions.filter((p) => !['requests.create', 'approvals.approve', 'approvals.reject'].includes(p));
+      }
       // Fetch full profile fields (phone, email, position) not carried in the session
       const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
       // Fetch the user's active role name(s) for display
@@ -700,6 +712,10 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       if (!(await hasPermissionInHolding(db, u.id, 'requests.create', u.holdingId))) {
         res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      if (await userHasRoleCode(db, u.id, 'owner')) {
+        res.status(403).json({ error: 'Учредитель не создаёт заявки' });
         return;
       }
       const body = req.body ?? {};

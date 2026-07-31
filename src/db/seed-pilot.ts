@@ -1,7 +1,7 @@
 /**
  * Deterministic pilot/demo seed — the golden path:
  *   requester creates → director approves (PIN) → warehouse checks → warehouse
- *   issues → requester closes.
+ *   receives/finishes.
  *
  * Idempotent (safe to re-run): looks up by stable names/telegram ids before
  * inserting. Roles are holding-scoped for the demo so every pilot user can act
@@ -48,12 +48,11 @@ const USER_SPECS: UserSpec[] = [
   { tg: 'pilot_admin', name: 'Demo Admin', role: 'admin', pin: false },
 ];
 
-// Golden pilot workflow on existing step-kinds — no reserve, no new statuses.
+// Golden pilot workflow on existing step-kinds — no reserve, no department issue step.
 const STEP_SPECS = [
   { code: 'director', order: 1, name: 'Согласование директора', kind: 'approval' },
   { code: 'warehouse', order: 2, name: 'Проверка склада', kind: 'warehouse_check' },
-  { code: 'warehouse', order: 3, name: 'Выдача со склада', kind: 'issue' },
-  { code: 'requester', order: 4, name: 'Подтверждение получения', kind: 'close' },
+  { code: 'warehouse', order: 3, name: 'Приёмка на складе', kind: 'receiving' },
 ];
 
 export async function seedPilot(db: Db) {
