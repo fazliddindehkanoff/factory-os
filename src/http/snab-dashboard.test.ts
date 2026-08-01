@@ -60,9 +60,27 @@ describe('snab dashboard authentication', () => {
     expect(sidebar).not.toContain('Отчёты');
     expect(sidebar).not.toContain('Склад');
     expect(sidebar).toContain('Снабжение');
+    expect(res.text).toContain('/snab-dashboard/assets/tabler-icons.min.css');
+    expect(res.text).toContain('class="ti ti-layout-dashboard"');
+    expect(res.text).toContain('id="tableTopScroll"');
+    expect(res.text).toContain('id="columnFilterPopover"');
+    expect(res.text).toContain('data-column-filter');
     const script = res.text.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
+    await client.close();
+  });
+
+  it('serves the local Tabler icon stylesheet and SVG assets', async () => {
+    const { app, client } = await make();
+    const css = await request(app).get('/snab-dashboard/assets/tabler-icons.min.css').expect(200);
+    expect(css.headers['content-type']).toContain('text/css');
+    expect(css.text).toContain('.ti-layout-dashboard');
+
+    const icon = await request(app).get('/snab-dashboard/assets/icons/layout-dashboard.svg').expect(200);
+    expect(icon.headers['content-type']).toContain('image/svg+xml');
+    expect(Buffer.from(icon.body).toString('utf8')).toContain('<svg');
+    await request(app).get('/snab-dashboard/assets/icons/not-allowed.svg').expect(404);
     await client.close();
   });
 

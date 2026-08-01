@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { Router, type Request, type Response } from 'express';
 import { eq, isNotNull, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
@@ -8,6 +9,19 @@ import { getUserPermissionCodes } from '../rbac/rbac.js';
 import { createRequest } from '../services/request.service.js';
 
 type Db = any;
+
+const TABLER_ASSET_ROOT = fileURLToPath(new URL('../../node_modules/@tabler/icons/', import.meta.url));
+const TABLER_ICON_NAMES = [
+  'alert-circle', 'alert-triangle', 'bell', 'building-factory-2', 'building-store', 'cash', 'columns-3',
+  'file-description', 'filter', 'language', 'layout-dashboard', 'list-details', 'lock', 'logout', 'menu-2',
+  'moon', 'plus', 'search', 'shield-check', 'shield-lock', 'shopping-cart', 'sun', 'truck-delivery', 'user',
+  'users', 'x',
+] as const;
+const TABLER_ICON_SET = new Set<string>(TABLER_ICON_NAMES);
+const TABLER_ICON_CSS = [
+  '.ti::before{content:"";display:block;width:1em;height:1em;background:currentColor;mask:var(--ti-icon) center/contain no-repeat;-webkit-mask:var(--ti-icon) center/contain no-repeat}',
+  ...TABLER_ICON_NAMES.map((name) => `.ti-${name}{--ti-icon:url("/snab-dashboard/assets/icons/${name}.svg")}`),
+].join('');
 
 interface DashboardActor {
   id: string;
@@ -749,26 +763,29 @@ function pageHtml(): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Снабжение — Dashboard</title>
+  <link rel="stylesheet" href="/snab-dashboard/assets/tabler-icons.min.css" />
   <style>
     :root{
-      --bg:#080D19; --bg-elev:#0A0F1D; --card:rgba(255,255,255,0.04); --card-hover:rgba(255,255,255,0.06);
-      --border:rgba(255,255,255,0.10); --border-strong:rgba(255,255,255,0.20);
-      --text:#FFFFFF; --text-sec:#94A3B8; --text-muted:#64748B;
-      --accent1:#6366F1; --accent2:#22D3EE;
-      --green:#22C55E; --green-bg:rgba(34,197,94,0.13); --green-bd:rgba(34,197,94,0.35);
-      --amber:#F59E0B; --amber-bg:rgba(245,158,11,0.13); --amber-bd:rgba(245,158,11,0.35);
-      --red:#EF4444; --red-bg:rgba(239,68,68,0.13); --red-bd:rgba(239,68,68,0.35);
-      --radius-card:16px; --radius-ctl:10px;
+      --bg:#0B111D;--bg-elev:#121A29;--card:#162132;--card-hover:#1C293D;
+      --border:#29364A;--border-strong:#40506A;--text:#F3F6FA;--text-sec:#B2BDCC;--text-muted:#7E8A9C;
+      --accent1:#2F6FED;--accent2:#2F6FED;--ring:rgba(47,111,237,.28);
+      --green:#35B979;--green-bg:rgba(53,185,121,.12);--green-bd:rgba(53,185,121,.34);
+      --amber:#E7A330;--amber-bg:rgba(231,163,48,.12);--amber-bd:rgba(231,163,48,.34);
+      --red:#EF6A62;--red-bg:rgba(239,106,98,.12);--red-bd:rgba(239,106,98,.34);
+      --overlay:rgba(3,7,18,.68);--shadow:0 18px 44px rgba(0,0,0,.34);
+      --radius-card:12px;--radius-ctl:8px;color-scheme:dark;
     }
     body[data-theme="light"]{
-      --bg:#F1F5F9; --bg-elev:#FFFFFF; --card:#FFFFFF; --card-hover:#F8FAFC;
-      --border:#E2E8F0; --border-strong:#CBD5E1;
-      --text:#0F172A; --text-sec:#475569; --text-muted:#94A3B8;
-      --accent1:#4F46E5; --accent2:#0891B2;
-      color-scheme:light;
+      --bg:#F4F6F9;--bg-elev:#FFFFFF;--card:#FFFFFF;--card-hover:#F7F9FC;
+      --border:#E1E6EE;--border-strong:#C8D0DC;--text:#172033;--text-sec:#536075;--text-muted:#7B8799;
+      --accent1:#245FC7;--accent2:#245FC7;--ring:rgba(36,95,199,.18);
+      --green:#147A4D;--green-bg:#EAF8F0;--green-bd:#AADCC1;
+      --amber:#9A5B0B;--amber-bg:#FFF5DF;--amber-bd:#EECF91;
+      --red:#B53B34;--red-bg:#FDECEA;--red-bd:#EAB5B1;
+      --overlay:rgba(15,23,42,.48);--shadow:0 18px 44px rgba(28,39,58,.16);color-scheme:light;
     }
     *{box-sizing:border-box;}
-    body{margin:0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;color-scheme:dark;}
+    body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;}
     input,select,textarea,button{font:inherit;color:inherit;}
     .app-shell{min-height:100vh;display:grid;grid-template-columns:232px minmax(0,1fr);}
     /* ── login: procurement operations console ── */
@@ -894,36 +911,72 @@ function pageHtml(): string {
     .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
     .filter-count{min-width:19px;height:19px;padding:0 5px;border-radius:10px;background:var(--accent1);color:#fff;font-size:10.5px;font-weight:700;line-height:19px;text-align:center;display:none;}
     .settings-wrap{position:relative;}
-    .settings-panel{position:absolute;right:0;top:calc(100% + 8px);z-index:12;width:min(430px,calc(100vw - 36px));max-height:min(520px,70vh);overflow:auto;padding:14px;border:1px solid var(--border-strong);border-radius:14px;background:#0E1526;box-shadow:0 20px 54px rgba(0,0,0,.42);}
+    .settings-panel{position:absolute;right:0;top:calc(100% + 8px);z-index:12;width:min(430px,calc(100vw - 36px));max-height:min(520px,70vh);overflow:auto;padding:14px;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg-elev);box-shadow:var(--shadow);}
     .settings-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;}
     .settings-head strong{display:block;font-size:13px;}
     .settings-head span{display:block;margin-top:2px;color:var(--text-muted);font-size:11px;}
     .settings-actions{display:flex;gap:6px;flex-wrap:wrap;}
     .columns-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
-    .column-option{display:flex;align-items:flex-start;gap:7px;padding:8px;border:1px solid var(--border);border-radius:9px;background:rgba(255,255,255,.025);color:var(--text-sec);font-size:11.5px;cursor:pointer;}
+    .column-option{display:flex;align-items:flex-start;gap:7px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text-sec);font-size:11.5px;cursor:pointer;}
     .column-option input{margin-top:2px;}
     .filters-panel{display:none;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px;margin-bottom:14px;}
     .filters-panel.open{display:block;}
     .filters-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;}
     .filter-field label{display:block;margin-bottom:4px;color:var(--text-muted);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
     .filter-row{display:grid;grid-template-columns:1fr;gap:6px;}
-    .filter-field select{width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:9px;padding:7px 9px;font-size:12px;outline:none;}
+    .filter-field select{width:100%;background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:12px;outline:none;}
     .filter-field select[data-filter-mode]{height:34px;appearance:none;-webkit-appearance:none;color:var(--text-sec);background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 7px center;background-size:14px;padding-right:24px;}
     .filter-field select[data-filter-key]{min-height:92px;color:var(--text);}
     .filter-field select[data-filter-key] option{padding:4px 6px;border-radius:6px;}
-    .filter-field select option{background:#0A0F1D;color:var(--text);}
+    .filter-field select option{background:var(--bg-elev);color:var(--text);}
     .filter-field select:focus{border-color:var(--accent1);}
+    .filter-summary-head{display:flex;align-items:center;justify-content:space-between;gap:16px;}
+    .filter-summary-head strong{display:block;font-size:13px;}
+    .filter-summary-head span{display:block;margin-top:2px;color:var(--text-muted);font-size:11px;}
+    .active-filter-list{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;}
+    .active-filter-chip{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:7px;background:var(--bg-elev);color:var(--text-sec);font-size:11px;}
+    .active-filter-chip strong{color:var(--text);font-weight:650;}
+    .active-filter-chip button{width:20px;height:20px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--text-muted);cursor:pointer;}
+    .active-filter-chip button:hover{background:var(--card-hover);color:var(--red);}
+    .filter-empty{color:var(--text-muted);font-size:11.5px;}
+    .column-filter-popover{position:fixed;z-index:50;width:min(320px,calc(100vw - 24px));padding:12px;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg-elev);box-shadow:var(--shadow);}
+    .column-filter-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px;}
+    .column-filter-head strong{font-size:12.5px;}
+    .column-filter-head button{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer;}
+    .column-filter-head button:hover{background:var(--card-hover);color:var(--text);}
+    .column-filter-search{display:flex;align-items:center;gap:7px;height:36px;padding:0 9px;border:1px solid var(--border);border-radius:8px;background:var(--card);}
+    .column-filter-search input{min-width:0;width:100%;border:0;background:transparent;color:var(--text);font-size:12px;}
+    .column-filter-tools{display:flex;justify-content:space-between;gap:8px;padding:9px 1px 7px;}
+    .column-filter-tools button{padding:0;border:0;background:transparent;color:var(--accent1);font-size:11px;font-weight:650;cursor:pointer;}
+    .column-filter-values{display:grid;gap:2px;max-height:250px;overflow:auto;padding:3px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
+    .column-filter-value{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 5px;border-radius:7px;color:var(--text-sec);font-size:11.5px;cursor:pointer;}
+    .column-filter-value:hover{background:var(--card-hover);color:var(--text);}
+    .column-filter-value span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .column-filter-actions{display:flex;justify-content:flex-end;gap:7px;padding-top:10px;}
     /* table */
     .table-shell{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);overflow:hidden;}
-    .scroll{overflow:auto;max-height:calc(100vh - 320px);}
+    .table-top-scroll{height:13px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--border);background:var(--bg-elev);}
+    .table-top-scroll>div{height:1px;}
+    .table-top-scroll::-webkit-scrollbar,.scroll::-webkit-scrollbar{width:11px;height:11px;}
+    .table-top-scroll::-webkit-scrollbar-thumb,.scroll::-webkit-scrollbar-thumb{border:3px solid var(--bg-elev);border-radius:999px;background:var(--border-strong);}
+    .table-top-scroll::-webkit-scrollbar-track,.scroll::-webkit-scrollbar-track{background:var(--bg-elev);}
+    .scroll{overflow:auto;max-height:calc(100dvh - 315px);scrollbar-gutter:stable both-edges;}
     table{border-collapse:separate;border-spacing:0;min-width:2750px;width:100%;font-size:12.5px;}
     th,td{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:9px 10px;white-space:nowrap;text-align:left;}
-    th{position:sticky;top:33px;z-index:2;background:#111a30;font-weight:600;color:var(--text-sec);font-size:11.5px;}
-    th.group{top:0;background:#0A0F1D;color:#A5B4FC;text-align:center;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
-    .sort-head{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;padding:0;}
+    th{position:sticky;top:33px;z-index:2;background:var(--card-hover);font-weight:600;color:var(--text-sec);font-size:11.5px;}
+    th.group{top:0;background:var(--bg-elev);color:var(--accent1);text-align:center;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
+    .header-cell-control{display:flex;align-items:center;gap:5px;min-width:0;}
+    .sort-head{min-width:0;flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;padding:0;}
     .sort-head:hover{color:var(--text);}
     .sort-mark{flex:none;color:var(--text-muted);font-size:10px;}
     .sort-head.active .sort-mark{color:var(--accent2);}
+    .column-filter-button{width:24px;height:24px;display:grid;place-items:center;flex:0 0 auto;border:0;border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;}
+    .column-filter-button:hover,.column-filter-button.active{background:var(--ring);color:var(--accent1);}
+    .column-filter-button .ti{font-size:15px;}
+    th.sticky-col,td.sticky-col{position:sticky;left:0;z-index:3;background:var(--card);box-shadow:1px 0 0 var(--border);}
+    th.sticky-col{z-index:5;background:var(--card-hover);}
+    th.sticky-actions,td.sticky-actions{position:sticky;right:0;z-index:3;background:var(--card);box-shadow:-1px 0 0 var(--border);}
+    th.sticky-actions{z-index:5;background:var(--card-hover);}
     tr:nth-child(even) td{background:rgba(255,255,255,0.015);}
     .num{text-align:right;font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',ui-monospace,monospace;}
     .actions{display:flex;gap:6px;}
@@ -933,11 +986,11 @@ function pageHtml(): string {
     .mini.delete{color:var(--red);}
     .dirty td{background:rgba(245,158,11,0.08) !important;}
     .table-empty{padding:38px 18px;color:var(--text-muted);text-align:center;}
-    .table-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;border-top:1px solid var(--border);background:rgba(10,15,29,.72);flex-wrap:wrap;}
+    .table-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;border-top:1px solid var(--border);background:var(--bg-elev);flex-wrap:wrap;}
     .pager-info{color:var(--text-sec);font-size:12px;}
     .pager-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-    .pager-actions select{height:32px;border:1px solid var(--border);border-radius:9px;background:rgba(255,255,255,.03);color:var(--text-sec);padding:0 8px;outline:none;}
-    .pager-actions select option{background:#0A0F1D;color:var(--text);}
+    .pager-actions select{height:32px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);color:var(--text-sec);padding:0 8px;outline:none;}
+    .pager-actions select option{background:var(--bg-elev);color:var(--text);}
     .pager-btn{min-width:32px;height:32px;border:1px solid var(--border);border-radius:9px;background:transparent;color:var(--text-sec);cursor:pointer;}
     .pager-btn:hover:not(:disabled){border-color:var(--border-strong);background:var(--card-hover);color:var(--text);}
     .pager-btn:disabled{opacity:.38;cursor:not-allowed;}
@@ -954,7 +1007,7 @@ function pageHtml(): string {
     .fin,select.fin,textarea.fin{width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius-ctl);padding:10px 12px;font-size:13.5px;outline:none;transition:border-color .12s;}
     .fin:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);}
     select.fin{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 10px center;background-size:16px;padding-right:32px;}
-    select.fin option{background:#0A0F1D;color:var(--text);}
+    select.fin option{background:var(--bg-elev);color:var(--text);}
     textarea.fin{resize:vertical;min-height:70px;}
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;}
     .type-card{border:1px solid var(--border);border-radius:14px;padding:14px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;color:var(--text-sec);transition:all .12s;font-size:13px;font-weight:500;}
@@ -977,7 +1030,7 @@ function pageHtml(): string {
     table.items input:hover,table.items select:hover{border-color:var(--border);}
     table.items input:focus,table.items select:focus{border-color:var(--accent1);background:rgba(255,255,255,0.03);}
     table.items select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 6px center;background-size:14px;padding-right:22px;}
-    table.items select option{background:#0A0F1D;}
+    table.items select option{background:var(--bg-elev);color:var(--text);}
     td.idx{color:var(--text-muted);font-size:12.5px;text-align:center;width:34px;}
     .row-x{width:28px;height:28px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-size:15px;line-height:1;}
     .row-x:hover{color:var(--red);border-color:var(--red-bd);}
@@ -1074,7 +1127,7 @@ function pageHtml(): string {
     .timeline{display:grid;gap:0;}
     .timeline-step{position:relative;display:grid;grid-template-columns:18px 1fr;gap:10px;padding:0 0 13px;}
     .timeline-step:not(:last-child):before{content:'';position:absolute;left:6px;top:13px;bottom:0;width:1px;background:var(--border-strong);}
-    .timeline-dot{position:relative;z-index:1;width:13px;height:13px;margin-top:2px;border:2px solid var(--text-muted);border-radius:50%;background:#0E1526;}
+    .timeline-dot{position:relative;z-index:1;width:13px;height:13px;margin-top:2px;border:2px solid var(--text-muted);border-radius:50%;background:var(--bg-elev);}
     .timeline-step.completed .timeline-dot{border-color:var(--green);background:var(--green);}
     .timeline-step.current .timeline-dot{border-color:var(--accent1);box-shadow:0 0 0 4px rgba(99,102,241,.14);}
     .timeline-step.rejected .timeline-dot,.timeline-step.returned .timeline-dot{border-color:var(--red);background:var(--red);}
@@ -1090,9 +1143,9 @@ function pageHtml(): string {
     .quote-card.selected{border-color:var(--green-bd);background:var(--green-bg);}
     .quote-item-fields label{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,.45fr);align-items:center;gap:10px;color:var(--text-sec);font-size:11.5px;}
     /* misc */
-    .toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,calc(100vw - 36px));border:1px solid var(--border-strong);border-radius:12px;background:#111827;padding:12px 15px;font-weight:500;z-index:40;box-shadow:0 8px 24px rgba(0,0,0,0.4);}
-    .modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:rgba(4,7,14,.6);z-index:30;}
-    .modal{width:min(420px,100%);border-radius:16px;background:#0E1526;border:1px solid var(--border);padding:20px;}
+    .toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,calc(100vw - 36px));border:1px solid var(--border-strong);border-radius:10px;background:var(--text);color:var(--bg-elev);padding:12px 15px;font-weight:500;z-index:40;box-shadow:var(--shadow);}
+    .modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:var(--overlay);z-index:30;overflow:auto;}
+    .modal{width:min(420px,100%);border-radius:12px;background:var(--bg-elev);border:1px solid var(--border);padding:20px;box-shadow:var(--shadow);}
     .modal h2{margin:0 0 8px;font-size:17px;}
     .modal p{margin:0 0 16px;color:var(--text-sec);font-size:13px;}
     .modal-actions{display:flex;justify-content:flex-end;gap:10px;}
@@ -1136,26 +1189,12 @@ function pageHtml(): string {
     }
     @media (min-width:761px){ .mobile-search{display:none;} }
 
-    /* ── 2026 redesign: shadcn-style procurement control desk ────────────── */
-    :root{
-      --bg:#0B0F19;--bg-elev:#111827;--card:#151D2C;--card-hover:#1A2435;
-      --border:#263244;--border-strong:#3A485D;--text:#F8FAFC;--text-sec:#AAB4C3;--text-muted:#707D90;
-      --accent1:#4C7DFF;--accent2:#2DD4BF;--ring:rgba(76,125,255,.25);
-      --green:#32D583;--green-bg:rgba(50,213,131,.10);--green-bd:rgba(50,213,131,.30);
-      --amber:#FDB022;--amber-bg:rgba(253,176,34,.11);--amber-bd:rgba(253,176,34,.3);
-      --red:#F97066;--red-bg:rgba(249,112,102,.10);--red-bd:rgba(249,112,102,.3);
-      --radius-card:12px;--radius-ctl:9px;
-    }
-    body[data-theme="light"]{
-      --bg:#F5F7FA;--bg-elev:#FFFFFF;--card:#FFFFFF;--card-hover:#F8FAFC;
-      --border:#E4E7EC;--border-strong:#D0D5DD;--text:#101828;--text-sec:#475467;--text-muted:#98A2B3;
-      --accent1:#155EEF;--accent2:#0E9384;--ring:rgba(21,94,239,.16);
-      --green:#067647;--green-bg:#ECFDF3;--green-bd:#ABEFC6;
-      --amber:#B54708;--amber-bg:#FFFAEB;--amber-bd:#FEDF89;
-      --red:#B42318;--red-bg:#FEF3F2;--red-bd:#FECDCA;
-      color-scheme:light;
-    }
-    body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);letter-spacing:-.005em;}
+    /* ── Procurement control desk: one semantic token system ─────────────── */
+    body{background:var(--bg);letter-spacing:-.005em;}
+    .ti{display:inline-block;flex:0 0 auto;font-size:18px;line-height:1;vertical-align:-.12em;}
+    .side-label .ti{width:20px;text-align:center;font-size:19px;}
+    .btn .ti,.topbar-control .ti{font-size:17px;}
+    .icon-btn .ti,.menu-btn .ti{font-size:20px;}
     button,input,select,textarea{outline:none;}
     button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{box-shadow:0 0 0 3px var(--ring);border-color:var(--accent1)!important;}
     .app-shell{grid-template-columns:252px minmax(0,1fr);}
@@ -1168,16 +1207,18 @@ function pageHtml(): string {
     .side-link{min-height:40px;padding:9px 10px;border-radius:8px;color:var(--text-sec);font-size:13px;font-weight:600;}
     .side-link:hover{background:var(--card-hover);color:var(--text);}
     .side-link.active{background:var(--text);color:var(--bg-elev);box-shadow:0 1px 2px rgba(16,24,40,.12);}
-    .side-link.active svg{color:var(--bg-elev);}
+    .side-link.active svg,.side-link.active .ti{color:var(--bg-elev);}
     .side-badge{background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-bd);}
     .side-bottom{border-color:var(--border);}
     .side-user{padding:7px 5px;}
     .side-avatar{border-radius:8px;background:var(--card-hover);border:1px solid var(--border);color:var(--text);}
-    .navbar{min-height:68px;padding:10px 28px;background:color-mix(in srgb,var(--bg-elev) 92%,transparent);border-color:var(--border);backdrop-filter:blur(14px);}
+    .navbar{min-height:68px;padding:10px 28px;background:color-mix(in srgb,var(--bg-elev) 94%,transparent);border-color:var(--border);backdrop-filter:blur(14px);}
+    .nav-left{flex:0 1 260px;}
+    .nav-actions{flex:1;justify-content:flex-end;}
     .brand-title{font-size:14px;font-weight:700;}
     .brand-sub{font-size:11px;}
     .search-wrap,.topbar-control,.icon-btn{background:var(--bg-elev);border-color:var(--border);border-radius:8px;}
-    .search-wrap{height:40px;}
+    .search-wrap{height:40px;width:auto;min-width:180px;max-width:430px;flex:1;}
     .search-wrap:focus-within{box-shadow:0 0 0 3px var(--ring);}
     .topbar-control:hover,.icon-btn:hover{background:var(--card-hover);}
     .wrap{padding:28px 30px 64px;}
@@ -1186,12 +1227,14 @@ function pageHtml(): string {
     .ops-date{margin-top:6px;color:var(--text-sec);}
     .ops-kpis{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px;}
     .card,.ops-panel,.table-shell,.filters-panel,.fcard,.admin-panel,.admin-stat,.request-row,.role-card{background:var(--card);border-color:var(--border);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(16,24,40,.035);}
-    .kpi-card{min-height:126px;padding:17px;}
+    .kpi-card{min-width:0;min-height:126px;padding:17px;overflow:hidden;}
     .kpi-card:hover{background:var(--card);border-color:var(--border-strong);translate:0 -1px;box-shadow:0 8px 18px -14px rgba(16,24,40,.35);}
     .kpi-head{align-items:flex-start;}
     .k{max-width:110px;color:var(--text-sec);font-size:10px;letter-spacing:.09em;line-height:1.35;}
-    .kpi-icon{width:auto;height:22px;padding:0 7px;border-radius:5px;background:var(--card-hover);border:1px solid var(--border);color:var(--text-sec);font:700 9px ui-monospace,SFMono-Regular,Menlo,monospace;}
-    .v{margin-top:11px;font-size:27px;letter-spacing:-.045em;color:var(--text);}
+    .kpi-icon{width:30px;height:30px;padding:0;border-radius:7px;background:var(--card-hover);border:1px solid var(--border);color:var(--text-sec);display:grid;place-items:center;}
+    .kpi-icon .ti{font-size:17px;}
+    .v{min-width:0;margin-top:11px;overflow:hidden;color:var(--text);font-size:27px;letter-spacing:-.045em;text-overflow:ellipsis;white-space:nowrap;}
+    #kAmount{font-size:clamp(17px,1.55vw,25px);}
     .trend{font-size:10.5px;font-weight:600;}
     .ops-grid{grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;}
     .ops-panel{min-height:210px;padding:18px;}
@@ -1226,7 +1269,7 @@ function pageHtml(): string {
     .column-option,.filter-field select,.fin,select.fin,textarea.fin,.items input,.items select,.admin-search{background:var(--bg-elev);border-color:var(--border);border-radius:8px;}
     .column-option:hover{background:var(--card-hover);}
     .table-shell{overflow:hidden;}
-    .scroll{max-height:calc(100vh - 292px);}
+    .scroll{max-height:calc(100dvh - 315px);}
     table{font-size:12px;}
     th,td{padding:10px 11px;border-color:var(--border);}
     th{background:var(--card-hover);color:var(--text-sec);}
@@ -1242,8 +1285,13 @@ function pageHtml(): string {
     .pill{border-color:var(--border);background:var(--bg-elev);border-radius:8px;}
     .items-shell{border-color:var(--border);border-radius:10px;}
     .items th{background:var(--card-hover);}
-    .modal-backdrop{background:rgba(15,23,42,.54);backdrop-filter:blur(3px);}
-    .modal{background:var(--bg-elev);border-color:var(--border);border-radius:14px;box-shadow:0 24px 64px rgba(16,24,40,.22);}
+    .modal-backdrop{background:var(--overlay);backdrop-filter:blur(3px);}
+    .modal{background:var(--bg-elev);border-color:var(--border);border-radius:12px;box-shadow:var(--shadow);}
+    .modal.wide{padding:0;overflow:hidden;}
+    .modal.wide>h2,.modal.wide>p,.modal.wide>.err{margin-left:20px;margin-right:20px;}
+    .modal.wide>h2{margin-top:20px;}
+    .row-edit-grid,.modal-form-grid,.permission-groups,#actionFields{max-height:calc(100dvh - 220px);overflow:auto;padding:0 20px 16px;scrollbar-gutter:stable;}
+    .modal-actions{position:sticky;bottom:0;margin-top:0;padding:14px 20px;border-top:1px solid var(--border);background:var(--bg-elev);z-index:2;}
     .toast{background:var(--text);color:var(--bg-elev);border:0;border-radius:9px;box-shadow:0 14px 30px rgba(16,24,40,.22);}
     .login-shell{color:#F8FAFC;}
     .login-story h1,.login-card h2,.login-brand{color:#F8FAFC;}
@@ -1290,7 +1338,7 @@ function pageHtml(): string {
       <section class="login-story" aria-label="Factory OS procurement console">
         <div class="login-brand">
           <span class="login-brand-mark" aria-hidden="true">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M5 19V9l7-4 7 4v10M9 19v-5h6v5M8 10h.01M12 10h.01M16 10h.01" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <i class="ti ti-building-factory-2" aria-hidden="true"></i>
           </span>
           FACTORY OS / SNAB
         </div>
@@ -1312,24 +1360,24 @@ function pageHtml(): string {
           <div class="login-field">
             <label for="username">Имя пользователя</label>
             <div class="login-input-wrap">
-              <span class="login-input-icon" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 20c.7-4 3-6 7-6s6.3 2 7 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+              <span class="login-input-icon" aria-hidden="true"><i class="ti ti-user"></i></span>
               <input class="login-input" id="username" name="username" type="text" placeholder="Например, snab.admin" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus />
             </div>
           </div>
           <div class="login-field">
             <label for="password">Пароль</label>
             <div class="login-input-wrap">
-              <span class="login-input-icon" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><rect x="5" y="10" width="14" height="10" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+              <span class="login-input-icon" aria-hidden="true"><i class="ti ti-lock"></i></span>
               <input class="login-input" id="password" name="password" type="password" placeholder="Введите пароль" autocomplete="current-password" required />
               <button class="eye" id="togglePassword" type="button" aria-label="Показать пароль">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>
+                <i class="ti ti-eye" aria-hidden="true"></i>
               </button>
             </div>
           </div>
           <div class="err" id="loginErr" role="alert" aria-live="polite"></div>
           <button class="btn login-submit" id="loginSubmit" type="submit">Войти в систему</button>
           <div class="login-note">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l8 3v5c0 5-3.2 8.2-8 10-4.8-1.8-8-5-8-10V6l8-3Z" stroke="currentColor" stroke-width="1.8"/><path d="m9 12 2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <i class="ti ti-shield-check" aria-hidden="true"></i>
             Сессия хранится только в этой вкладке браузера.
           </div>
         </form>
@@ -1344,27 +1392,27 @@ function pageHtml(): string {
         </div>
         <div class="nav-sec">Меню</div>
         <button class="side-link active" data-view="overview" id="navOverview" type="button" aria-label="Дашборд">
-          <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 13h6V4H4v9Zm10 7h6V4h-6v16ZM4 20h6v-5H4v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          <span class="side-label"><i class="ti ti-layout-dashboard" aria-hidden="true"></i>
           Дашборд</span>
         </button>
         <button class="side-link" data-view="requests" id="navRequests" type="button">
-          <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h10M7 9h10M7 14h6M5 21h14a2 2 0 0 0 2-2V2H3v17a2 2 0 0 0 2 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="side-label"><i class="ti ti-file-description" aria-hidden="true"></i>
           Заявки</span> <span class="side-badge" id="inboxBadge">0</span>
         </button>
         <button class="side-link" data-view="create" type="button" aria-label="Новая заявка">
-          <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <span class="side-label"><i class="ti ti-plus" aria-hidden="true"></i>
           Новая заявка</span>
         </button>
         <div class="nav-sec">Операции</div>
-        <button class="side-link" data-view="procurement" id="navProcurement" type="button" aria-label="Снабжение"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M6 6h15l-2 8H8L6 3H3m6 16a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm9 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Снабжение</span></button>
-        <button class="side-link module-preview-btn" data-module="suppliers" data-module-title="Поставщики" data-module-note="Риски, задержки, контакты и история закупок" type="button" aria-label="Поставщики"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M3 7h11v10H3V7Zm11 3h4l3 3v4h-7v-7ZM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Поставщики</span></button>
+        <button class="side-link" data-view="procurement" id="navProcurement" type="button" aria-label="Снабжение"><span class="side-label"><i class="ti ti-shopping-cart" aria-hidden="true"></i>Снабжение</span></button>
+        <button class="side-link module-preview-btn" data-module="suppliers" data-module-title="Поставщики" data-module-note="Риски, задержки, контакты и история закупок" type="button" aria-label="Поставщики"><span class="side-label"><i class="ti ti-truck-delivery" aria-hidden="true"></i>Поставщики</span></button>
         <div class="nav-sec hidden" id="adminNavLabel">Управление</div>
         <button class="side-link hidden" data-view="people" id="navPeople" type="button" aria-label="Пользователи">
-          <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M16 20v-1.5a4.5 4.5 0 0 0-4.5-4.5h-3A4.5 4.5 0 0 0 4 18.5V20M10 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM17 8v6M14 11h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span class="side-label"><i class="ti ti-users" aria-hidden="true"></i>
           Пользователи</span>
         </button>
         <button class="side-link hidden" data-view="roles" id="navRoles" type="button" aria-label="Роли и права">
-          <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l8 3v5c0 5-3.2 8.2-8 10-4.8-1.8-8-5-8-10V6l8-3Z" stroke="currentColor" stroke-width="1.8"/><path d="M9 12h6M12 9v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span class="side-label"><i class="ti ti-shield-lock" aria-hidden="true"></i>
           Роли и права</span>
         </button>
         <div class="side-bottom">
@@ -1373,7 +1421,7 @@ function pageHtml(): string {
             <div style="min-width:0;"><div class="side-user-name" id="sideUserName">—</div><div class="side-user-login" id="sideUserLogin">—</div></div>
           </div>
           <button class="side-link" id="logout" type="button" aria-label="Выйти">
-            <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 12H4m0 0 3.5-3.5M4 12l3.5 3.5M10 4h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="side-label"><i class="ti ti-logout" aria-hidden="true"></i>
             Выйти</span>
           </button>
         </div>
@@ -1383,7 +1431,7 @@ function pageHtml(): string {
         <header class="navbar">
           <div class="nav-left">
             <button class="menu-btn" id="menuToggle" type="button" aria-label="Открыть меню">
-              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <i class="ti ti-menu-2" aria-hidden="true"></i>
             </button>
             <div>
               <div class="brand-title" id="navTitle">Операционный дашборд</div>
@@ -1392,16 +1440,16 @@ function pageHtml(): string {
           </div>
           <div class="nav-actions">
             <div class="search-wrap" id="overviewActions" style="visibility:hidden">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 21-4.2-4.2M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <i class="ti ti-search" aria-hidden="true"></i>
               <input id="search" class="search" placeholder="Поиск заявок, документов, поставщиков..." />
             </div>
-            <button class="topbar-control" id="factorySwitch" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M3 21V8l6 4V8l6 4V3h6v18H3Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Zelal Textile</button>
+            <button class="topbar-control" id="factorySwitch" type="button"><i class="ti ti-building-factory-2" aria-hidden="true"></i>Zelal Textile</button>
             <div class="lang-wrap">
-              <button class="topbar-control" id="langToggle" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18M4 7h16M4 17h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span id="langLabel">RU</span></button>
+              <button class="topbar-control" id="langToggle" type="button"><i class="ti ti-language" aria-hidden="true"></i><span id="langLabel">RU</span></button>
               <div class="lang-menu hidden" id="langMenu"><button class="lang-option active" data-lang="RU" type="button">RU</button><button class="lang-option" data-lang="UZ" type="button">UZ</button><button class="lang-option" data-lang="EN" type="button">EN</button></div>
             </div>
-            <button class="icon-btn" id="themeToggle" type="button" aria-label="Переключить тему"><svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 4V2m0 20v-2m8-8h2M2 12h2m13.7-5.7 1.4-1.4M4.9 19.1l1.4-1.4m11.4 0 1.4 1.4M4.9 4.9l1.4 1.4M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-            <button class="icon-btn" id="notifyButton" type="button" aria-label="Уведомления"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="notify-dot" id="notifyDot"></span></button>
+            <button class="icon-btn" id="themeToggle" type="button" aria-label="Переключить тему"><i class="ti ti-sun" id="themeIcon" aria-hidden="true"></i></button>
+            <button class="icon-btn" id="notifyButton" type="button" aria-label="Уведомления"><i class="ti ti-bell" aria-hidden="true"></i><span class="notify-dot" id="notifyDot"></span></button>
           </div>
         </header>
 
@@ -1414,11 +1462,11 @@ function pageHtml(): string {
             </div>
           </div>
           <section class="ops-kpis">
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Активные заявки</div><div class="kpi-icon">REQ</div></div><div class="v" id="kRequests">0</div><div class="trend" id="kRequestsTrend">В таблице закупок</div></div>
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Требуют действия</div><div class="kpi-icon">OK</div></div><div class="v" id="kInbox">0</div><div class="trend bad" id="kInboxTrend">Ожидают решения</div></div>
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Позиции</div><div class="kpi-icon">ROW</div></div><div class="v" id="kRows">0</div><div class="trend">Отфильтровано сейчас</div></div>
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Сумма</div><div class="kpi-icon">UZS</div></div><div class="v" id="kAmount">0</div><div class="trend">UZS по видимым строкам</div></div>
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Поставщиков</div><div class="kpi-icon">SUP</div></div><div class="v" id="kSuppliers">0</div><div class="trend good">Контрагенты в выборке</div></div>
+            <div class="card kpi-card"><div class="kpi-head"><div class="k">Активные заявки</div><div class="kpi-icon"><i class="ti ti-file-description" aria-hidden="true"></i></div></div><div class="v" id="kRequests">0</div><div class="trend" id="kRequestsTrend">В таблице закупок</div></div>
+            <div class="card kpi-card"><div class="kpi-head"><div class="k">Требуют действия</div><div class="kpi-icon"><i class="ti ti-alert-circle" aria-hidden="true"></i></div></div><div class="v" id="kInbox">0</div><div class="trend bad" id="kInboxTrend">Ожидают решения</div></div>
+            <div class="card kpi-card"><div class="kpi-head"><div class="k">Позиции</div><div class="kpi-icon"><i class="ti ti-list-details" aria-hidden="true"></i></div></div><div class="v" id="kRows">0</div><div class="trend">Отфильтровано сейчас</div></div>
+            <div class="card kpi-card"><div class="kpi-head"><div class="k">Сумма</div><div class="kpi-icon"><i class="ti ti-cash" aria-hidden="true"></i></div></div><div class="v" id="kAmount">0</div><div class="trend">UZS по видимым строкам</div></div>
+            <div class="card kpi-card"><div class="kpi-head"><div class="k">Поставщиков</div><div class="kpi-icon"><i class="ti ti-building-store" aria-hidden="true"></i></div></div><div class="v" id="kSuppliers">0</div><div class="trend good">Контрагенты в выборке</div></div>
           </section>
           <section class="ops-grid">
             <div class="ops-panel">
@@ -1450,12 +1498,12 @@ function pageHtml(): string {
           </div>
           <div class="toolbar">
             <button class="btn ghost" id="toggleFilters" type="button">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <i class="ti ti-filter" aria-hidden="true"></i>
               Фильтры <span class="filter-count" id="filterCount">0</span>
             </button>
             <div class="settings-wrap">
               <button class="btn ghost" id="toggleTableSettings" type="button">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v16M16 4v16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                <i class="ti ti-columns-3" aria-hidden="true"></i>
                 Столбцы <span class="filter-count" id="columnCount">0</span>
               </button>
               <div class="settings-panel hidden" id="tableSettingsPanel">
@@ -1472,10 +1520,12 @@ function pageHtml(): string {
             <button class="btn ghost" id="clearFilters" type="button">Очистить</button>
           </div>
           <section class="filters-panel" id="filtersPanel" aria-label="Фильтры таблицы">
-            <div id="filters" class="filters-grid"></div>
+            <div class="filter-summary-head"><div><strong>Активные фильтры</strong><span>Откройте фильтр из заголовка нужного столбца.</span></div><button class="mini" id="clearFiltersInline" type="button">Очистить все</button></div>
+            <div id="filters" class="active-filter-list"></div>
           </section>
           <section class="table-shell">
-            <div class="scroll"><table id="table"></table></div>
+            <div class="table-top-scroll" id="tableTopScroll" aria-hidden="true"><div id="tableTopScrollInner"></div></div>
+            <div class="scroll" id="tableScroll"><table id="table"></table></div>
             <div class="table-pager" id="tablePager">
               <div class="pager-info" id="pagerInfo">Строк нет</div>
               <div class="pager-actions">
@@ -1494,6 +1544,7 @@ function pageHtml(): string {
               </div>
             </div>
           </section>
+          <div class="column-filter-popover hidden" id="columnFilterPopover" role="dialog" aria-modal="false" aria-label="Фильтр столбца"></div>
         </div>
 
         <!-- ── VIEW: canonical requests + personal action inbox ── -->
@@ -1563,7 +1614,7 @@ function pageHtml(): string {
               <label class="f">Степень срочности <span class="req">*</span></label>
               <div class="pill-group" id="urgencyPills"></div>
               <div class="warning-banner" id="emergencyWarning">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:1px;" aria-hidden="true"><path d="M12 3l10 18H2L12 3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                <i class="ti ti-alert-triangle" aria-hidden="true"></i>
                 <div>Аварийная заявка требует немедленного согласования — маршрут будет ускорен.</div>
               </div>
             </div>
@@ -1714,10 +1765,13 @@ function pageHtml(): string {
     const defaultVisibleKeys = new Set(['date','object','requester','requestNumber','expenseArticle','materialName','unit','quantity','unitPrice','amount','paymentType','supplier','cfoReceiver']);
     let rows = [];
     let materials = [];
-    let filtersReady = false;
+    let columnFilters = {};
+    let activeFilterKey = null;
+    let filterDraft = new Set();
     let meta = null;
     const fmt = new Intl.NumberFormat('ru-RU');
     const money = (v) => fmt.format(Math.round(Number(v) || 0));
+    const compactMoney = new Intl.NumberFormat('ru-RU', { notation:'compact', maximumFractionDigits:1 });
     const numericKeys = new Set(['quantity','unitPrice','exchangeRate','amount','usdAmount','ndsRate','amountWithNds','usdAmountWithNds']);
     let pendingDeleteRow = null;
     let editingRow = null;
@@ -1833,12 +1887,20 @@ function pageHtml(): string {
       document.getElementById('langMenu').classList.add('hidden');
       toast('Язык интерфейса: ' + button.dataset.lang);
     }));
+    function syncThemeIcon() {
+      const icon = document.getElementById('themeIcon');
+      const isLight = document.body.dataset.theme === 'light';
+      icon.className = 'ti ' + (isLight ? 'ti-moon' : 'ti-sun');
+      document.getElementById('themeToggle').title = isLight ? 'Тёмная тема' : 'Светлая тема';
+    }
     document.getElementById('themeToggle').addEventListener('click', () => {
       const light = document.body.dataset.theme !== 'light';
       document.body.dataset.theme = light ? 'light' : 'dark';
       localStorage.setItem('snab_dashboard_theme', document.body.dataset.theme);
+      syncThemeIcon();
     });
     document.body.dataset.theme = localStorage.getItem('snab_dashboard_theme') || 'light';
+    syncThemeIcon();
 
     /* ── overview: search / filters / table ── */
     function activeSearch() {
@@ -1907,38 +1969,70 @@ function pageHtml(): string {
       return out;
     }
     function filterValues() {
-      const out = {};
-      for (const select of document.querySelectorAll('select[data-filter-key]')) {
-        const values = [...select.selectedOptions].map((option) => option.value.trim().toLowerCase()).filter(Boolean);
-        const mode = document.querySelector('[data-filter-mode="' + select.dataset.filterKey + '"]')?.value || 'in';
-        if (values.length || mode === 'empty' || mode === 'filled') out[select.dataset.filterKey] = { mode, values };
-      }
-      return out;
+      return columnFilters;
     }
-    function filterOptionsHtml(key) {
-      const values = [...new Set(rows.map((row) => String(row[key] ?? '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b, 'ru')).slice(0, 80);
-      return values.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join('');
+    function columnFilterOptions(key) {
+      const found = new Map();
+      for (const row of rows) {
+        const raw = String(row[key] ?? '').trim();
+        const normalized = raw.toLocaleLowerCase('ru-RU');
+        if (!found.has(normalized)) found.set(normalized, raw);
+      }
+      return [...found.entries()]
+        .map(([value, label]) => ({ value, label: label || '(Пусто)' }))
+        .sort((a,b) => a.label.localeCompare(b.label, 'ru', { numeric:true, sensitivity:'base' }));
     }
     function renderFilters() {
-      const previous = filterValues();
       const box = document.getElementById('filters');
-      box.innerHTML = keys.map((key, i) =>
-        '<div class="filter-field"><label>' + esc(headers[i]) + '</label><div class="filter-row">' +
-        '<select data-filter-mode="' + key + '" aria-label="Тип фильтра: ' + esc(headers[i]) + '">' +
-        '<option value="in">Любое из</option><option value="contains">Содержит</option><option value="empty">Пусто</option><option value="filled">Заполнено</option>' +
-        '</select><select data-filter-key="' + key + '" multiple aria-label="Значения фильтра: ' + esc(headers[i]) + '">' + filterOptionsHtml(key) + '</select></div></div>'
-      ).join('');
-      for (const [key, filter] of Object.entries(previous)) {
-        const mode = document.querySelector('[data-filter-mode="' + key + '"]');
-        const select = document.querySelector('select[data-filter-key="' + key + '"]');
-        if (mode) mode.value = filter.mode || 'in';
-        if (select) for (const option of select.options) option.selected = (filter.values || []).includes(option.value.trim().toLowerCase());
-      }
-      if (!filtersReady) {
-        box.addEventListener('change', resetPageAndRender);
-        filtersReady = true;
-      }
+      const active = Object.entries(columnFilters);
+      box.innerHTML = active.length ? active.map(([key, filter]) => {
+        const selected = new Set(filter.values || []);
+        const labels = columnFilterOptions(key).filter((option) => selected.has(option.value)).map((option) => option.label);
+        const summary = labels.length <= 2 ? labels.join(', ') : labels.slice(0,2).join(', ') + ' +' + (labels.length - 2);
+        return '<div class="active-filter-chip"><strong>' + esc(keyLabel(key)) + '</strong><span>' + esc(summary || 'Нет значений') + '</span><button type="button" data-remove-filter="' + key + '" aria-label="Убрать фильтр ' + esc(keyLabel(key)) + '"><i class="ti ti-x"></i></button></div>';
+      }).join('') : '<span class="filter-empty">Фильтры не применены.</span>';
       renderColumnSettings();
+    }
+    function closeColumnFilter() {
+      activeFilterKey = null;
+      document.getElementById('columnFilterPopover').classList.add('hidden');
+    }
+    function renderColumnFilterValues(query = '') {
+      if (!activeFilterKey) return;
+      const needle = query.trim().toLocaleLowerCase('ru-RU');
+      const values = columnFilterOptions(activeFilterKey).filter((option) => !needle || option.label.toLocaleLowerCase('ru-RU').includes(needle));
+      document.getElementById('columnFilterValues').innerHTML = values.length ? values.map((option) =>
+        '<label class="column-filter-value"><input type="checkbox" data-filter-value="' + esc(option.value) + '"' + (filterDraft.has(option.value) ? ' checked' : '') + '><span title="' + esc(option.label) + '">' + esc(option.label) + '</span></label>'
+      ).join('') : '<div class="filter-empty" style="padding:12px 5px">Ничего не найдено.</div>';
+    }
+    function openColumnFilter(key, button) {
+      activeFilterKey = key;
+      const allValues = columnFilterOptions(key).map((option) => option.value);
+      filterDraft = columnFilters[key] ? new Set(columnFilters[key].values || []) : new Set(allValues);
+      const popover = document.getElementById('columnFilterPopover');
+      popover.innerHTML =
+        '<div class="column-filter-head"><strong>' + esc(keyLabel(key)) + '</strong><button type="button" data-filter-command="close" aria-label="Закрыть"><i class="ti ti-x"></i></button></div>' +
+        '<label class="column-filter-search"><i class="ti ti-search"></i><input id="columnFilterSearch" placeholder="Поиск значений..." autocomplete="off"></label>' +
+        '<div class="column-filter-tools"><button type="button" data-filter-command="all">Выбрать все</button><button type="button" data-filter-command="none">Снять все</button></div>' +
+        '<div class="column-filter-values" id="columnFilterValues"></div>' +
+        '<div class="column-filter-actions"><button class="mini" type="button" data-filter-command="clear">Очистить</button><button class="btn" type="button" data-filter-command="apply">Применить</button></div>';
+      popover.classList.remove('hidden');
+      renderColumnFilterValues();
+      const rect = button.getBoundingClientRect();
+      const left = Math.max(12, Math.min(window.innerWidth - popover.offsetWidth - 12, rect.right - popover.offsetWidth));
+      let top = rect.bottom + 7;
+      if (top + popover.offsetHeight > window.innerHeight - 12) top = Math.max(12, rect.top - popover.offsetHeight - 7);
+      popover.style.left = left + 'px';
+      popover.style.top = top + 'px';
+      document.getElementById('columnFilterSearch').focus();
+    }
+    function applyColumnFilter() {
+      if (!activeFilterKey) return;
+      const allValues = columnFilterOptions(activeFilterKey).map((option) => option.value);
+      if (!filterDraft.size || filterDraft.size === allValues.length) delete columnFilters[activeFilterKey];
+      else columnFilters[activeFilterKey] = { mode:'in', values:[...filterDraft] };
+      closeColumnFilter();
+      resetPageAndRender();
     }
     function rowValue(r, key) { return String(r[key] ?? '').toLowerCase(); }
     function rowMatchesFilter(r, key, filter) {
@@ -1973,10 +2067,11 @@ function pageHtml(): string {
         return String(av).localeCompare(String(bv), 'ru', { numeric: true, sensitivity: 'base' }) * dir;
       });
     }
-    function headerHtml(key, label) {
+    function headerHtml(key, label, index) {
       const active = tableState.sortKey === key;
       const mark = active ? (tableState.sortDir === 'asc' ? '▲' : '▼') : '↕';
-      return '<th><button class="sort-head ' + (active ? 'active' : '') + '" type="button" data-sort-key="' + key + '" title="Сортировать по столбцу"><span>' + esc(label) + '</span><span class="sort-mark">' + mark + '</span></button></th>';
+      const filtered = !!columnFilters[key];
+      return '<th class="' + (index === 0 ? 'sticky-col ' : '') + (filtered ? 'filter-active' : '') + '"><div class="header-cell-control"><button class="sort-head ' + (active ? 'active' : '') + '" type="button" data-sort-key="' + key + '" title="Сортировать по столбцу"><span>' + esc(label) + '</span><span class="sort-mark">' + mark + '</span></button><button class="column-filter-button ' + (filtered ? 'active' : '') + '" type="button" data-column-filter="' + key + '" aria-label="Фильтр: ' + esc(label) + '" title="Фильтр столбца"><i class="ti ti-filter"></i></button></div></th>';
     }
     function updatePager(total) {
       const pageCount = Math.max(1, Math.ceil(total / tableState.pageSize));
@@ -2062,6 +2157,7 @@ function pageHtml(): string {
       const badge = document.getElementById('filterCount');
       badge.textContent = fc;
       badge.style.display = fc ? 'inline-block' : 'none';
+      renderFilters();
       const data = rows.filter((r) => {
         if (q && !JSON.stringify(r).toLowerCase().includes(q)) return false;
         for (const [key, filter] of Object.entries(fv)) {
@@ -2071,7 +2167,10 @@ function pageHtml(): string {
       });
       document.getElementById('kRows').textContent = fmt.format(data.length);
       document.getElementById('kRequests').textContent = fmt.format(new Set(data.map((r) => r.requestNumber).filter(Boolean)).size);
-      document.getElementById('kAmount').textContent = money(data.reduce((sum, r) => sum + Number(r.amount || 0), 0));
+      const totalAmount = data.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+      const amountKpi = document.getElementById('kAmount');
+      amountKpi.textContent = Math.abs(totalAmount) >= 1000000000 ? compactMoney.format(totalAmount) : money(totalAmount);
+      amountKpi.title = money(totalAmount) + ' UZS';
       document.getElementById('kSuppliers').textContent = fmt.format(new Set(data.map((r) => r.supplier).filter(Boolean)).size);
       renderOpsDashboard(data);
       const sorted = sortedRows(data);
@@ -2083,19 +2182,20 @@ function pageHtml(): string {
       table.style.minWidth = Math.max(980, activeKeys.length * 126 + 130) + 'px';
       table.innerHTML =
         '<thead><tr>' + activeGroups.map((g) => '<th class="group" colspan="' + g[1] + '">' + esc(g[0]) + '</th>').join('') + '<th class="group" colspan="1"></th></tr><tr>' +
-        activeKeys.map((key) => headerHtml(key, keyLabel(key))).join('') + '<th>Действия</th></tr></thead><tbody>' +
-        (pageRows.length ? pageRows.map((r) => '<tr data-item-id="' + esc(r.itemId) + '">' + activeKeys.map((k) => cellHtml(r, k)).join('') + actionsHtml(r) + '</tr>').join('') : '<tr><td colspan="' + (activeKeys.length + 1) + '"><div class="table-empty">Нет строк под выбранные фильтры</div></td></tr>') +
+        activeKeys.map((key, index) => headerHtml(key, keyLabel(key), index)).join('') + '<th class="sticky-actions">Действия</th></tr></thead><tbody>' +
+        (pageRows.length ? pageRows.map((r) => '<tr data-item-id="' + esc(r.itemId) + '">' + activeKeys.map((k, index) => cellHtml(r, k, index)).join('') + actionsHtml(r) + '</tr>').join('') : '<tr><td colspan="' + (activeKeys.length + 1) + '"><div class="table-empty">Нет строк под выбранные фильтры</div></td></tr>') +
         '</tbody>';
+      document.getElementById('tableTopScrollInner').style.width = Math.max(parseInt(table.style.minWidth, 10) || 0, table.scrollWidth || 0) + 'px';
     }
-    function cellHtml(r, k) {
+    function cellHtml(r, k, index) {
       const value = numericKeys.has(k) ? String(Math.round(Number(r[k]) || 0)) : String(r[k] ?? '');
       const cls = numericKeys.has(k) ? 'num' : '';
-      return '<td class="' + cls + '">' + esc(numericKeys.has(k) ? money(value) : value) + '</td>';
+      return '<td class="' + cls + (index === 0 ? ' sticky-col' : '') + '">' + esc(numericKeys.has(k) ? money(value) : value) + '</td>';
     }
     function actionsHtml() {
       const edit = hasPermission('procurement.quote','requests.edit','settings.manage') ? '<button class="mini save" data-action="edit">Редактировать</button>' : '';
       const del = hasPermission('requests.edit','settings.manage') ? '<button class="mini delete" data-action="delete">Удалить</button>' : '';
-      return '<td><div class="actions">' + edit + del + '</div></td>';
+      return '<td class="sticky-actions"><div class="actions">' + edit + del + '</div></td>';
     }
     function rowPayloadFromModal() {
       const out = {};
@@ -2834,7 +2934,11 @@ function pageHtml(): string {
       document.getElementById('tableSettingsPanel').classList.toggle('hidden');
     });
     document.getElementById('tableSettingsPanel').addEventListener('click', (event) => event.stopPropagation());
-    document.addEventListener('click', () => document.getElementById('tableSettingsPanel').classList.add('hidden'));
+    document.getElementById('columnFilterPopover').addEventListener('click', (event) => event.stopPropagation());
+    document.addEventListener('click', () => {
+      document.getElementById('tableSettingsPanel').classList.add('hidden');
+      closeColumnFilter();
+    });
     document.getElementById('columnSettings').addEventListener('change', (event) => {
       const input = event.target.closest('[data-column-key]');
       if (!input) return;
@@ -2851,13 +2955,50 @@ function pageHtml(): string {
     });
     document.getElementById('showDefaultColumns').addEventListener('click', () => setVisibleColumns([...defaultVisibleKeys]));
     document.getElementById('showAllColumns').addEventListener('click', () => setVisibleColumns(keys));
-    document.getElementById('clearFilters').addEventListener('click', () => {
-      for (const select of document.querySelectorAll('select[data-filter-key]')) for (const option of select.options) option.selected = false;
-      for (const select of document.querySelectorAll('[data-filter-mode]')) select.value = 'in';
+    function clearAllFilters() {
+      columnFilters = {};
+      closeColumnFilter();
       document.getElementById('search').value = '';
       document.getElementById('mobileSearch').value = '';
       resetPageAndRender();
+    }
+    document.getElementById('clearFilters').addEventListener('click', clearAllFilters);
+    document.getElementById('clearFiltersInline').addEventListener('click', clearAllFilters);
+    document.getElementById('filters').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-remove-filter]');
+      if (!button) return;
+      delete columnFilters[button.dataset.removeFilter];
+      resetPageAndRender();
     });
+    document.getElementById('columnFilterPopover').addEventListener('input', (event) => {
+      if (event.target.id === 'columnFilterSearch') renderColumnFilterValues(event.target.value);
+    });
+    document.getElementById('columnFilterPopover').addEventListener('change', (event) => {
+      const input = event.target.closest('[data-filter-value]');
+      if (!input) return;
+      if (input.checked) filterDraft.add(input.dataset.filterValue);
+      else filterDraft.delete(input.dataset.filterValue);
+    });
+    document.getElementById('columnFilterPopover').addEventListener('click', (event) => {
+      const command = event.target.closest('[data-filter-command]')?.dataset.filterCommand;
+      if (!command) return;
+      if (command === 'close') closeColumnFilter();
+      if (command === 'all') { filterDraft = new Set(columnFilterOptions(activeFilterKey).map((option) => option.value)); renderColumnFilterValues(document.getElementById('columnFilterSearch').value); }
+      if (command === 'none') { filterDraft = new Set(); renderColumnFilterValues(document.getElementById('columnFilterSearch').value); }
+      if (command === 'clear') { delete columnFilters[activeFilterKey]; closeColumnFilter(); resetPageAndRender(); }
+      if (command === 'apply') applyColumnFilter();
+    });
+    const tableScroll = document.getElementById('tableScroll');
+    const tableTopScroll = document.getElementById('tableTopScroll');
+    let syncingTableScroll = false;
+    function syncHorizontalScroll(source, target) {
+      if (syncingTableScroll) return;
+      syncingTableScroll = true;
+      target.scrollLeft = source.scrollLeft;
+      requestAnimationFrame(() => { syncingTableScroll = false; });
+    }
+    tableScroll.addEventListener('scroll', () => syncHorizontalScroll(tableScroll, tableTopScroll), { passive:true });
+    tableTopScroll.addEventListener('scroll', () => syncHorizontalScroll(tableTopScroll, tableScroll), { passive:true });
     document.getElementById('pageSize').addEventListener('change', (event) => {
       tableState.pageSize = Number(event.target.value) || 25;
       resetPageAndRender();
@@ -2883,6 +3024,12 @@ function pageHtml(): string {
       document.getElementById('togglePassword').setAttribute('aria-label', next === 'password' ? 'Показать пароль' : 'Скрыть пароль');
     });
     document.getElementById('table').addEventListener('click', async (e) => {
+      const filterButton = e.target.closest('[data-column-filter]');
+      if (filterButton) {
+        e.stopPropagation();
+        openColumnFilter(filterButton.dataset.columnFilter, filterButton);
+        return;
+      }
       const sort = e.target.closest('[data-sort-key]');
       if (sort) {
         const key = sort.dataset.sortKey;
@@ -2953,6 +3100,18 @@ function pageHtml(): string {
 
 export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router {
   const r = Router();
+
+  r.get('/assets/tabler-icons.min.css', (_req: Request, res: Response) => {
+    res.type('text/css').send(TABLER_ICON_CSS);
+  });
+  r.get('/assets/icons/:name.svg', (req: Request, res: Response) => {
+    const name = String(req.params.name || '');
+    if (!TABLER_ICON_SET.has(name)) {
+      res.status(404).end();
+      return;
+    }
+    res.type('image/svg+xml').sendFile(`${TABLER_ASSET_ROOT}icons/outline/${name}.svg`);
+  });
 
   r.get('/', (_req: Request, res: Response) => {
     res.type('html').send(pageHtml());

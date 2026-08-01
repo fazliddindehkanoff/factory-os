@@ -2,7 +2,9 @@
   "name": "factory-os",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "type": "module",
   "description": "Factory OS — configurable procurement & approval platform (multi-tenant)",
   "scripts": {
@@ -23,6 +25,7 @@
   "license": "UNLICENSED",
   "dependencies": {
     "@electric-sql/pglite": "^0.5.3",
+    "@tabler/icons": "^3.46.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
