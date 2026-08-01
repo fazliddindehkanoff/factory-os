@@ -1854,6 +1854,13 @@ function pageHtml(): string {
     }
 
     /* ── view switching (sidebar = navigation) ── */
+    function refreshTableTopScroll() {
+      requestAnimationFrame(() => {
+        const table = document.getElementById('table');
+        const inner = document.getElementById('tableTopScrollInner');
+        if (table.scrollWidth > 0) inner.style.width = table.scrollWidth + 'px';
+      });
+    }
     function showView(view) {
       const views = { overview:'viewOverview', procurement:'viewProcurement', requests:'viewRequests', create:'viewCreate', people:'viewPeople', roles:'viewRoles' };
       for (const [key, id] of Object.entries(views)) document.getElementById(id).classList.toggle('hidden', key !== view);
@@ -1867,6 +1874,7 @@ function pageHtml(): string {
       if (view === 'requests') ensureRequests();
       if (view === 'people') ensurePeople();
       if (view === 'roles') ensureRoleData();
+      if (view === 'procurement') refreshTableTopScroll();
       closeSidebar();
     }
     document.querySelectorAll('.side-link[data-view]').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
@@ -2187,7 +2195,7 @@ function pageHtml(): string {
         '</tbody>';
       const tableTopScrollInner = document.getElementById('tableTopScrollInner');
       tableTopScrollInner.style.width = Math.max(parseInt(table.style.minWidth, 10) || 0, table.scrollWidth || 0) + 'px';
-      requestAnimationFrame(() => { tableTopScrollInner.style.width = table.scrollWidth + 'px'; });
+      refreshTableTopScroll();
     }
     function cellHtml(r, k, index) {
       const value = numericKeys.has(k) ? String(Math.round(Number(r[k]) || 0)) : String(r[k] ?? '');
