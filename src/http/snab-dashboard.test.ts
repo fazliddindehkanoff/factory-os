@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
+import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../db/schema.js';
@@ -53,9 +54,78 @@ describe('snab dashboard authentication', () => {
     expect(res.text).toContain('autocomplete="username"');
     expect(res.text).toContain('id="password"');
     expect(res.text).toContain('autocomplete="current-password"');
+    const sidebar = res.text.match(/<aside class="sidebar"[\s\S]*?<\/aside>/)?.[0];
+    expect(sidebar).toBeTruthy();
+    expect(sidebar).not.toContain('Документы');
+    expect(sidebar).not.toContain('Отчёты');
+    expect(sidebar).not.toContain('Склад');
+    expect(sidebar).toContain('Снабжение');
     const script = res.text.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
+    await client.close();
+  });
+
+  it('resolves a product title and unit from its catalog code in dashboard data and edits', async () => {
+    const { app, db, client, owner } = await make();
+    const login = await request(app)
+      .post('/snab-dashboard/api/auth/login')
+      .send({ username: USERNAME, password: PASSWORD })
+      .expect(200);
+    const auth = { Authorization: `Bearer ${login.body.token}` };
+
+    await db.insert(schema.materials).values({
+      holdingId: owner.holdingId,
+      name: 'Хлопковая пряжа 40/1',
+      sku: 'PRY-40-1',
+      defaultUnit: 'кг',
+    });
+    const [createdRequest] = await db.insert(schema.requests).values({
+      requestNumber: 'SNAB-CATALOG-1',
+      holdingId: owner.holdingId,
+      requesterId: owner.id,
+      title: 'Catalog lookup',
+      status: 'draft',
+    }).returning();
+    const [item] = await db.insert(schema.requestItems).values({
+      requestId: createdRequest.id,
+      name: 'Неверное ручное название',
+      quantity: '2',
+      unit: 'шт',
+      estimatedPrice: 1000,
+      totalAmount: 2000,
+    }).returning();
+
+    const data = await request(app).post('/snab-dashboard/api/data').set(auth).send({}).expect(200);
+    expect(data.body.materials).toContainEqual(expect.objectContaining({
+      code: 'PRY-40-1',
+      title: 'Хлопковая пряжа 40/1',
+      unit: 'кг',
+    }));
+
+    await request(app)
+      .put(`/snab-dashboard/api/row/${item.id}`)
+      .set(auth)
+      .send({ row: { productCode: 'pry-40-1', materialName: 'Ручное название', quantity: 2, unit: 'шт', unitPrice: 1000 } })
+      .expect(200, { ok: true });
+
+    const [stored] = await db.select().from(schema.requestItems).where(eq(schema.requestItems.id, item.id));
+    expect(stored.name).toBe('Хлопковая пряжа 40/1');
+    expect(stored.unit).toBe('кг');
+    expect(stored.description).toContain('Код товара: PRY-40-1');
+
+    const createdFromDashboard = await request(app)
+      .post('/snab-dashboard/api/requests')
+      .set(auth)
+      .send({
+        requesterId: owner.id,
+        requestType: 'material_request',
+        items: [{ code: 'pry-40-1', name: 'Ещё одно ручное название', qty: 3, unit: 'шт', price: 500 }],
+      })
+      .expect(200);
+    const createdItems = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, createdFromDashboard.body.id));
+    expect(createdItems[0]).toMatchObject({ name: 'Хлопковая пряжа 40/1', unit: 'кг' });
+    expect(createdItems[0].description).toContain('Код товара: PRY-40-1');
     await client.close();
   });
 
@@ -99,7 +169,7 @@ describe('snab dashboard authentication', () => {
       .post('/snab-dashboard/api/data')
       .set('Authorization', `Bearer ${login.body.token}`)
       .send({})
-      .expect(200, { rows: [] });
+      .expect(200, { rows: [], materials: [] });
 
     // Once bootstrapped, login uses the stored hash and no longer depends on env credentials.
     delete process.env.SNAB_DASHBOARD_USERNAME;

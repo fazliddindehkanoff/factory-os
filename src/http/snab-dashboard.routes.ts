@@ -313,6 +313,54 @@ function text(v: unknown): string {
   return v == null ? '' : String(v);
 }
 
+interface DashboardMaterial {
+  id: string;
+  code: string;
+  title: string;
+  unit: string;
+}
+
+async function fetchDashboardMaterials(db: Db, holdingId: string): Promise<DashboardMaterial[]> {
+  const result = await db.execute(sql`
+    SELECT id, sku, name, default_unit
+    FROM materials
+    WHERE holding_id = ${holdingId}
+      AND status = 'active'
+      AND sku IS NOT NULL
+      AND btrim(sku) <> ''
+    ORDER BY name ASC
+  `);
+  const rows: Array<Record<string, unknown>> = Array.isArray(result) ? result : (result.rows ?? []);
+  return rows.map((row) => ({
+    id: text(row.id),
+    code: text(row.sku).trim(),
+    title: text(row.name).trim(),
+    unit: text(row.default_unit).trim(),
+  }));
+}
+
+async function materialByCode(db: Db, holdingId: string, rawCode: unknown): Promise<DashboardMaterial | null> {
+  const code = text(rawCode).trim();
+  if (!code) return null;
+  const result = await db.execute(sql`
+    SELECT id, sku, name, default_unit
+    FROM materials
+    WHERE holding_id = ${holdingId}
+      AND status = 'active'
+      AND lower(btrim(sku)) = lower(${code})
+    ORDER BY created_at ASC
+    LIMIT 1
+  `);
+  const rows: Array<Record<string, unknown>> = Array.isArray(result) ? result : (result.rows ?? []);
+  const row = rows[0];
+  return row ? {
+    id: text(row.id),
+    code: text(row.sku).trim(),
+    title: text(row.name).trim(),
+    unit: text(row.default_unit).trim(),
+  } : null;
+}
+
 function parseJsonObject(v: unknown): Record<string, unknown> {
   if (v && typeof v === 'object') return v as Record<string, unknown>;
   if (typeof v !== 'string') return {};
@@ -468,6 +516,12 @@ async function fetchDashboardRows(db: Db, holdingId: string, options: { requeste
 
 async function updateDashboardRow(db: Db, holdingId: string, itemId: string, patch: unknown): Promise<void> {
   const row = normalizeUpdate(patch);
+  const catalogMaterial = await materialByCode(db, holdingId, row.productCode);
+  if (catalogMaterial) {
+    row.productCode = catalogMaterial.code;
+    row.materialName = catalogMaterial.title;
+    if (catalogMaterial.unit) row.unit = catalogMaterial.unit;
+  }
   const quantity = num(row.quantity);
   const unitPrice = num(row.unitPrice);
   const totalAmount = Math.round(quantity * unitPrice);
@@ -567,6 +621,7 @@ async function fetchCreateMeta(db: Db, holdingId: string): Promise<Record<string
 
   return {
     holdingId,
+    materials: await fetchDashboardMaterials(db, holdingId),
     users,
     departments,
     warehouses,
@@ -626,6 +681,13 @@ async function createFromDashboard(db: Db, holdingId: string, body: CreateBody):
       note: text(it?.note).trim(),
     }))
     .filter((it) => it.name);
+  for (const item of items) {
+    const catalogMaterial = await materialByCode(db, holdingId, item.code);
+    if (!catalogMaterial) continue;
+    item.code = catalogMaterial.code;
+    item.name = catalogMaterial.title;
+    if (catalogMaterial.unit) item.unit = catalogMaterial.unit;
+  }
   if (!items.length) throw new Error('Добавьте хотя бы одну позицию');
   for (const it of items) if (!(it.qty > 0)) throw new Error('Количество должно быть больше нуля: ' + it.name);
 
@@ -688,7 +750,6 @@ function pageHtml(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Снабжение — Dashboard</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
     :root{
       --bg:#080D19; --bg-elev:#0A0F1D; --card:rgba(255,255,255,0.04); --card-hover:rgba(255,255,255,0.06);
       --border:rgba(255,255,255,0.10); --border-strong:rgba(255,255,255,0.20);
@@ -707,7 +768,7 @@ function pageHtml(): string {
       color-scheme:light;
     }
     *{box-sizing:border-box;}
-    body{margin:0;font-family:'Outfit',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;color-scheme:dark;}
+    body{margin:0;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;color-scheme:dark;}
     input,select,textarea,button{font:inherit;color:inherit;}
     .app-shell{min-height:100vh;display:grid;grid-template-columns:232px minmax(0,1fr);}
     /* ── login: procurement operations console ── */
@@ -1074,6 +1135,153 @@ function pageHtml(): string {
       .search-wrap{width:min(460px,58vw);}
     }
     @media (min-width:761px){ .mobile-search{display:none;} }
+
+    /* ── 2026 redesign: shadcn-style procurement control desk ────────────── */
+    :root{
+      --bg:#0B0F19;--bg-elev:#111827;--card:#151D2C;--card-hover:#1A2435;
+      --border:#263244;--border-strong:#3A485D;--text:#F8FAFC;--text-sec:#AAB4C3;--text-muted:#707D90;
+      --accent1:#4C7DFF;--accent2:#2DD4BF;--ring:rgba(76,125,255,.25);
+      --green:#32D583;--green-bg:rgba(50,213,131,.10);--green-bd:rgba(50,213,131,.30);
+      --amber:#FDB022;--amber-bg:rgba(253,176,34,.11);--amber-bd:rgba(253,176,34,.3);
+      --red:#F97066;--red-bg:rgba(249,112,102,.10);--red-bd:rgba(249,112,102,.3);
+      --radius-card:12px;--radius-ctl:9px;
+    }
+    body[data-theme="light"]{
+      --bg:#F5F7FA;--bg-elev:#FFFFFF;--card:#FFFFFF;--card-hover:#F8FAFC;
+      --border:#E4E7EC;--border-strong:#D0D5DD;--text:#101828;--text-sec:#475467;--text-muted:#98A2B3;
+      --accent1:#155EEF;--accent2:#0E9384;--ring:rgba(21,94,239,.16);
+      --green:#067647;--green-bg:#ECFDF3;--green-bd:#ABEFC6;
+      --amber:#B54708;--amber-bg:#FFFAEB;--amber-bd:#FEDF89;
+      --red:#B42318;--red-bg:#FEF3F2;--red-bd:#FECDCA;
+      color-scheme:light;
+    }
+    body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);letter-spacing:-.005em;}
+    button,input,select,textarea{outline:none;}
+    button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{box-shadow:0 0 0 3px var(--ring);border-color:var(--accent1)!important;}
+    .app-shell{grid-template-columns:252px minmax(0,1fr);}
+    .sidebar{padding:18px 14px 14px;background:var(--bg-elev);border-color:var(--border);}
+    .side-brand{height:48px;padding:0 6px 14px;margin-bottom:12px;border-color:var(--border);font-size:14px;letter-spacing:-.02em;}
+    .brand-dot{width:34px;height:34px;border-radius:9px;background:var(--text);color:var(--bg-elev);box-shadow:none;font-size:13px;}
+    .side-brand>div>span{color:var(--accent1)!important;}
+    .side-caption{font-size:10px;letter-spacing:.08em;text-transform:uppercase;}
+    .nav-sec{padding:18px 10px 7px;font-size:10px;letter-spacing:.12em;}
+    .side-link{min-height:40px;padding:9px 10px;border-radius:8px;color:var(--text-sec);font-size:13px;font-weight:600;}
+    .side-link:hover{background:var(--card-hover);color:var(--text);}
+    .side-link.active{background:var(--text);color:var(--bg-elev);box-shadow:0 1px 2px rgba(16,24,40,.12);}
+    .side-link.active svg{color:var(--bg-elev);}
+    .side-badge{background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-bd);}
+    .side-bottom{border-color:var(--border);}
+    .side-user{padding:7px 5px;}
+    .side-avatar{border-radius:8px;background:var(--card-hover);border:1px solid var(--border);color:var(--text);}
+    .navbar{min-height:68px;padding:10px 28px;background:color-mix(in srgb,var(--bg-elev) 92%,transparent);border-color:var(--border);backdrop-filter:blur(14px);}
+    .brand-title{font-size:14px;font-weight:700;}
+    .brand-sub{font-size:11px;}
+    .search-wrap,.topbar-control,.icon-btn{background:var(--bg-elev);border-color:var(--border);border-radius:8px;}
+    .search-wrap{height:40px;}
+    .search-wrap:focus-within{box-shadow:0 0 0 3px var(--ring);}
+    .topbar-control:hover,.icon-btn:hover{background:var(--card-hover);}
+    .wrap{padding:28px 30px 64px;}
+    .ops-hero{align-items:center;margin-bottom:20px;}
+    .ops-hero h1{font-size:28px;line-height:1.2;letter-spacing:-.035em;}
+    .ops-date{margin-top:6px;color:var(--text-sec);}
+    .ops-kpis{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px;}
+    .card,.ops-panel,.table-shell,.filters-panel,.fcard,.admin-panel,.admin-stat,.request-row,.role-card{background:var(--card);border-color:var(--border);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(16,24,40,.035);}
+    .kpi-card{min-height:126px;padding:17px;}
+    .kpi-card:hover{background:var(--card);border-color:var(--border-strong);translate:0 -1px;box-shadow:0 8px 18px -14px rgba(16,24,40,.35);}
+    .kpi-head{align-items:flex-start;}
+    .k{max-width:110px;color:var(--text-sec);font-size:10px;letter-spacing:.09em;line-height:1.35;}
+    .kpi-icon{width:auto;height:22px;padding:0 7px;border-radius:5px;background:var(--card-hover);border:1px solid var(--border);color:var(--text-sec);font:700 9px ui-monospace,SFMono-Regular,Menlo,monospace;}
+    .v{margin-top:11px;font-size:27px;letter-spacing:-.045em;color:var(--text);}
+    .trend{font-size:10.5px;font-weight:600;}
+    .ops-grid{grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;}
+    .ops-panel{min-height:210px;padding:18px;}
+    .ops-panel:nth-child(1){grid-column:span 8;}
+    .ops-panel:nth-child(2){grid-column:span 4;}
+    .ops-panel:nth-child(3){grid-column:span 12;min-height:auto;}
+    .ops-panel-title{margin-bottom:18px;font-size:13px;}
+    .panel-link{color:var(--accent1);font-size:11px;}
+    .pipeline{height:auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;padding:18px 0 4px;align-items:start;}
+    .rail-stage{position:relative;min-width:0;padding-right:18px;}
+    .rail-stage:not(:last-child):after{content:'';position:absolute;left:32px;right:0;top:10px;height:2px;background:var(--border);}
+    .rail-node{position:relative;z-index:1;width:22px;height:22px;display:grid;place-items:center;border:5px solid var(--card);border-radius:999px;background:var(--accent1);box-shadow:0 0 0 1px var(--accent1);}
+    .rail-stage.done .rail-node{background:var(--green);box-shadow:0 0 0 1px var(--green);}
+    .rail-stage.warn .rail-node{background:var(--amber);box-shadow:0 0 0 1px var(--amber);}
+    .rail-value{margin-top:16px;font:700 22px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.05em;}
+    .rail-label{margin-top:3px;color:var(--text-sec);font-size:11px;font-weight:650;}
+    .rail-note{margin-top:4px;color:var(--text-muted);font-size:10px;}
+    .compact-list{gap:7px;}
+    .compact-row{min-height:42px;padding:9px 10px;background:var(--bg);border-color:var(--border);border-radius:8px;}
+    .compact-row strong{font-size:11.5px;}
+    .compact-row span{font-size:10.5px;}
+    .progress-track{height:4px;background:var(--border);}
+    .progress-fill{background:var(--accent1);}
+    .top h1{font-size:25px;letter-spacing:-.03em;}
+    .sub{color:var(--text-sec);}
+    .btn{min-height:38px;padding:9px 14px;border-radius:8px;background:var(--accent1);box-shadow:0 1px 2px rgba(16,24,40,.1);font-size:12px;font-weight:700;transition:background .12s,box-shadow .12s,translate .12s;}
+    .btn:hover{filter:none;translate:0 -1px;box-shadow:0 4px 10px -6px rgba(21,94,239,.7);}
+    .btn.secondary,.btn.ghost{background:var(--bg-elev);border:1px solid var(--border);color:var(--text-sec);box-shadow:none;}
+    .btn.secondary:hover,.btn.ghost:hover{background:var(--card-hover);color:var(--text);}
+    .toolbar{gap:8px;}
+    .settings-panel,.lang-menu{background:var(--bg-elev);border-color:var(--border);border-radius:10px;box-shadow:0 18px 40px rgba(16,24,40,.16);}
+    .column-option,.filter-field select,.fin,select.fin,textarea.fin,.items input,.items select,.admin-search{background:var(--bg-elev);border-color:var(--border);border-radius:8px;}
+    .column-option:hover{background:var(--card-hover);}
+    .table-shell{overflow:hidden;}
+    .scroll{max-height:calc(100vh - 292px);}
+    table{font-size:12px;}
+    th,td{padding:10px 11px;border-color:var(--border);}
+    th{background:var(--card-hover);color:var(--text-sec);}
+    th.group{background:var(--bg-elev);color:var(--accent1);}
+    tr:nth-child(even) td{background:color-mix(in srgb,var(--bg) 45%,transparent);}
+    tbody tr:hover td{background:var(--card-hover);}
+    .table-pager{background:var(--bg-elev);border-color:var(--border);}
+    .mini,.pager-btn{border-color:var(--border);border-radius:7px;}
+    .fcard{padding:22px;margin-bottom:14px;}
+    .num-badge{border-radius:6px;background:var(--text);color:var(--bg-elev);}
+    .type-card{border-color:var(--border);border-radius:9px;background:var(--bg-elev);}
+    .type-card.selected{border-color:var(--accent1);background:var(--ring);}
+    .pill{border-color:var(--border);background:var(--bg-elev);border-radius:8px;}
+    .items-shell{border-color:var(--border);border-radius:10px;}
+    .items th{background:var(--card-hover);}
+    .modal-backdrop{background:rgba(15,23,42,.54);backdrop-filter:blur(3px);}
+    .modal{background:var(--bg-elev);border-color:var(--border);border-radius:14px;box-shadow:0 24px 64px rgba(16,24,40,.22);}
+    .toast{background:var(--text);color:var(--bg-elev);border:0;border-radius:9px;box-shadow:0 14px 30px rgba(16,24,40,.22);}
+    .login-shell{color:#F8FAFC;}
+    .login-story h1,.login-card h2,.login-brand{color:#F8FAFC;}
+    .login-story p,.login-card .sub,.login-note{color:#98A2B3;}
+    .login-field label{color:#D0D5DD;}
+    .login-input{color:#F8FAFC;}
+    .login-input::placeholder{color:#667085;}
+    @media (max-width:1180px){
+      .ops-kpis{grid-template-columns:repeat(3,minmax(0,1fr));}
+      .ops-panel:nth-child(1),.ops-panel:nth-child(2){grid-column:span 6;}
+    }
+    @media (max-width:760px){
+      .app-shell{display:block;}
+      .wrap{padding:18px 14px 44px;}
+      .navbar{padding:10px 14px;}
+      .ops-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}
+      .ops-panel:nth-child(n){grid-column:1/-1;}
+      .pipeline{overflow-x:auto;grid-template-columns:repeat(4,minmax(140px,1fr));}
+      .login-shell{border-radius:16px;}
+      .login-story{background:var(--text);}
+      .items-shell{overflow:visible;border:0;background:transparent;}
+      table.items,.items tbody{display:block;min-width:0;width:100%;}
+      .items thead{display:none;}
+      .items tbody tr{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-elev);}
+      .items td{display:grid;gap:5px;padding:0;border:0;background:transparent!important;white-space:normal;}
+      .items td:before{color:var(--text-muted);font-size:9px;font-weight:750;letter-spacing:.08em;text-transform:uppercase;}
+      .items td:nth-child(1){display:none;}
+      .items td:nth-child(2),.items td:nth-child(8){grid-column:1/-1;}
+      .items td:nth-child(2):before{content:'Наименование';}
+      .items td:nth-child(3):before{content:'Код товара';}
+      .items td:nth-child(4):before{content:'Количество';}
+      .items td:nth-child(5):before{content:'Ед. изм';}
+      .items td:nth-child(6):before{content:'Цена';}
+      .items td:nth-child(7):before{content:'Банк / Нал';}
+      .items td:nth-child(8):before{content:'Примечание';}
+      .items td:nth-child(9){position:absolute;right:24px;margin-top:-4px;}
+      .items input,.items select{min-height:40px;padding:8px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);}
+    }
   </style>
 </head>
 <body>
@@ -1149,9 +1357,7 @@ function pageHtml(): string {
         </button>
         <div class="nav-sec">Операции</div>
         <button class="side-link" data-view="procurement" id="navProcurement" type="button" aria-label="Снабжение"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M6 6h15l-2 8H8L6 3H3m6 16a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm9 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Снабжение</span></button>
-        <button class="side-link module-preview-btn" data-module="documents" data-module-title="Документы" data-module-note="Договоры, счета, вложения и закрывающие документы" type="button" aria-label="Документы"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M4 5h7l2 2h7v12H4V5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Документы</span></button>
         <button class="side-link module-preview-btn" data-module="suppliers" data-module-title="Поставщики" data-module-note="Риски, задержки, контакты и история закупок" type="button" aria-label="Поставщики"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M3 7h11v10H3V7Zm11 3h4l3 3v4h-7v-7ZM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Поставщики</span></button>
-        <button class="side-link module-preview-btn" data-module="reports" data-module-title="Отчёты" data-module-note="Бюджет vs факт, скорость маршрутов и поставщики" type="button" aria-label="Отчёты"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M5 19V9m7 10V5m7 14v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Отчёты</span></button>
         <div class="nav-sec hidden" id="adminNavLabel">Управление</div>
         <button class="side-link hidden" data-view="people" id="navPeople" type="button" aria-label="Пользователи">
           <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M16 20v-1.5a4.5 4.5 0 0 0-4.5-4.5h-3A4.5 4.5 0 0 0 4 18.5V20M10 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM17 8v6M14 11h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -1435,6 +1641,7 @@ function pageHtml(): string {
         </div>
       </div>
     </div>
+    <datalist id="productCodeList"></datalist>
     <div id="rowEditModal" class="modal-backdrop hidden">
       <form class="modal wide" id="rowEditForm">
         <h2 id="rowEditTitle">Редактировать строку</h2>
@@ -1506,6 +1713,7 @@ function pageHtml(): string {
     const editableKeys = new Set(${JSON.stringify([...EDITABLE_KEYS])});
     const defaultVisibleKeys = new Set(['date','object','requester','requestNumber','expenseArticle','materialName','unit','quantity','unitPrice','amount','paymentType','supplier','cfoReceiver']);
     let rows = [];
+    let materials = [];
     let filtersReady = false;
     let meta = null;
     const fmt = new Intl.NumberFormat('ru-RU');
@@ -1513,6 +1721,15 @@ function pageHtml(): string {
     const numericKeys = new Set(['quantity','unitPrice','exchangeRate','amount','usdAmount','ndsRate','amountWithNds','usdAmountWithNds']);
     let pendingDeleteRow = null;
     let editingRow = null;
+    function normalizedProductCode(value) { return String(value || '').trim().toLocaleLowerCase('ru-RU'); }
+    function productByCode(value) {
+      const code = normalizedProductCode(value);
+      return code ? materials.find((item) => normalizedProductCode(item.code) === code) || null : null;
+    }
+    function renderProductCodeList() {
+      const list = document.getElementById('productCodeList');
+      if (list) list.innerHTML = materials.map((item) => '<option value="' + esc(item.code) + '">' + esc(item.title) + '</option>').join('');
+    }
     let session = null;
     const tableState = { sortKey: 'date', sortDir: 'desc', page: 1, pageSize: 25 };
     let visibleColumnKeys = loadVisibleColumns();
@@ -1621,7 +1838,7 @@ function pageHtml(): string {
       document.body.dataset.theme = light ? 'light' : 'dark';
       localStorage.setItem('snab_dashboard_theme', document.body.dataset.theme);
     });
-    document.body.dataset.theme = localStorage.getItem('snab_dashboard_theme') || 'dark';
+    document.body.dataset.theme = localStorage.getItem('snab_dashboard_theme') || 'light';
 
     /* ── overview: search / filters / table ── */
     function activeSearch() {
@@ -1799,18 +2016,19 @@ function pageHtml(): string {
       return out;
     }
     function renderPipeline(data) {
-      const max = Math.max(1, ...groupedByDay(data).flatMap((d) => [d.created,d.approved,d.closed]));
-      document.getElementById('pipelineBars').innerHTML = groupedByDay(data).map((d) =>
-        '<div class="pipe-day"><div class="pipe-bars">' +
-        '<span class="pipe-bar" style="height:' + Math.max(6, d.created / max * 100) + '%"></span>' +
-        '<span class="pipe-bar approved" style="height:' + Math.max(6, d.approved / max * 100) + '%"></span>' +
-        '<span class="pipe-bar closed" style="height:' + Math.max(6, d.closed / max * 100) + '%"></span>' +
-        '</div><span>' + d.day + '</span></div>'
+      const stages = [
+        {label:'Заявки', note:'Всего позиций', value:data.length, tone:''},
+        {label:'Контекст готов', note:'Объект и склад', value:data.filter((row) => row.object && row.warehouse).length, tone:'done'},
+        {label:'Поставщик выбран', note:'Можно оформлять', value:data.filter((row) => row.supplier).length, tone:'done'},
+        {label:'Документы готовы', note:'Есть договор', value:data.filter((row) => row.contractNumber).length, tone:'warn'},
+      ];
+      document.getElementById('pipelineBars').innerHTML = stages.map((stage) =>
+        '<div class="rail-stage ' + stage.tone + '"><span class="rail-node"></span><div class="rail-value">' + fmt.format(stage.value) + '</div><div class="rail-label">' + stage.label + '</div><div class="rail-note">' + stage.note + '</div></div>'
       ).join('');
     }
     function renderCompactPanels(data) {
       const missing = data.filter((row) => !row.warehouse || !row.supplier || !row.contractNumber).slice(0, 4);
-      document.getElementById('recentActivity').innerHTML = data.slice(0, 5).map((row) =>
+      document.getElementById('recentActivity').innerHTML = data.slice(0, 4).map((row) =>
         '<div class="compact-row"><div><strong>' + esc(row.requestNumber || 'Заявка') + '</strong><br><span>' + esc(row.materialName || row.requester || 'Обновлена строка') + '</span></div><span>' + esc(row.date || '—') + '</span></div>'
       ).join('') || '<div class="compact-row"><span>Событий пока нет</span></div>';
       const budget = [
@@ -1831,6 +2049,8 @@ function pageHtml(): string {
     async function load() {
       const body = await api('data');
       rows = body.rows || [];
+      materials = body.materials || materials;
+      renderProductCodeList();
       document.getElementById('updated').textContent = 'Обновлено: ' + new Date().toLocaleString('ru-RU');
       renderFilters();
       render();
@@ -1892,8 +2112,18 @@ function pageHtml(): string {
       const value = row[key] ?? '';
       const input = numericKeys.has(key)
         ? '<input class="fin" data-row-edit-key="' + key + '" type="number" step="any" value="' + esc(String(value ?? 0)) + '" />'
-        : '<input class="fin" data-row-edit-key="' + key + '" value="' + esc(String(value)) + '" />';
+        : '<input class="fin" data-row-edit-key="' + key + '"' + (key === 'productCode' ? ' list="productCodeList" autocomplete="off"' : '') + ' value="' + esc(String(value)) + '" />';
       return '<div class="modal-field"><label>' + esc(label) + '</label>' + input + '</div>';
+    }
+    function syncRowMaterialFromCode(codeInput) {
+      const material = productByCode(codeInput.value);
+      if (!material) return;
+      codeInput.value = material.code;
+      const titleInput = document.querySelector('[data-row-edit-key="materialName"]');
+      const unitInput = document.querySelector('[data-row-edit-key="unit"]');
+      if (titleInput) titleInput.value = material.title;
+      if (unitInput && material.unit) unitInput.value = material.unit;
+      document.getElementById('rowEditSubtitle').textContent = material.title;
     }
     function openRowEdit(itemId) {
       const row = rows.find((item) => item.itemId === itemId);
@@ -1906,6 +2136,14 @@ function pageHtml(): string {
       document.getElementById('rowEditFields').innerHTML = [...editableKeys].map((key) => rowEditField(row, key)).join('');
       document.getElementById('rowEditModal').classList.remove('hidden');
     }
+    document.getElementById('rowEditFields').addEventListener('input', (event) => {
+      const input = event.target.closest('[data-row-edit-key="productCode"]');
+      if (input) syncRowMaterialFromCode(input);
+    });
+    document.getElementById('rowEditFields').addEventListener('change', (event) => {
+      const input = event.target.closest('[data-row-edit-key="productCode"]');
+      if (input) syncRowMaterialFromCode(input);
+    });
     function closeRowEdit() {
       editingRow = null;
       document.getElementById('rowEditModal').classList.add('hidden');
@@ -2375,6 +2613,8 @@ function pageHtml(): string {
       if (meta) return;
       try {
         meta = await api('meta');
+        materials = meta.materials || materials;
+        renderProductCodeList();
         buildForm();
       } catch (err) {
         document.getElementById('formErr').textContent = err instanceof Error ? err.message : 'Ошибка загрузки справочников';
@@ -2452,7 +2692,7 @@ function pageHtml(): string {
         '<tr data-i="' + i + '">' +
         '<td class="idx">' + (i + 1) + '</td>' +
         '<td><input data-f="name" placeholder="Например: Хлопковая пряжа 40/1" value="' + esc(it.name) + '"/></td>' +
-        '<td><input data-f="code" placeholder="Код" value="' + esc(it.code) + '"/></td>' +
+        '<td><input data-f="code" list="productCodeList" autocomplete="off" placeholder="Код" value="' + esc(it.code) + '"/></td>' +
         '<td><input data-f="qty" type="number" min="0" placeholder="0" value="' + esc(it.qty) + '"/></td>' +
         '<td><select data-f="unit"><option value="">—</option>' + meta.units.map((u) => '<option' + (u.value === it.unit ? ' selected' : '') + '>' + esc(u.label) + '</option>').join('') + '</select></td>' +
         '<td><input data-f="price" type="number" min="0" placeholder="—" value="' + esc(it.price) + '"/></td>' +
@@ -2472,6 +2712,18 @@ function pageHtml(): string {
       if (!cell) return;
       const i = Number(cell.closest('tr').dataset.i);
       form.items[i][cell.dataset.f] = cell.value;
+      if (cell.dataset.f === 'code') {
+        const material = productByCode(cell.value);
+        if (material) {
+          const row = cell.closest('tr');
+          form.items[i].code = material.code;
+          form.items[i].name = material.title;
+          if (material.unit) form.items[i].unit = material.unit;
+          cell.value = material.code;
+          row.querySelector('[data-f="name"]').value = material.title;
+          if (material.unit) row.querySelector('[data-f="unit"]').value = material.unit;
+        }
+      }
       if (cell.dataset.f === 'qty' || cell.dataset.f === 'price') recalcTotal();
     });
     document.getElementById('itemsBody').addEventListener('change', (e) => {
@@ -2737,7 +2989,7 @@ export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router 
       requesterId: actor.id,
       viewAll: actor.permissions.includes('requests.view'),
     });
-    res.json({ rows });
+    res.json({ rows, materials: await fetchDashboardMaterials(db, actor.holdingId) });
   });
 
   r.post('/api/meta', async (req: Request, res: Response) => {
