@@ -1274,7 +1274,7 @@ function pageHtml(): string {
     th,td{padding:10px 11px;border-color:var(--border);}
     th{background:var(--card-hover);color:var(--text-sec);}
     th.group{background:var(--bg-elev);color:var(--accent1);}
-    tr:nth-child(even) td{background:color-mix(in srgb,var(--bg) 45%,transparent);}
+    tr:nth-child(even) td{background:color-mix(in srgb,var(--card) 97%,var(--text) 3%);}
     tbody tr:hover td{background:var(--card-hover);}
     .table-pager{background:var(--bg-elev);border-color:var(--border);}
     .mini,.pager-btn{border-color:var(--border);border-radius:7px;}
@@ -2185,7 +2185,9 @@ function pageHtml(): string {
         activeKeys.map((key, index) => headerHtml(key, keyLabel(key), index)).join('') + '<th class="sticky-actions">Действия</th></tr></thead><tbody>' +
         (pageRows.length ? pageRows.map((r) => '<tr data-item-id="' + esc(r.itemId) + '">' + activeKeys.map((k, index) => cellHtml(r, k, index)).join('') + actionsHtml(r) + '</tr>').join('') : '<tr><td colspan="' + (activeKeys.length + 1) + '"><div class="table-empty">Нет строк под выбранные фильтры</div></td></tr>') +
         '</tbody>';
-      document.getElementById('tableTopScrollInner').style.width = Math.max(parseInt(table.style.minWidth, 10) || 0, table.scrollWidth || 0) + 'px';
+      const tableTopScrollInner = document.getElementById('tableTopScrollInner');
+      tableTopScrollInner.style.width = Math.max(parseInt(table.style.minWidth, 10) || 0, table.scrollWidth || 0) + 'px';
+      requestAnimationFrame(() => { tableTopScrollInner.style.width = table.scrollWidth + 'px'; });
     }
     function cellHtml(r, k, index) {
       const value = numericKeys.has(k) ? String(Math.round(Number(r[k]) || 0)) : String(r[k] ?? '');
