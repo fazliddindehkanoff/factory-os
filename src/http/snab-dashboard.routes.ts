@@ -977,7 +977,7 @@ function pageHtml(): string {
     th.sticky-col{z-index:5;background:var(--card-hover);}
     th.sticky-actions,td.sticky-actions{position:sticky;right:0;z-index:3;background:var(--card);box-shadow:-1px 0 0 var(--border);}
     th.sticky-actions{z-index:5;background:var(--card-hover);}
-    tr:nth-child(even) td{background:rgba(255,255,255,0.015);}
+    tr:nth-child(even) td{background:color-mix(in srgb,var(--card) 97%,var(--text) 3%);}
     .num{text-align:right;font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',ui-monospace,monospace;}
     .actions{display:flex;gap:6px;}
     .mini{border:1px solid var(--border);border-radius:9px;padding:6px 9px;background:transparent;color:var(--text-sec);font-weight:600;font-size:12px;cursor:pointer;}
