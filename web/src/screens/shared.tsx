@@ -1,6 +1,5 @@
 /** Shared types, helpers and small UI bits used across screens. */
 import { type CSSProperties, type ReactNode } from 'react';
-import { useI18n } from '../i18n';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 export interface Me {
@@ -152,12 +151,11 @@ export function fmtDate(iso: string): string {
 }
 
 export function StatusPill({ status }: { status: string }) {
-  const { tl } = useI18n();
   const s = statusMeta(status);
   return (
     <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 8, background: s.bg, color: s.color, fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap' }}>
       <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.color }} />
-      {tl(s.label)}
+      {s.label}
     </span>
   );
 }
@@ -216,11 +214,10 @@ export function groupByDay(rows: RequestRow[]): { key: string; label: string; it
 }
 
 export function DateDivider({ label }: { label: string }) {
-  const { tl } = useI18n();
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 2px 0' }}>
       <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
-      <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--fg3)', textTransform: 'uppercase', letterSpacing: '.04em', whiteSpace: 'nowrap' }}>{tl(label)}</span>
+      <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--fg3)', textTransform: 'uppercase', letterSpacing: '.04em', whiteSpace: 'nowrap' }}>{label}</span>
       <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
     </div>
   );

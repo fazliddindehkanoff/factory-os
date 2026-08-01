@@ -295,27 +295,6 @@
       "when": 1784705400000,
       "tag": "0041_request_view_own_permission",
       "breakpoints": true
-    },
-    {
-      "idx": 42,
-      "version": "7",
-      "when": 1784705800000,
-      "tag": "0042_owner_no_create_receiving_final",
-      "breakpoints": true
-    },
-    {
-      "idx": 43,
-      "version": "7",
-      "when": 1784857200000,
-      "tag": "0043_remove_order_issue_steps",
-      "breakpoints": true
-    },
-    {
-      "idx": 44,
-      "version": "7",
-      "when": 1785309600000,
-      "tag": "0044_material_catalog_fields",
-      "breakpoints": true
     }
   ]
 }

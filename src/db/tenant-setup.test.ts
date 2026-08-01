@@ -16,7 +16,7 @@ async function freshDb() {
 }
 
 describe('setupTenant', () => {
-  it('creates the approved workflow ending at warehouse receiving, idempotently', async () => {
+  it('creates the approved workflow incl. the in-stock branch, idempotently', async () => {
     const db = await freshDb();
     const a = await setupTenant(db, { holdingName: 'Zelal' });
     const steps1 = await db
@@ -33,6 +33,9 @@ describe('setupTenant', () => {
       'Директор',
       'Снабженец — оформление заказа',
       'Склад — приёмка',
+      // FIXES 2026-07-20: ветка «есть в наличии» — выдача сразу со склада,
+      // руководителю отдела только уведомление (без согласования).
+      'Склад — выдача в отдел',
     ]);
 
     // Re-run: no duplicate holdings / workflows / steps.
@@ -43,12 +46,12 @@ describe('setupTenant', () => {
       .select()
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.workflowId, a.workflow.id));
-    expect(steps2.length).toBe(9);
+    expect(steps2.length).toBe(10);
     const holdings = await db.select().from(schema.holdings);
     expect(holdings.length).toBe(1);
   });
 
-  it('assigns the owner by Telegram id with full admin permissions', async () => {
+  it('assigns the owner by Telegram id with full permissions', async () => {
     const db = await freshDb();
     const { holding, owner } = await setupTenant(db, {
       holdingName: 'Zelal',
@@ -59,7 +62,6 @@ describe('setupTenant', () => {
     expect(await hasPermission(db, owner!.id, 'finance.mark_paid', { holdingId: holding.id })).toBe(
       true,
     );
-    expect(await hasPermission(db, owner!.id, 'approvals.override', { holdingId: holding.id })).toBe(true);
     // Re-running does not create a duplicate owner assignment.
     await setupTenant(db, { holdingName: 'Zelal', ownerTelegramId: '555' });
     const assigns = await db

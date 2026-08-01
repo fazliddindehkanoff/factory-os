@@ -9,28 +9,19 @@ import {
   type SelectHTMLAttributes,
   type TouchEvent as ReactTouchEvent,
 } from 'react';
-import { useI18n } from '../i18n';
-
-function useTlText() {
-  const { tl } = useI18n();
-  return (value: ReactNode): ReactNode => (typeof value === 'string' ? tl(value) : value);
-}
 
 export function Label({ children }: { children: ReactNode }) {
-  const tr = useTlText();
-  return <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-fg2">{tr(children)}</div>;
+  return <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-fg2">{children}</div>;
 }
 
 export function Err({ children }: { children: ReactNode }) {
-  const tr = useTlText();
-  return <div className="mt-3 rounded-xl bg-danger/15 px-3 py-2.5 text-sm text-danger">{tr(children)}</div>;
+  return <div className="mt-3 rounded-xl bg-danger/15 px-3 py-2.5 text-sm text-danger">{children}</div>;
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  const tr = useTlText();
   return (
     <div className="rounded-2xl border border-dashed border-edge px-4 py-10 text-center text-sm text-fg3">
-      {tr(children)}
+      {children}
     </div>
   );
 }
@@ -56,16 +47,13 @@ const TONE: Record<Tone, string> = {
 };
 
 export function Pill({ children, tone = 'muted' }: { children: ReactNode; tone?: Tone }) {
-  const tr = useTlText();
-  return <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-semibold ${TONE[tone]}`}>{tr(children)}</span>;
+  return <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-semibold ${TONE[tone]}`}>{children}</span>;
 }
 
 export function Field({ className, ...p }: InputHTMLAttributes<HTMLInputElement>) {
-  const { tl } = useI18n();
   return (
     <input
       {...p}
-      placeholder={typeof p.placeholder === 'string' ? tl(p.placeholder) : p.placeholder}
       className={`w-full rounded-xl border border-line bg-card px-3.5 py-2.5 text-sm text-fg outline-none placeholder:text-fg3 focus:border-accent ${className ?? ''}`}
     />
   );
@@ -83,38 +71,35 @@ export function Select({ className, children, ...p }: SelectHTMLAttributes<HTMLS
 }
 
 export function PrimaryBtn({ className, children, ...p }: ButtonHTMLAttributes<HTMLButtonElement>) {
-  const tr = useTlText();
   return (
     <button
       {...p}
       className={`rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent/20 active:scale-95 disabled:opacity-50 ${className ?? ''}`}
     >
-      {tr(children)}
+      {children}
     </button>
   );
 }
 
 export function GhostBtn({ className, children, ...p }: ButtonHTMLAttributes<HTMLButtonElement>) {
-  const tr = useTlText();
   return (
     <button
       {...p}
       className={`rounded-xl bg-white/5 px-4 py-2.5 text-sm font-semibold text-fg2 active:scale-95 disabled:opacity-50 ${className ?? ''}`}
     >
-      {tr(children)}
+      {children}
     </button>
   );
 }
 
 /** Tiny inline icon-ish button (rename/delete/etc.). */
 export function MiniBtn({ className, children, ...p }: ButtonHTMLAttributes<HTMLButtonElement>) {
-  const tr = useTlText();
   return (
     <button
       {...p}
       className={`rounded-lg px-2 py-1 text-xs font-semibold active:scale-95 ${className ?? 'bg-white/5 text-fg2'}`}
     >
-      {tr(children)}
+      {children}
     </button>
   );
 }
@@ -134,7 +119,6 @@ export function BottomSheet({
   onClose: () => void;
   children: ReactNode;
 }) {
-  const { tl } = useI18n();
   const [dragY, setDragY] = useState(0);
   const startY = useRef<number | null>(null);
 
@@ -181,7 +165,7 @@ export function BottomSheet({
           <div className="mx-auto h-1 w-10 rounded-full bg-fg3/40" />
         </div>
         <div className="mb-4 flex items-center justify-between">
-          <div className="text-base font-bold text-fg">{tl(title)}</div>
+          <div className="text-base font-bold text-fg">{title}</div>
           <button onClick={onClose} className="px-1 text-lg leading-none text-fg3 hover:text-fg">
             ✕
           </button>

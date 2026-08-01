@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { confirmDialog } from '../telegram';
-import { useI18n } from '../i18n';
 import { BottomSheet, Empty, Err, Field, GhostBtn, Label, MiniBtn, Pill, PrimaryBtn, Skeleton } from '../admin/ui';
 
 interface Supplier {
@@ -29,15 +28,14 @@ interface QueueRequest {
   customFields?: Record<string, unknown> | null;
 }
 
-function qDate(iso?: string | null, locale = 'ru-RU'): string | null {
+function qDate(iso?: string | null): string | null {
   if (!iso) return null;
-  try { return new Date(iso).toLocaleDateString(locale, { day: '2-digit', month: '2-digit' }); } catch { return null; }
+  try { return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }); } catch { return null; }
 }
 
 type Tab = 'queue' | 'suppliers';
 
 export function ProcurementScreen({ canManage, onOpen }: { canManage: boolean; onOpen: (id: string) => void }) {
-  const { tl } = useI18n();
   const [tab, setTab] = useState<Tab>('queue');
   return (
     <div className="space-y-4">
@@ -58,7 +56,7 @@ export function ProcurementScreen({ canManage, onOpen }: { canManage: boolean; o
               cursor: 'pointer',
             }}
           >
-            {tl(t === 'queue' ? 'Очередь' : 'Поставщики')}
+            {t === 'queue' ? 'Очередь' : 'Поставщики'}
           </button>
         ))}
       </div>
@@ -68,8 +66,6 @@ export function ProcurementScreen({ canManage, onOpen }: { canManage: boolean; o
 }
 
 function QueueTab({ onOpen }: { onOpen: (id: string) => void }) {
-  const { lang, tl } = useI18n();
-  const locale = lang === 'uz' ? 'uz-UZ' : lang === 'tr' ? 'tr-TR' : lang === 'en' ? 'en-US' : 'ru-RU';
   const [items, setItems] = useState<QueueRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -83,7 +79,7 @@ function QueueTab({ onOpen }: { onOpen: (id: string) => void }) {
       {items.map((r) => {
         const obyekt = r.obyekt ?? (r.customFields && typeof r.customFields === 'object' ? (r.customFields.obyekt as string | undefined) ?? null : null);
         const dept = r.departmentNameResolved ?? r.departmentName ?? null;
-        const created = qDate(r.createdAt, locale);
+        const created = qDate(r.createdAt);
         return (
           <button key={r.id} onClick={() => onOpen(r.id)} className="w-full rounded-2xl border border-line bg-card p-4 text-left">
             <div className="flex items-center justify-between gap-2">
@@ -91,10 +87,10 @@ function QueueTab({ onOpen }: { onOpen: (id: string) => void }) {
               <Pill tone="system">В закупке</Pill>
             </div>
             <div className="mt-2 space-y-1 text-xs text-fg2">
-              {obyekt && <div>{tl('Объект')}: <span className="font-semibold text-fg">{obyekt}</span></div>}
-              {dept && <div>{tl('Отдел снабжения')}: <span className="font-semibold text-fg">{dept}</span></div>}
+              {obyekt && <div>Объект: <span className="font-semibold text-fg">{obyekt}</span></div>}
+              {dept && <div>Отдел снабжения: <span className="font-semibold text-fg">{dept}</span></div>}
               <div className="flex flex-wrap gap-x-3">
-                {created && <span>{tl('Создана')} {created}</span>}
+                {created && <span>Создана {created}</span>}
               </div>
             </div>
           </button>
@@ -105,7 +101,6 @@ function QueueTab({ onOpen }: { onOpen: (id: string) => void }) {
 }
 
 function SuppliersTab({ canManage }: { canManage: boolean }) {
-  const { tl } = useI18n();
   const [items, setItems] = useState<Supplier[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -117,7 +112,7 @@ function SuppliersTab({ canManage }: { canManage: boolean }) {
   useEffect(load, [load]);
 
   const archive = async (s: Supplier) => {
-    if (!(await confirmDialog(tl(`Архивировать «${s.name}»?`)))) return;
+    if (!(await confirmDialog(`Архивировать «${s.name}»?`))) return;
     try {
       await api.suppliers.archive(s.id);
       load();
@@ -134,7 +129,7 @@ function SuppliersTab({ canManage }: { canManage: boolean }) {
       {error && <Err>{error}</Err>}
       {canManage && (
         <PrimaryBtn className="w-full" onClick={() => setAddOpen(true)}>
-          {tl('+ Добавить поставщика')}
+          + Добавить поставщика
         </PrimaryBtn>
       )}
       {items.length === 0 && <Empty>Поставщиков нет.</Empty>}
@@ -144,14 +139,14 @@ function SuppliersTab({ canManage }: { canManage: boolean }) {
             <button onClick={() => canManage && setEditing(s)} className="min-w-0 flex-1 text-left">
               <div className="text-sm font-semibold text-fg">{s.name}</div>
               <div className="mt-1 flex flex-wrap gap-1.5">
-                {s.inn && <Pill tone="muted">{tl('ИНН')} {s.inn}</Pill>}
+                {s.inn && <Pill tone="muted">ИНН {s.inn}</Pill>}
                 {s.phone && <Pill tone="system">{s.phone}</Pill>}
                 {s.category && <Pill tone="system">{s.category}</Pill>}
               </div>
             </button>
             {canManage && (
               <MiniBtn className="bg-danger/15 text-danger" onClick={() => archive(s)}>
-                {tl('Архив')}
+                Архив
               </MiniBtn>
             )}
           </div>
@@ -174,7 +169,6 @@ function SupplierSheet({
   onDone: () => void;
   setError: (s: string) => void;
 }) {
-  const { tl } = useI18n();
   const [name, setName] = useState(supplier?.name ?? '');
   const [inn, setInn] = useState(supplier?.inn ?? '');
   const [phone, setPhone] = useState(supplier?.phone ?? '');
@@ -202,7 +196,7 @@ function SupplierSheet({
   };
 
   return (
-    <BottomSheet open={supplier ? true : !!open} title={supplier ? tl(`Поставщик: ${supplier.name}`) : tl('Новый поставщик')} onClose={onClose}>
+    <BottomSheet open={supplier ? true : !!open} title={supplier ? `Поставщик: ${supplier.name}` : 'Новый поставщик'} onClose={onClose}>
       <Label>Название</Label>
       <Field value={name} onChange={(e) => setName(e.target.value)} placeholder="напр. ООО Поставка" />
       <div className="mt-4">
@@ -220,7 +214,7 @@ function SupplierSheet({
       <div className="mt-5 flex gap-2.5">
         <GhostBtn className="flex-1" onClick={onClose}>Отмена</GhostBtn>
         <PrimaryBtn className="flex-1" disabled={saving || !name.trim()} onClick={submit}>
-          {saving ? '...' : tl(supplier ? 'Сохранить' : 'Добавить')}
+          {saving ? '...' : supplier ? 'Сохранить' : 'Добавить'}
         </PrimaryBtn>
       </div>
     </BottomSheet>

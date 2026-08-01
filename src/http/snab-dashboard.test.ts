@@ -84,7 +84,6 @@ describe('snab dashboard authentication', () => {
     expect(login.body.token).toEqual(expect.any(String));
     expect(login.body.user).toMatchObject({ id: owner.id, username: USERNAME, fullName: 'Snab Owner' });
     expect(login.body.permissions).toContain('users.manage');
-    expect(login.body.roles).toContainEqual(expect.objectContaining({ code: 'owner' }));
 
     const [stored] = await db.select().from(schema.users);
     expect(stored.username).toBe(USERNAME);

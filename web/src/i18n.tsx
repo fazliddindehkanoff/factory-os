@@ -11,7 +11,7 @@ export const LANG_LABELS: Record<Lang, string> = {
   ru: 'Рус',
   uz: 'Uzb',
   en: 'Eng',
-  tr: 'Turk',
+  tr: 'Türkçe',
 };
 
 /** Языки, доступные в переключателе (лист H): Uzb / Рус / Türkçe. */
@@ -246,7 +246,6 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   'Все заявки': { uz: 'Barcha arizalar', en: 'All requests', tr: 'Tüm talepler' },
   'Мои заявки': { uz: 'Mening arizalarim', en: 'My requests', tr: 'Taleplerim' },
   'Ожидают меня': { uz: 'Meni kutmoqda', en: 'Waiting for me', tr: 'Beni bekleyenler' },
-  'Очередь снабжения': { uz: 'Ta’minot navbati', en: 'Procurement queue', tr: 'Satın alma kuyruğu' },
   'Активных всего': { uz: 'Jami aktiv', en: 'Total active', tr: 'Toplam aktif' },
   'Созданные мной': { uz: 'Men yaratganlar', en: 'Created by me', tr: 'Oluşturduklarım' },
   'Последние события': { uz: 'Oxirgi voqealar', en: 'Recent events', tr: 'Son olaylar' },
@@ -350,13 +349,6 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   'Нет записей в журнале': { uz: 'Jurnalda yozuvlar yo‘q', en: 'No journal records', tr: 'Günlükte kayıt yok' },
   'Принять на склад': { uz: 'Omborga qabul qilish', en: 'Receive to warehouse', tr: 'Depoya al' },
   'Выдать со склада': { uz: 'Ombordan berish', en: 'Issue from warehouse', tr: 'Depodan çıkar' },
-  'Материал принят на склад': { uz: 'Material omborga qabul qilindi', en: 'Material received to warehouse', tr: 'Malzeme depoya alındı' },
-  'Материал выдан со склада': { uz: 'Material ombordan berildi', en: 'Material issued from warehouse', tr: 'Malzeme depodan çıkarıldı' },
-  'Выберите материал': { uz: 'Materialni tanlang', en: 'Choose material', tr: 'Malzeme seçin' },
-  'Любой склад': { uz: 'Istalgan ombor', en: 'Any warehouse', tr: 'Herhangi bir depo' },
-  'ID материала (каталог пуст)': { uz: 'Material ID (katalog bo‘sh)', en: 'Material ID (catalog is empty)', tr: 'Malzeme ID (katalog boş)' },
-  'ID склада (необязательно)': { uz: 'Ombor ID (ixtiyoriy)', en: 'Warehouse ID (optional)', tr: 'Depo ID (isteğe bağlı)' },
-  '(необяз.)': { uz: '(ixtiyoriy)', en: '(optional)', tr: '(isteğe bağlı)' },
   'Отправка...': { uz: 'Yuborilmoqda...', en: 'Sending...', tr: 'Gönderiliyor...' },
   'Поставщики': { uz: 'Yetkazib beruvchilar', en: 'Suppliers', tr: 'Tedarikçiler' },
   'Финансы': { uz: 'Moliya', en: 'Finance', tr: 'Finans' },
@@ -472,10 +464,6 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   // ── KPI-плитки ──
   'Возвращённые': { uz: 'Qaytarilganlar', en: 'Returned', tr: 'İade edilenler' },
   'Низкий остаток': { uz: 'Kam qoldiq', en: 'Low stock', tr: 'Düşük stok' },
-  'Складской обзор': { uz: 'Ombor ko‘rinishi', en: 'Warehouse overview', tr: 'Depo özeti' },
-  'Открыть склад': { uz: 'Omborni ochish', en: 'Open warehouse', tr: 'Depoyu aç' },
-  'Позиции ниже минимума': { uz: 'Minimumdan past pozitsiyalar', en: 'Items below minimum', tr: 'Minimum altındaki kalemler' },
-  'Все остатки в норме': { uz: 'Barcha qoldiqlar me’yorda', en: 'All balances are normal', tr: 'Tüm stoklar normal' },
   'Для закупа': { uz: 'Xarid uchun', en: 'To purchase', tr: 'Satın alınacak' },
   // ── Список заявок: фильтры/кнопки ──
   'Только мои': { uz: 'Faqat meniki', en: 'Mine only', tr: 'Yalnızca benim' },
@@ -487,111 +475,6 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   'Попробуйте другой запрос или сбросьте фильтр.': { uz: 'Boshqa so‘rov kiriting yoki filtrni tiklang.', en: 'Try another query or reset the filter.', tr: 'Başka bir sorgu deneyin veya filtreyi sıfırlayın.' },
   'Заявок нет. Создайте первую с главного экрана.': { uz: 'Arizalar yo‘q. Birinchisini asosiy ekrandan yarating.', en: 'No requests. Create the first one from the home screen.', tr: 'Talep yok. İlkini ana ekrandan oluşturun.' },
   '+ Новая заявка': { uz: '+ Yangi ariza', en: '+ New request', tr: '+ Yeni talep' },
-  'все →': { uz: 'barchasi →', en: 'all →', tr: 'tümü →' },
-  'Не удалось загрузить:': { uz: 'Yuklab bo‘lmadi:', en: 'Could not load:', tr: 'Yüklenemedi:' },
-  'Нет заявок, ожидающих вашего решения.': { uz: 'Qaroringizni kutayotgan arizalar yo‘q.', en: 'No requests are awaiting your decision.', tr: 'Kararınızı bekleyen talep yok.' },
-  'Нет заявок в закупке.': { uz: 'Xariddagi arizalar yo‘q.', en: 'No requests in procurement.', tr: 'Satın almada talep yok.' },
-  'Пока нет событий — здесь появятся обновления по вашим заявкам.': { uz: 'Hozircha voqealar yo‘q — arizalaringiz bo‘yicha yangiliklar shu yerda chiqadi.', en: 'No events yet. Updates for your requests will appear here.', tr: 'Henüz olay yok. Taleplerinizin güncellemeleri burada görünecek.' },
-  'Не удалось загрузить дашборд:': { uz: 'Dashboard yuklanmadi:', en: 'Could not load dashboard:', tr: 'Dashboard yüklenemedi:' },
-  'Показать ещё': { uz: 'Yana ko‘rsatish', en: 'Show more', tr: 'Daha fazla göster' },
-  'Загрузка...': { uz: 'Yuklanmoqda...', en: 'Loading...', tr: 'Yükleniyor...' },
-  'Экспорт в Excel (CSV)': { uz: 'Excelga eksport (CSV)', en: 'Export to Excel (CSV)', tr: 'Excel’e aktar (CSV)' },
-  'Не удалось выгрузить CSV': { uz: 'CSV eksport qilib bo‘lmadi', en: 'Could not export CSV', tr: 'CSV dışa aktarılamadı' },
-  'Телефон': { uz: 'Telefon', en: 'Phone', tr: 'Telefon' },
-  'Ваше имя': { uz: 'Ismingiz', en: 'Your name', tr: 'Adınız' },
-  'Должность': { uz: 'Lavozim', en: 'Position', tr: 'Pozisyon' },
-  'напр. Инженер': { uz: 'masalan, muhandis', en: 'e.g. Engineer', tr: 'örn. Mühendis' },
-  'PIN для подписи': { uz: 'Imzo uchun PIN', en: 'PIN for signing', tr: 'İmza PIN’i' },
-  '4–8 цифр. Нужен для согласования и других действий с подписью.': { uz: '4–8 raqam. Tasdiqlash va imzo talab qiladigan amallar uchun kerak.', en: '4-8 digits. Required for approvals and signed actions.', tr: '4-8 rakam. Onaylar ve imzalı işlemler için gerekir.' },
-  'PIN сохранён ✓': { uz: 'PIN saqlandi ✓', en: 'PIN saved ✓', tr: 'PIN kaydedildi ✓' },
-  'Администратор': { uz: 'Administrator', en: 'Administrator', tr: 'Yönetici' },
-  'Учредитель': { uz: 'Ta’sischi', en: 'Founder', tr: 'Kurucu' },
-  'Согласующий': { uz: 'Tasdiqlovchi', en: 'Approver', tr: 'Onaylayan' },
-  'Сотрудник': { uz: 'Xodim', en: 'Employee', tr: 'Çalışan' },
-  'У вас нет прав на согласование': { uz: 'Tasdiqlash huquqingiz yo‘q', en: 'You do not have approval permissions', tr: 'Onay yetkiniz yok' },
-  'Обратитесь к администратору для получения необходимых прав.': { uz: 'Kerakli huquqlar uchun administratorga murojaat qiling.', en: 'Contact an administrator to get the required permissions.', tr: 'Gerekli yetkiler için yöneticinizle iletişime geçin.' },
-  'Входящих нет': { uz: 'Kirish qutisi bo‘sh', en: 'No inbox items', tr: 'Gelen kutusu boş' },
-  'Сейчас нет заявок, требующих вашего действия.': { uz: 'Hozir sizdan amal kutayotgan arizalar yo‘q.', en: 'No requests need your action right now.', tr: 'Şu anda işlem bekleyen talep yok.' },
-  'Низкая': { uz: 'Past', en: 'Low', tr: 'Düşük' },
-  'Стандартная': { uz: 'Standart', en: 'Normal', tr: 'Standart' },
-  'Срочная': { uz: 'Shoshilinch', en: 'Urgent', tr: 'Acil' },
-  'Аварийная': { uz: 'Avariya', en: 'Emergency', tr: 'Acil durum' },
-  'Критичная': { uz: 'Kritik', en: 'Critical', tr: 'Kritik' },
-  'сегодня': { uz: 'bugun', en: 'today', tr: 'bugün' },
-  'ждёт 1 день': { uz: '1 kun kutmoqda', en: 'waiting 1 day', tr: '1 gündür bekliyor' },
-  'создана': { uz: 'yaratildi', en: 'created', tr: 'oluşturuldu' },
-  'Очередь': { uz: 'Navbat', en: 'Queue', tr: 'Kuyruk' },
-  'Заявок в закупке нет.': { uz: 'Xaridda arizalar yo‘q.', en: 'No requests in purchasing.', tr: 'Satın almada talep yok.' },
-  '+ Добавить поставщика': { uz: '+ Yetkazib beruvchi qo‘shish', en: '+ Add supplier', tr: '+ Tedarikçi ekle' },
-  'Поставщиков нет.': { uz: 'Yetkazib beruvchilar yo‘q.', en: 'No suppliers.', tr: 'Tedarikçi yok.' },
-  'ИНН': { uz: 'STIR', en: 'TIN', tr: 'Vergi no' },
-  'Архив': { uz: 'Arxiv', en: 'Archive', tr: 'Arşiv' },
-  'Новый поставщик': { uz: 'Yangi yetkazib beruvchi', en: 'New supplier', tr: 'Yeni tedarikçi' },
-  'напр. ООО Поставка': { uz: 'masalan, Pоставка MChJ', en: 'e.g. Supply LLC', tr: 'örn. Tedarik Ltd.' },
-  'необязательно': { uz: 'ixtiyoriy', en: 'optional', tr: 'isteğe bağlı' },
-  'Сессия истекла — войдите снова': { uz: 'Sessiya tugadi — qayta kiring', en: 'Session expired. Sign in again.', tr: 'Oturum süresi doldu — tekrar giriş yapın' },
-  'Сервер не ответил вовремя — возможно, база просыпается. Повторите через пару секунд.': { uz: 'Server vaqtida javob bermadi — baza uyg‘onayotgan bo‘lishi mumkin. Bir necha soniyadan keyin qayta urinib ko‘ring.', en: 'The server did not respond in time. The database may be waking up. Try again in a few seconds.', tr: 'Sunucu zamanında yanıt vermedi. Veritabanı uyanıyor olabilir. Birkaç saniye sonra tekrar deneyin.' },
-  'Нет связи с сервером. Проверьте подключение.': { uz: 'Server bilan aloqa yo‘q. Ulanishni tekshiring.', en: 'No connection to the server. Check your connection.', tr: 'Sunucuyla bağlantı yok. Bağlantınızı kontrol edin.' },
-  'Ожидает согласования': { uz: 'Tasdiq kutmoqda', en: 'Waiting for approval', tr: 'Onay bekliyor' },
-  'Склад должен проверить наличие': { uz: 'Ombor mavjudlikni tekshirishi kerak', en: 'Warehouse must check availability', tr: 'Depo stok durumunu kontrol etmeli' },
-  'Снабжение подбирает поставщика': { uz: 'Ta’minot yetkazib beruvchini tanlamoqda', en: 'Procurement is selecting a supplier', tr: 'Satın alma tedarikçi seçiyor' },
-  'Ожидает доставки': { uz: 'Yetkazishni kutmoqda', en: 'Waiting for delivery', tr: 'Teslimat bekleniyor' },
-  'Склад принимает товар': { uz: 'Ombor mahsulotni qabul qilmoqda', en: 'Warehouse is receiving goods', tr: 'Depo ürünü teslim alıyor' },
-  'Склад должен выдать материал': { uz: 'Ombor materialni berishi kerak', en: 'Warehouse must issue material', tr: 'Depo malzemeyi çıkarmalı' },
-  'Ожидает подтверждения получения': { uz: 'Qabul tasdig‘ini kutmoqda', en: 'Waiting for receipt confirmation', tr: 'Teslim alma onayı bekleniyor' },
-  'Ожидает действия': { uz: 'Amal kutmoqda', en: 'Waiting for action', tr: 'İşlem bekliyor' },
-  'Склады ещё не настроены. Добавьте их в админке → «Структура».': { uz: 'Omborlar hali sozlanmagan. Ularni admin bo‘limida → “Tuzilma” orqali qo‘shing.', en: 'Warehouses are not configured yet. Add them in Admin → Structure.', tr: 'Depolar henüz yapılandırılmamış. Admin → Yapı bölümünden ekleyin.' },
-  '— выберите —': { uz: '— tanlang —', en: '— choose —', tr: '— seçin —' },
-  'Да': { uz: 'Ha', en: 'Yes', tr: 'Evet' },
-  'нет': { uz: 'yo‘q', en: 'none', tr: 'yok' },
-  'Укажите количество больше нуля для каждого продукта': { uz: 'Har bir mahsulot uchun noldan katta miqdor kiriting', en: 'Enter a quantity greater than zero for each product', tr: 'Her ürün için sıfırdan büyük miktar girin' },
-  'Укажите причину': { uz: 'Sababni kiriting', en: 'Enter a reason', tr: 'Nedeni belirtin' },
-  'Пуш в Telegram не дошёл — уведомление доступно здесь': { uz: 'Telegram push yetib bormadi — bildirishnoma shu yerda mavjud', en: 'Telegram push did not arrive. The notification is available here.', tr: 'Telegram bildirimi ulaşmadı — bildirim burada mevcut' },
-  'К заявке': { uz: 'Arizaga', en: 'To request', tr: 'Talebe git' },
-  'Прочитать все': { uz: 'Hammasini o‘qilgan qilish', en: 'Mark all read', tr: 'Tümünü okundu yap' },
-  'Уведомлений пока нет.': { uz: 'Hozircha bildirishnomalar yo‘q.', en: 'No notifications yet.', tr: 'Henüz bildirim yok.' },
-  'Ждёт вас': { uz: 'Sizni kutmoqda', en: 'Waiting for you', tr: 'Sizi bekliyor' },
-  'Этап пройден': { uz: 'Bosqich o‘tildi', en: 'Step passed', tr: 'Aşama geçildi' },
-  'Возврат на этап': { uz: 'Bosqichga qaytarildi', en: 'Returned to step', tr: 'Aşamaya geri döndü' },
-  'Безопасность': { uz: 'Xavfsizlik', en: 'Security', tr: 'Güvenlik' },
-  'Просрочено': { uz: 'Muddati o‘tgan', en: 'Overdue', tr: 'Gecikmiş' },
-  'Сводка': { uz: 'Xulosa', en: 'Summary', tr: 'Özet' },
-  'Новое': { uz: 'Yangi', en: 'New', tr: 'Yeni' },
-  'Прочитано': { uz: 'O‘qilgan', en: 'Read', tr: 'Okundu' },
-  'Отправляется': { uz: 'Yuborilmoqda', en: 'Sending', tr: 'Gönderiliyor' },
-  'Ваш Telegram ID': { uz: 'Telegram ID’ingiz', en: 'Your Telegram ID', tr: 'Telegram ID’niz' },
-  'Вход...': { uz: 'Kirilmoqda...', en: 'Signing in...', tr: 'Giriş yapılıyor...' },
-  'Войти (dev)': { uz: 'Kirish (dev)', en: 'Sign in (dev)', tr: 'Giriş yap (dev)' },
-  'Откройте внутри Telegram для обычного входа. Локально — dev-вход по Telegram ID.': { uz: 'Oddiy kirish uchun Telegram ichida oching. Lokal muhitda Telegram ID orqali dev-kirish ishlaydi.', en: 'Open inside Telegram for normal sign-in. Locally, use dev sign-in by Telegram ID.', tr: 'Normal giriş için Telegram içinde açın. Yerelde Telegram ID ile dev girişi kullanın.' },
-  'Тестовые пользователи': { uz: 'Test foydalanuvchilar', en: 'Test users', tr: 'Test kullanıcıları' },
-  'резерв': { uz: 'rezerv', en: 'reserved', tr: 'rezerve' },
-  'мин': { uz: 'min', en: 'min', tr: 'min' },
-  'Вы не привязаны к организации. Попросите администратора назначить вам права.': { uz: 'Siz tashkilotga biriktirilmagansiz. Administratordan huquq berishini so‘rang.', en: 'You are not linked to an organization. Ask an administrator to assign permissions.', tr: 'Bir kuruluşa bağlı değilsiniz. Yöneticiden yetki atamasını isteyin.' },
-  'Override — решение мимо оставшихся шагов': { uz: 'Override — qolgan bosqichlarsiz qaror', en: 'Override — decide without remaining steps', tr: 'Override — kalan adımları atlayarak karar' },
-  'Причина (обязательно)': { uz: 'Sabab (majburiy)', en: 'Reason (required)', tr: 'Neden (zorunlu)' },
-  'Разрешить': { uz: 'Ruxsat berish', en: 'Approve override', tr: 'İzin ver' },
-  'История действий (аудит)': { uz: 'Amallar tarixi (audit)', en: 'Action history (audit)', tr: 'İşlem geçmişi (denetim)' },
-  'Аудит-лог': { uz: 'Audit log', en: 'Audit log', tr: 'Denetim kaydı' },
-  'система': { uz: 'tizim', en: 'system', tr: 'sistem' },
-  'Ожидаемая дата получения': { uz: 'Kutilayotgan qabul sanasi', en: 'Expected receipt date', tr: 'Beklenen teslim alma tarihi' },
-  'Наименование': { uz: 'Nomi', en: 'Item name', tr: 'Ad' },
-  'Продукты': { uz: 'Mahsulotlar', en: 'Products', tr: 'Ürünler' },
-  'Ед. изм.': { uz: 'O‘lch. birl.', en: 'Unit', tr: 'Birim' },
-  'Название продукта': { uz: 'Mahsulot nomi', en: 'Product name', tr: 'Ürün adı' },
-  'шт, кг...': { uz: 'dona, kg...', en: 'pcs, kg...', tr: 'adet, kg...' },
-  'Назначение, склад, срочность, примечания...': { uz: 'Maqsad, ombor, shoshilinchlik, izohlar...', en: 'Purpose, warehouse, urgency, notes...', tr: 'Amaç, depo, aciliyet, notlar...' },
-  'Добавьте хотя бы один продукт': { uz: 'Kamida bitta mahsulot qo‘shing', en: 'Add at least one product', tr: 'En az bir ürün ekleyin' },
-  '— не выбран —': { uz: '— tanlanmagan —', en: '— not selected —', tr: '— seçilmedi —' },
-  '— не выбрано —': { uz: '— tanlanmagan —', en: '— not selected —', tr: '— seçilmedi —' },
-  'Сумма КП (UZS)': { uz: 'Taklif summasi (UZS)', en: 'Offer amount (UZS)', tr: 'Teklif tutarı (UZS)' },
-  'По позициям': { uz: 'Pozitsiyalar bo‘yicha', en: 'By item', tr: 'Kalem bazında' },
-  'Не указан': { uz: 'Ko‘rsatilmagan', en: 'Not specified', tr: 'Belirtilmedi' },
-  'Перечисление': { uz: 'Bank o‘tkazmasi', en: 'Bank transfer', tr: 'Havale' },
-  'Наличные': { uz: 'Naqd', en: 'Cash', tr: 'Nakit' },
-  'Передать снабженцу': { uz: 'Ta’minotchiga berish', en: 'Assign to procurement user', tr: 'Satın alma uzmanına aktar' },
-  'Принять в работу': { uz: 'Ishga qabul qilish', en: 'Accept to work', tr: 'İşe al' },
-  'На доработке': { uz: 'Qayta ishlashda', en: 'In revision', tr: 'Düzeltmede' },
-  'НДС': { uz: 'NDS', en: 'VAT', tr: 'KDV' },
 };
 
 function translateDynamic(trimmed: string, lang: Exclude<Lang, 'ru'>): string | null {
@@ -616,26 +499,6 @@ function translateDynamic(trimmed: string, lang: Exclude<Lang, 'ru'>): string | 
   if (m) return pick(`${m[1]} bo‘lim`, `${m[1]} departments`, `${m[1]} bölüm`);
   m = /^(.+) прав$/.exec(trimmed);
   if (m) return pick(`${m[1]} huquq`, `${m[1]} permissions`, `${m[1]} yetki`);
-  m = /^ждёт (\d+) дн\.$/.exec(trimmed);
-  if (m) return pick(`${m[1]} kun kutmoqda`, `waiting ${m[1]} days`, `${m[1]} gündür bekliyor`);
-  m = /^позиций: (\d+)$/.exec(trimmed);
-  if (m) return pick(`pozitsiyalar: ${m[1]}`, `items: ${m[1]}`, `kalem: ${m[1]}`);
-  m = /^Поставщик: (.+)$/.exec(trimmed);
-  if (m) return pick(`Yetkazib beruvchi: ${m[1]}`, `Supplier: ${m[1]}`, `Tedarikçi: ${m[1]}`);
-  m = /^Архивировать «(.+)»\?$/.exec(trimmed);
-  if (m) return pick(`“${m[1]}” arxivlansinmi?`, `Archive “${m[1]}”?`, `“${m[1]}” arşivlensin mi?`);
-  m = /^Не удалось загрузить уведомления: (.+)$/.exec(trimmed);
-  if (m) return pick(`Bildirishnomalar yuklanmadi: ${m[1]}`, `Could not load notifications: ${m[1]}`, `Bildirimler yüklenemedi: ${m[1]}`);
-  m = /^(\d+) непрочитанных$/.exec(trimmed);
-  if (m) return pick(`${m[1]} ta o‘qilmagan`, `${m[1]} unread`, `${m[1]} okunmamış`);
-  m = /^прочитано (.+)$/.exec(trimmed);
-  if (m) return pick(`o‘qilgan ${m[1]}`, `read ${m[1]}`, `okundu ${m[1]}`);
-  m = /^(.+) файл\(ов\)$/.exec(trimmed);
-  if (m) return pick(`${m[1]} fayl`, `${m[1]} files`, `${m[1]} dosya`);
-  m = /^(.+) файл\(ов\) выбрано$/.exec(trimmed);
-  if (m) return pick(`${m[1]} fayl tanlandi`, `${m[1]} files selected`, `${m[1]} dosya seçildi`);
-  m = /^Файл (.+) больше 2 МБ$/.exec(trimmed);
-  if (m) return pick(`${m[1]} fayli 2 MB dan katta`, `File ${m[1]} is larger than 2 MB`, `${m[1]} dosyası 2 MB'den büyük`);
   return null;
 }
 

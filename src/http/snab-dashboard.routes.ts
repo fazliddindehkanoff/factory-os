@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
-import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import { eq, isNotNull, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { issueSession, verifySession } from '../auth/session.js';
@@ -15,7 +15,6 @@ interface DashboardActor {
   username: string;
   fullName: string;
   permissions: string[];
-  roles: Array<{ code: string; name: string }>;
 }
 
 interface DashboardRow {
@@ -197,21 +196,6 @@ async function findDashboardUser(db: Db, username: string): Promise<any | null> 
   return rows[0] ?? null;
 }
 
-async function dashboardUserRoles(db: Db, userId: string): Promise<Array<{ code: string; name: string }>> {
-  const result = await db.execute(sql`
-    SELECT r.code, r.name
-    FROM user_roles ur
-    INNER JOIN roles r ON r.id = ur.role_id
-    WHERE ur.user_id = ${userId}
-      AND ur.status = 'active'
-    ORDER BY r.is_system DESC, r.name ASC
-  `);
-  const rows: Array<Record<string, unknown>> = Array.isArray(result) ? result : (result.rows ?? []);
-  return rows
-    .map((row) => ({ code: text(row.code), name: text(row.name) }))
-    .filter((role) => role.code && role.name);
-}
-
 /**
  * One-time bridge from the old deployment credential to a real user account.
  * It is deliberately disabled as soon as any dashboard username exists. The
@@ -280,7 +264,6 @@ async function dashboardActor(db: Db, req: Request, sessionSecret: string): Prom
     username: user.username,
     fullName: user.fullName,
     permissions: await getUserPermissionCodes(db, user.id),
-    roles: await dashboardUserRoles(db, user.id),
   };
 }
 
@@ -708,12 +691,6 @@ function pageHtml(): string {
     @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
     :root{
       --bg:#080D19; --bg-elev:#0A0F1D; --card:rgba(255,255,255,0.04); --card-hover:rgba(255,255,255,0.06);
-      --control-bg:rgba(255,255,255,0.03); --panel-bg:#0E1526;
-      --table-head:#111A30; --table-group:#0A0F1D; --table-row-alt:rgba(255,255,255,0.015); --table-pager:rgba(10,15,29,.72);
-      --option-bg:#0A0F1D; --elev-shadow:0 20px 54px rgba(0,0,0,.42);
-      --surface-soft:rgba(255,255,255,.025); --surface-strong:rgba(255,255,255,.06);
-      --accent-soft:rgba(99,102,241,.15); --accent-fg:#A5B4FC; --cyan-fg:#A5D8E5;
-      --danger-fg:#FCA5A5; --scrim:rgba(4,7,14,.62); --toast-bg:#111827;
       --border:rgba(255,255,255,0.10); --border-strong:rgba(255,255,255,0.20);
       --text:#FFFFFF; --text-sec:#94A3B8; --text-muted:#64748B;
       --accent1:#6366F1; --accent2:#22D3EE;
@@ -724,15 +701,8 @@ function pageHtml(): string {
     }
     body[data-theme="light"]{
       --bg:#F1F5F9; --bg-elev:#FFFFFF; --card:#FFFFFF; --card-hover:#F8FAFC;
-      --control-bg:#FFFFFF; --panel-bg:#FFFFFF;
-      --table-head:#F8FAFC; --table-group:#EEF2FF; --table-row-alt:#F8FAFC; --table-pager:#FFFFFF;
-      --option-bg:#FFFFFF; --elev-shadow:0 18px 42px rgba(15,23,42,.13);
-      --surface-soft:#F8FAFC; --surface-strong:#F1F5F9;
-      --accent-soft:#EEF2FF; --accent-fg:#4338CA; --cyan-fg:#0E7490;
-      --danger-fg:#B91C1C; --green:#15803D; --amber:#B45309; --red:#DC2626;
-      --scrim:rgba(15,23,42,.48); --toast-bg:#FFFFFF;
       --border:#E2E8F0; --border-strong:#CBD5E1;
-      --text:#0F172A; --text-sec:#475569; --text-muted:#64748B;
+      --text:#0F172A; --text-sec:#475569; --text-muted:#94A3B8;
       --accent1:#4F46E5; --accent2:#0891B2;
       color-scheme:light;
     }
@@ -744,8 +714,8 @@ function pageHtml(): string {
     .login{min-height:100vh;display:grid;place-items:center;padding:28px;background:
       radial-gradient(circle at 18% 18%,rgba(99,102,241,.16),transparent 34%),
       radial-gradient(circle at 86% 82%,rgba(34,211,238,.10),transparent 31%),var(--bg);}
-    .login-shell{width:min(980px,100%);min-height:590px;display:grid;grid-template-columns:minmax(0,1.08fr) minmax(360px,.92fr);overflow:hidden;border:1px solid var(--border);border-radius:24px;background:var(--bg-elev);box-shadow:var(--elev-shadow);}
-    .login-story{position:relative;overflow:hidden;padding:46px;display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(145deg,var(--accent-soft),transparent 58%),var(--panel-bg);}
+    .login-shell{width:min(980px,100%);min-height:590px;display:grid;grid-template-columns:minmax(0,1.08fr) minmax(360px,.92fr);overflow:hidden;border:1px solid var(--border);border-radius:24px;background:#0A0F1D;box-shadow:0 32px 80px rgba(0,0,0,.38);}
+    .login-story{position:relative;overflow:hidden;padding:46px;display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(145deg,rgba(99,102,241,.17),rgba(10,15,29,.15) 48%),#0D1425;}
     .login-story:before{content:'';position:absolute;inset:0;opacity:.18;background-image:linear-gradient(rgba(148,163,184,.16) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.16) 1px,transparent 1px);background-size:34px 34px;mask-image:linear-gradient(to bottom,black,transparent 78%);pointer-events:none;}
     .login-brand,.login-story-copy,.flow-line{position:relative;z-index:1;}
     .login-brand{display:flex;align-items:center;gap:12px;font-weight:700;letter-spacing:.08em;font-size:12px;}
@@ -753,31 +723,31 @@ function pageHtml(): string {
     .login-story h1{max-width:500px;margin:0 0 14px;font-size:clamp(32px,4vw,48px);line-height:1.05;letter-spacing:-.045em;font-weight:600;}
     .login-story p{max-width:440px;margin:0;color:var(--text-sec);font-size:14px;line-height:1.7;}
     .flow-line{display:grid;grid-template-columns:auto 1fr auto 1fr auto;align-items:center;gap:10px;color:var(--text-muted);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;}
-    .flow-node{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface-strong);color:var(--accent-fg);}
+    .flow-node{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--border-strong);border-radius:9px;background:rgba(255,255,255,.04);color:#C7D2FE;}
     .flow-link{height:1px;background:linear-gradient(90deg,rgba(99,102,241,.75),rgba(34,211,238,.32));}
-    .login-panel{display:flex;align-items:center;padding:46px;background:var(--bg-elev);}
+    .login-panel{display:flex;align-items:center;padding:46px;background:rgba(8,13,25,.78);}
     .login-card{width:100%;max-width:380px;margin:auto;}
-    .login-kicker{margin-bottom:10px;color:var(--accent-fg);font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;}
+    .login-kicker{margin-bottom:10px;color:#A5B4FC;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;}
     .login-card h2{margin:0;font-size:26px;letter-spacing:-.025em;}
     .login-card .sub{color:var(--text-sec);margin:7px 0 28px;font-size:13px;line-height:1.6;}
     .login-field{margin-bottom:16px;}
-    .login-field label{display:block;margin:0 0 7px;color:var(--text-sec);font-size:12px;font-weight:600;}
+    .login-field label{display:block;margin:0 0 7px;color:#CBD5E1;font-size:12px;font-weight:600;}
     .login-input-wrap{position:relative;}
     .login-input-icon{position:absolute;left:13px;top:50%;translate:0 -50%;display:grid;place-items:center;color:var(--text-muted);pointer-events:none;}
-    .login-input{width:100%;height:46px;background:var(--control-bg);border:1px solid var(--border);border-radius:var(--radius-ctl);padding:0 44px 0 42px;outline:none;transition:border-color .14s,box-shadow .14s,background .14s;}
-    .login-input:hover{background:var(--surface-soft);}
-    .login-input:focus{border-color:var(--accent1);box-shadow:0 0 0 3px var(--accent-soft);background:var(--control-bg);}
-    .login-input::placeholder{color:var(--text-muted);}
+    .login-input{width:100%;height:46px;background:rgba(255,255,255,.035);border:1px solid var(--border);border-radius:var(--radius-ctl);padding:0 44px 0 42px;outline:none;transition:border-color .14s,box-shadow .14s,background .14s;}
+    .login-input:hover{background:rgba(255,255,255,.05);}
+    .login-input:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);background:rgba(255,255,255,.055);}
+    .login-input::placeholder{color:#526078;}
     .eye{position:absolute;right:6px;top:6px;width:34px;height:34px;border:0;border-radius:9px;background:transparent;color:var(--text-sec);display:grid;place-items:center;cursor:pointer;}
-    .eye:hover{background:var(--surface-strong);color:var(--text);}
+    .eye:hover{background:rgba(255,255,255,.07);color:var(--text);}
     .login-submit{width:100%;height:46px;margin-top:2px;}
     .login-submit:disabled{cursor:wait;filter:saturate(.6);opacity:.72;}
     .login-note{display:flex;align-items:flex-start;gap:8px;margin-top:18px;color:var(--text-muted);font-size:11.5px;line-height:1.5;}
     .login-note svg{flex:none;margin-top:1px;}
     .btn{border:0;border-radius:11px;padding:11px 17px;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:#fff;font-weight:600;font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;justify-content:center;transition:filter .12s;}
     .btn:hover{filter:brightness(1.1);}
-    .btn.secondary{background:var(--surface-strong);border:1px solid var(--border);color:var(--text);}
-    .btn.secondary:hover{background:var(--card-hover);}
+    .btn.secondary{background:rgba(255,255,255,0.06);border:1px solid var(--border);color:var(--text);}
+    .btn.secondary:hover{background:rgba(255,255,255,0.09);}
     .btn.ghost{background:transparent;border:1px solid var(--border);color:var(--text-sec);}
     .btn.ghost:hover{background:var(--card-hover);color:var(--text);}
     /* ── sidebar: navigation only ── */
@@ -789,18 +759,17 @@ function pageHtml(): string {
     .nav-sec{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);padding:16px 10px 6px;}
     .side-link{display:flex;align-items:center;justify-content:space-between;gap:9px;width:100%;padding:8px 10px;border:none;border-radius:10px;background:none;color:var(--text-sec);font-size:13px;font-weight:500;cursor:pointer;text-align:left;transition:background .12s,color .12s;}
     .side-label{display:flex;align-items:center;gap:9px;min-width:0;}
-    .side-link:hover{background:var(--surface-strong);color:var(--text);}
-    .side-link.active{background:var(--accent-soft);color:var(--accent-fg);font-weight:600;}
+    .side-link:hover{background:rgba(255,255,255,0.05);color:var(--text);}
+    .side-link.active{background:rgba(99,102,241,0.15);color:#A5B4FC;font-weight:600;}
     .side-link svg{flex:0 0 auto;}
     .side-badge{min-width:18px;height:18px;padding:0 6px;border-radius:99px;background:var(--amber);color:#fff;font-size:10px;font-weight:800;line-height:18px;text-align:center;}
     .module-preview-btn{opacity:.82;}
     .module-preview-btn:hover{opacity:1;}
     .side-bottom{margin-top:auto;border-top:1px solid var(--border);padding-top:12px;}
     .side-user{display:flex;align-items:center;gap:9px;margin:0 5px 10px;padding:8px 5px;min-width:0;}
-    .side-avatar{width:30px;height:30px;display:grid;place-items:center;flex:none;border-radius:9px;background:var(--accent-soft);color:var(--accent-fg);font-size:11px;font-weight:700;}
+    .side-avatar{width:30px;height:30px;display:grid;place-items:center;flex:none;border-radius:9px;background:rgba(99,102,241,.18);color:#C7D2FE;font-size:11px;font-weight:700;}
     .side-user-name{overflow:hidden;color:var(--text);font-size:12px;font-weight:600;text-overflow:ellipsis;white-space:nowrap;}
     .side-user-login{overflow:hidden;color:var(--text-muted);font-size:10.5px;text-overflow:ellipsis;white-space:nowrap;}
-    .side-user-role{display:block;width:max-content;max-width:100%;overflow:hidden;margin-top:4px;padding:2px 6px;border:1px solid color-mix(in srgb,var(--accent1) 24%,transparent);border-radius:6px;background:var(--accent-soft);color:var(--accent-fg);font-size:9.5px;font-weight:800;line-height:1.35;text-overflow:ellipsis;white-space:nowrap;}
     /* ── main ── */
     .main-pane{min-width:0;display:flex;flex-direction:column;}
     .navbar{position:sticky;top:0;z-index:10;display:flex;justify-content:space-between;align-items:center;gap:14px;min-height:64px;padding:10px 20px;background:color-mix(in srgb,var(--bg) 92%,transparent);border-bottom:1px solid var(--border);backdrop-filter:blur(8px);}
@@ -809,11 +778,11 @@ function pageHtml(): string {
     .brand-title{font-size:15px;font-weight:600;line-height:1.15;}
     .brand-sub{color:var(--text-muted);font-size:11.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42vw;}
     .nav-actions{display:flex;align-items:center;gap:10px;min-width:0;}
-    .search-wrap{display:flex;align-items:center;gap:9px;width:min(460px,34vw);background:var(--control-bg);border:1px solid var(--border);border-radius:11px;padding:0 12px;}
+    .search-wrap{display:flex;align-items:center;gap:9px;width:min(460px,34vw);background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:11px;padding:0 12px;}
     .search{width:100%;background:transparent;border:0;padding:10px 0;outline:none;}
     .search::placeholder{color:var(--text-muted);}
     .search-wrap:focus-within{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);}
-    .topbar-control,.icon-btn{height:38px;border:1px solid var(--border);border-radius:10px;background:var(--control-bg);color:var(--text-sec);display:inline-flex;align-items:center;gap:7px;padding:0 11px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;}
+    .topbar-control,.icon-btn{height:38px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.04);color:var(--text-sec);display:inline-flex;align-items:center;gap:7px;padding:0 11px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;}
     .topbar-control:hover,.icon-btn:hover{background:var(--card-hover);color:var(--text);}
     .icon-btn{width:38px;padding:0;justify-content:center;position:relative;}
     .notify-dot{position:absolute;right:8px;top:8px;width:8px;height:8px;border-radius:99px;background:var(--red);border:2px solid var(--bg-elev);}
@@ -823,89 +792,38 @@ function pageHtml(): string {
     .lang-option.active,.lang-option:hover{background:rgba(99,102,241,.14);color:var(--text);}
     .wrap{min-width:0;padding:22px 24px 60px;}
     .top{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin:0 0 18px;}
-    .top-actions,.panel-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}
     h1{margin:0;font-size:24px;font-weight:600;letter-spacing:-.01em;}
     .sub{color:var(--text-sec);margin-top:5px;font-size:13px;}
     /* KPI + dashboard */
     .ops-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:18px;}
     .ops-hero h1{font-size:24px;font-weight:800;}
     .ops-date{color:var(--text-sec);font-size:13px;}
-    .ops-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:18px;}
+    .ops-kpis{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:12px;margin-bottom:18px;}
     .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px 16px;}
     .kpi-card{cursor:pointer;transition:background .12s,border-color .12s,translate .12s;}
     .kpi-card:hover{background:var(--card-hover);border-color:var(--border-strong);translate:0 -1px;}
     .kpi-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-    .kpi-icon{width:34px;height:28px;border-radius:9px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent-fg);font:10px 'JetBrains Mono',ui-monospace,monospace;}
+    .kpi-icon{width:34px;height:28px;border-radius:9px;display:grid;place-items:center;background:rgba(99,102,241,.16);color:#A5B4FC;font:10px 'JetBrains Mono',ui-monospace,monospace;}
     .k{color:var(--text-sec);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;}
-    .v{min-width:0;overflow:hidden;font-size:clamp(20px,1.8vw,24px);font-weight:600;line-height:1.15;margin-top:7px;font-family:'IBM Plex Mono',ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap;}
+    .v{font-size:24px;font-weight:600;margin-top:7px;font-family:'IBM Plex Mono',ui-monospace,monospace;}
     .trend{margin-top:5px;color:var(--text-muted);font-size:11px;font-weight:700;}
     .trend.bad{color:var(--red);}
     .trend.good{color:var(--green);}
     .ops-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;}
     .ops-panel{min-height:190px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:16px 18px;overflow:hidden;}
-    .pipeline-panel{grid-column:1/-1;min-height:0;}
     .ops-panel-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;font-size:14px;font-weight:800;}
-    .panel-link{border:0;background:transparent;color:var(--accent-fg);font-size:12px;font-weight:700;cursor:pointer;}
-    .pipeline{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding-top:4px;}
-    .pipeline-stage{position:relative;min-width:0;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-soft);}
-    .pipeline-stage:not(:last-child):after{content:'›';position:absolute;right:-9px;top:50%;z-index:1;width:18px;height:18px;display:grid;place-items:center;translate:0 -50%;border:1px solid var(--border);border-radius:50%;background:var(--card);color:var(--accent-fg);font-size:16px;font-weight:800;}
-    .pipeline-step{color:var(--accent-fg);font:800 9.5px 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.08em;}
-    .pipeline-value{margin-top:5px;color:var(--text);font:800 24px 'IBM Plex Mono',ui-monospace,monospace;line-height:1;}
-    .pipeline-label{min-height:18px;margin-top:7px;color:var(--text);font-size:11.5px;font-weight:800;line-height:1.35;}
-    .pipeline-meta{min-height:28px;margin-top:3px;color:var(--text-muted);font-size:10px;font-weight:700;line-height:1.4;}
-    .pipeline-progress{height:4px;overflow:hidden;margin-top:9px;border-radius:99px;background:var(--surface-strong);}
-    .pipeline-progress span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent1),var(--accent2));}
-    .signed-role{max-width:190px;overflow:hidden;padding:5px 8px;border:1px solid color-mix(in srgb,var(--accent1) 24%,transparent);border-radius:8px;background:var(--accent-soft);color:var(--accent-fg);font-size:10px;font-weight:800;text-overflow:ellipsis;white-space:nowrap;}
+    .panel-link{border:0;background:transparent;color:#A5B4FC;font-size:12px;font-weight:700;cursor:pointer;}
+    .pipeline{display:grid;grid-template-columns:repeat(7,1fr);align-items:end;gap:10px;height:132px;padding-top:10px;}
+    .pipe-day{display:grid;grid-template-rows:1fr auto;gap:7px;min-width:0;text-align:center;color:var(--text-muted);font-size:10.5px;font-weight:700;}
+    .pipe-bars{height:100%;display:flex;align-items:end;justify-content:center;gap:3px;}
+    .pipe-bar{width:7px;min-height:6px;border-radius:7px 7px 2px 2px;background:var(--accent1);}
+    .pipe-bar.approved{background:var(--green);}
+    .pipe-bar.closed{background:var(--amber);}
     .compact-list{display:grid;gap:8px;}
-    .compact-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-soft);}
+    .compact-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.025);}
     .compact-row strong{font-size:12px;}
     .compact-row span{font-size:11px;color:var(--text-muted);}
     .risk{color:var(--red);font-weight:800;}
-    .warehouse-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
-    .warehouse-kpis{grid-template-columns:repeat(4,minmax(150px,1fr));}
-    .warehouse-layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(320px,.8fr);gap:14px;align-items:start;}
-    .warehouse-main,.warehouse-side{min-height:420px;}
-    .warehouse-tools{display:flex;align-items:center;gap:8px;width:min(560px,52vw);}
-    .warehouse-tools .search{height:36px;padding:0 12px;border:1px solid var(--border);border-radius:10px;background:var(--control-bg);}
-    .warehouse-tools .fin{height:36px;max-width:180px;padding-top:7px;padding-bottom:7px;font-size:12px;}
-    .warehouse-table-wrap{overflow:auto;max-height:calc(100vh - 365px);border:1px solid var(--border);border-radius:12px;}
-    .warehouse-table{min-width:820px;width:100%;font-size:12px;table-layout:fixed;}
-    .warehouse-table th{top:0;background:var(--table-head);color:var(--text-sec);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;}
-    .warehouse-table th,.warehouse-table td{padding:10px 11px;}
-    .warehouse-table .sku-cell strong{display:block;font-size:12.5px;color:var(--text);}
-    .warehouse-table .sku-cell span{display:block;margin-top:2px;color:var(--text-muted);font-size:10.5px;}
-    .qty-main{font:700 13px 'IBM Plex Mono',ui-monospace,monospace;text-align:right;}
-    .qty-low{color:var(--red);}
-    .qty-ok{color:var(--green);}
-    .warehouse-row-actions{display:flex;gap:5px;justify-content:flex-end;}
-    .stock-chip{display:inline-flex;align-items:center;gap:5px;width:max-content;padding:4px 7px;border-radius:999px;background:var(--surface-strong);color:var(--text-sec);font-size:10.5px;font-weight:700;}
-    .stock-chip.low{background:var(--red-bg);color:var(--danger-fg);border:1px solid var(--red-bd);}
-    .stock-chip.ok{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd);}
-    .warehouse-journal{max-height:calc(100vh - 365px);overflow:auto;}
-    .movement-row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;padding:10px 11px;border:1px solid var(--border);border-radius:11px;background:var(--surface-soft);}
-    .move-type{width:28px;height:28px;display:grid;place-items:center;border-radius:9px;font:800 13px 'IBM Plex Mono',ui-monospace,monospace;}
-    .move-type.income{background:var(--green-bg);color:var(--green);}
-    .move-type.outcome{background:var(--red-bg);color:var(--danger-fg);}
-    .move-type.adjustment{background:var(--accent-soft);color:var(--accent-fg);}
-    .movement-row strong{display:block;font-size:12px;}
-    .movement-row small{display:block;margin-top:3px;color:var(--text-muted);font-size:10.5px;line-height:1.35;}
-    .movement-qty{font:700 12px 'IBM Plex Mono',ui-monospace,monospace;text-align:right;white-space:nowrap;}
-    .report-kpis{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px;}
-    .report-kpi{min-width:0;padding:16px 18px;}
-    .report-kpi .v{overflow:hidden;max-width:100%;font-size:clamp(20px,2.1vw,30px);line-height:1.08;text-overflow:ellipsis;white-space:nowrap;letter-spacing:0;}
-    .report-kpi .trend{margin-top:8px;}
-    .report-layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(360px,.75fr);gap:14px;align-items:start;}
-    .report-main{min-height:280px;}
-    .report-side{display:grid;gap:14px;}
-    .report-panel{min-height:0;}
-    .report-panel .compact-list{gap:9px;}
-    .report-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px 13px;border:1px solid var(--border);border-radius:12px;background:var(--surface-soft);}
-    .report-row:hover{background:var(--card-hover);border-color:var(--border-strong);}
-    .report-name{min-width:0;}
-    .report-name strong{display:block;overflow:hidden;color:var(--text);font-size:13px;font-weight:800;text-overflow:ellipsis;white-space:nowrap;}
-    .report-name span{display:block;margin-top:3px;color:var(--text-muted);font-size:11px;font-weight:700;}
-    .report-value{font:800 13px 'JetBrains Mono',ui-monospace,monospace;text-align:right;white-space:nowrap;}
-    .report-value.subtle{color:var(--text-sec);}
     .table-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:6px 0 12px;}
     .table-heading h2{margin:0;font-size:16px;}
     .table-heading .sub{margin:3px 0 0;}
@@ -915,73 +833,37 @@ function pageHtml(): string {
     .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
     .filter-count{min-width:19px;height:19px;padding:0 5px;border-radius:10px;background:var(--accent1);color:#fff;font-size:10.5px;font-weight:700;line-height:19px;text-align:center;display:none;}
     .settings-wrap{position:relative;}
-    .settings-panel{position:absolute;right:0;top:calc(100% + 8px);z-index:12;width:min(430px,calc(100vw - 36px));max-height:min(520px,70vh);overflow:auto;padding:14px;border:1px solid var(--border-strong);border-radius:14px;background:var(--panel-bg);box-shadow:var(--elev-shadow);}
+    .settings-panel{position:absolute;right:0;top:calc(100% + 8px);z-index:12;width:min(430px,calc(100vw - 36px));max-height:min(520px,70vh);overflow:auto;padding:14px;border:1px solid var(--border-strong);border-radius:14px;background:#0E1526;box-shadow:0 20px 54px rgba(0,0,0,.42);}
     .settings-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;}
     .settings-head strong{display:block;font-size:13px;}
     .settings-head span{display:block;margin-top:2px;color:var(--text-muted);font-size:11px;}
     .settings-actions{display:flex;gap:6px;flex-wrap:wrap;}
     .columns-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
-    .column-option{display:flex;align-items:flex-start;gap:7px;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--surface-soft);color:var(--text-sec);font-size:11.5px;cursor:pointer;}
+    .column-option{display:flex;align-items:flex-start;gap:7px;padding:8px;border:1px solid var(--border);border-radius:9px;background:rgba(255,255,255,.025);color:var(--text-sec);font-size:11.5px;cursor:pointer;}
     .column-option input{margin-top:2px;}
     .filters-panel{display:none;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px;margin-bottom:14px;}
     .filters-panel.open{display:block;}
     .filters-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;}
     .filter-field label{display:block;margin-bottom:4px;color:var(--text-muted);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
     .filter-row{display:grid;grid-template-columns:1fr;gap:6px;}
-    .filter-field select{width:100%;background:var(--control-bg);border:1px solid var(--border);border-radius:9px;padding:7px 9px;font-size:12px;outline:none;}
+    .filter-field select{width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:9px;padding:7px 9px;font-size:12px;outline:none;}
     .filter-field select[data-filter-mode]{height:34px;appearance:none;-webkit-appearance:none;color:var(--text-sec);background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 7px center;background-size:14px;padding-right:24px;}
     .filter-field select[data-filter-key]{min-height:92px;color:var(--text);}
     .filter-field select[data-filter-key] option{padding:4px 6px;border-radius:6px;}
-    .filter-field select option{background:var(--option-bg);color:var(--text);}
+    .filter-field select option{background:#0A0F1D;color:var(--text);}
     .filter-field select:focus{border-color:var(--accent1);}
     /* table */
     .table-shell{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-card);overflow:hidden;}
-    .scroll{overflow:auto;max-height:calc(100vh - 320px);overscroll-behavior:contain;scrollbar-gutter:stable;}
-    .scroll,.warehouse-table-wrap,.product-catalog,.items-shell{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent;}
-    .scroll::-webkit-scrollbar,.warehouse-table-wrap::-webkit-scrollbar,.product-catalog::-webkit-scrollbar,.items-shell::-webkit-scrollbar{width:10px;height:10px;}
-    .scroll::-webkit-scrollbar-thumb,.warehouse-table-wrap::-webkit-scrollbar-thumb,.product-catalog::-webkit-scrollbar-thumb,.items-shell::-webkit-scrollbar-thumb{border:3px solid transparent;border-radius:99px;background:var(--border-strong);background-clip:padding-box;}
+    .scroll{overflow:auto;max-height:calc(100vh - 320px);}
     table{border-collapse:separate;border-spacing:0;min-width:2750px;width:100%;font-size:12.5px;}
-    #table{table-layout:fixed;}
     th,td{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:9px 10px;white-space:nowrap;text-align:left;}
-    .order-col{width:58px;min-width:58px;max-width:58px;text-align:center;color:var(--text-muted);font:700 12px 'JetBrains Mono',ui-monospace,monospace;}
-    th.order-col{color:var(--text-sec);text-transform:uppercase;letter-spacing:.04em;}
-    th{position:sticky;top:33px;z-index:2;background:var(--table-head);font-weight:600;color:var(--text-sec);font-size:11.5px;}
-    th.group{top:0;background:var(--table-group);color:color-mix(in srgb,var(--accent1) 72%,var(--text));text-align:center;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
-    .head-cell{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;}
-    .sort-head{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:8px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;padding:0;}
-    .sort-head span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    th{position:sticky;top:33px;z-index:2;background:#111a30;font-weight:600;color:var(--text-sec);font-size:11.5px;}
+    th.group{top:0;background:#0A0F1D;color:#A5B4FC;text-align:center;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;}
+    .sort-head{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;padding:0;}
     .sort-head:hover{color:var(--text);}
     .sort-mark{flex:none;color:var(--text-muted);font-size:10px;}
     .sort-head.active .sort-mark{color:var(--accent2);}
-    th.resizable-th{position:sticky;}
-    .column-resizer{position:absolute;top:0;right:-4px;z-index:4;width:8px;height:100%;cursor:col-resize;touch-action:none;}
-    .column-resizer:after{content:'';position:absolute;top:8px;bottom:8px;left:3px;width:1px;background:transparent;}
-    th:hover>.column-resizer:after,.column-resizing .column-resizer:after{background:var(--accent2);}
-    body.column-resizing{user-select:none;cursor:col-resize;}
-    .excel-filter-btn{width:22px;height:22px;display:grid;place-items:center;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text-muted);cursor:pointer;}
-    .excel-filter-btn:hover,.excel-filter-btn.active{border-color:var(--border-strong);background:var(--card-hover);color:var(--accent2);}
-    .excel-filter-menu{position:fixed;z-index:45;width:330px;max-width:calc(100vw - 24px);max-height:min(620px,calc(100vh - 24px));display:flex;flex-direction:column;border:1px solid var(--border-strong);border-radius:10px;background:var(--bg-elev);box-shadow:var(--elev-shadow);padding:12px;color:var(--text);}
-    .excel-filter-title{margin:0 0 8px;color:var(--text-muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;}
-    .excel-filter-action{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;border:0;background:transparent;color:var(--text);padding:8px 6px;border-radius:7px;font-size:13px;font-weight:650;text-align:left;cursor:pointer;}
-    .excel-filter-action:hover{background:var(--card-hover);}
-    .excel-filter-rule{display:none;grid-template-columns:1fr;gap:7px;padding:7px 0 10px;}
-    .excel-filter-rule.open{display:grid;}
-    .excel-filter-rule select,.excel-filter-rule input,.excel-filter-search{width:100%;height:36px;border:1px solid var(--border);border-radius:8px;background:var(--control-bg);color:var(--text);padding:0 10px;outline:none;}
-    .excel-filter-rule input:focus,.excel-filter-search:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,.13);}
-    .excel-filter-sep{height:1px;background:var(--border);margin:8px 0;}
-    .excel-filter-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:5px 0 8px;font-size:12px;}
-    .excel-filter-link{border:0;background:transparent;color:color-mix(in srgb,var(--accent2) 70%,var(--text));padding:0;text-decoration:underline;cursor:pointer;font:inherit;}
-    .excel-filter-shown{color:var(--text-sec);}
-    .excel-filter-search-wrap{position:relative;margin-bottom:8px;}
-    .excel-filter-search-wrap svg{position:absolute;right:10px;top:50%;translate:0 -50%;color:var(--text-muted);pointer-events:none;}
-    .excel-filter-values{min-height:120px;max-height:230px;overflow:auto;padding:2px 0;border-bottom:1px solid var(--border);}
-    .excel-filter-option{display:flex;align-items:center;gap:9px;padding:6px 5px;border-radius:7px;color:var(--text);font-size:13px;cursor:pointer;}
-    .excel-filter-option:hover{background:var(--card-hover);}
-    .excel-filter-option input{width:15px;height:15px;accent-color:var(--green);}
-    .excel-filter-option span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .excel-filter-actions{display:flex;justify-content:flex-end;gap:10px;padding-top:12px;}
-    .excel-filter-actions .btn{min-width:88px;height:38px;padding:0 18px;}
-    tr:nth-child(even) td{background:var(--table-row-alt);}
+    tr:nth-child(even) td{background:rgba(255,255,255,0.015);}
     .num{text-align:right;font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',ui-monospace,monospace;}
     .actions{display:flex;gap:6px;}
     .mini{border:1px solid var(--border);border-radius:9px;padding:6px 9px;background:transparent;color:var(--text-sec);font-weight:600;font-size:12px;cursor:pointer;}
@@ -990,11 +872,11 @@ function pageHtml(): string {
     .mini.delete{color:var(--red);}
     .dirty td{background:rgba(245,158,11,0.08) !important;}
     .table-empty{padding:38px 18px;color:var(--text-muted);text-align:center;}
-    .table-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;border-top:1px solid var(--border);background:var(--table-pager);flex-wrap:wrap;}
+    .table-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;border-top:1px solid var(--border);background:rgba(10,15,29,.72);flex-wrap:wrap;}
     .pager-info{color:var(--text-sec);font-size:12px;}
     .pager-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-    .pager-actions select{height:32px;border:1px solid var(--border);border-radius:9px;background:var(--control-bg);color:var(--text-sec);padding:0 8px;outline:none;}
-    .pager-actions select option{background:var(--option-bg);color:var(--text);}
+    .pager-actions select{height:32px;border:1px solid var(--border);border-radius:9px;background:rgba(255,255,255,.03);color:var(--text-sec);padding:0 8px;outline:none;}
+    .pager-actions select option{background:#0A0F1D;color:var(--text);}
     .pager-btn{min-width:32px;height:32px;border:1px solid var(--border);border-radius:9px;background:transparent;color:var(--text-sec);cursor:pointer;}
     .pager-btn:hover:not(:disabled){border-color:var(--border-strong);background:var(--card-hover);color:var(--text);}
     .pager-btn:disabled{opacity:.38;cursor:not-allowed;}
@@ -1002,16 +884,16 @@ function pageHtml(): string {
     .form-wrap{max-width:980px;}
     .fcard{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:22px 24px;margin-bottom:18px;}
     .fcard-title{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;margin:0 0 16px;}
-    .num-badge{width:22px;height:22px;border-radius:7px;background:var(--accent-soft);color:var(--accent-fg);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;}
+    .num-badge{width:22px;height:22px;border-radius:7px;background:rgba(99,102,241,0.18);color:#A5B4FC;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;}
     .fcard-title small{font-weight:400;font-size:12px;color:var(--text-muted);margin-left:4px;}
     label.f{display:block;font-size:12px;color:var(--text-sec);margin-bottom:6px;font-weight:500;}
     label.f .req{color:var(--red);}
     .field{margin-bottom:14px;}
     .field-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-bottom:14px;}
-    .fin,select.fin,textarea.fin{width:100%;background:var(--control-bg);border:1px solid var(--border);border-radius:var(--radius-ctl);padding:10px 12px;font-size:13.5px;outline:none;transition:border-color .12s;}
+    .fin,select.fin,textarea.fin{width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius-ctl);padding:10px 12px;font-size:13.5px;outline:none;transition:border-color .12s;}
     .fin:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,0.15);}
     select.fin{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 10px center;background-size:16px;padding-right:32px;}
-    select.fin option{background:var(--option-bg);color:var(--text);}
+    select.fin option{background:#0A0F1D;color:var(--text);}
     textarea.fin{resize:vertical;min-height:70px;}
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;}
     .type-card{border:1px solid var(--border);border-radius:14px;padding:14px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;color:var(--text-sec);transition:all .12s;font-size:13px;font-weight:500;}
@@ -1023,7 +905,7 @@ function pageHtml(): string {
     .pill.sel-plain{border-color:var(--border-strong);background:rgba(148,163,184,0.12);color:var(--text);}
     .pill.sel-urgent{border-color:var(--amber-bd);background:var(--amber-bg);color:var(--amber);}
     .pill.sel-emergency{border-color:var(--red-bd);background:var(--red-bg);color:var(--red);}
-    .warning-banner{display:none;align-items:flex-start;gap:10px;background:var(--red-bg);border:1px solid var(--red-bd);color:var(--danger-fg);border-radius:12px;padding:12px 14px;margin-top:12px;font-size:12.5px;}
+    .warning-banner{display:none;align-items:flex-start;gap:10px;background:var(--red-bg);border:1px solid var(--red-bd);color:#FCA5A5;border-radius:12px;padding:12px 14px;margin-top:12px;font-size:12.5px;}
     .warning-banner.show{display:flex;}
     .items-shell{border:1px solid var(--border);border-radius:14px;overflow-x:auto;}
     table.items{min-width:820px;width:100%;font-size:13px;border-collapse:separate;border-spacing:0;}
@@ -1032,9 +914,9 @@ function pageHtml(): string {
     table.items tr:last-child td{border-bottom:none;}
     table.items input,table.items select{width:100%;border:1px solid transparent;background:transparent;border-radius:8px;padding:7px 8px;font-size:13px;outline:none;}
     table.items input:hover,table.items select:hover{border-color:var(--border);}
-    table.items input:focus,table.items select:focus{border-color:var(--accent1);background:var(--control-bg);}
+    table.items input:focus,table.items select:focus{border-color:var(--accent1);background:rgba(255,255,255,0.03);}
     table.items select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 6px center;background-size:14px;padding-right:22px;}
-    table.items select option{background:var(--option-bg);color:var(--text);}
+    table.items select option{background:#0A0F1D;}
     td.idx{color:var(--text-muted);font-size:12.5px;text-align:center;width:34px;}
     .row-x{width:28px;height:28px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-size:15px;line-height:1;}
     .row-x:hover{color:var(--red);border-color:var(--red-bd);}
@@ -1045,7 +927,7 @@ function pageHtml(): string {
     .total-row .lbl{color:var(--text-sec);font-size:13px;}
     .total-row .val{font-size:18px;font-weight:600;font-family:'IBM Plex Mono',ui-monospace,monospace;}
     .form-actions{display:flex;justify-content:space-between;gap:10px;margin-top:4px;}
-    .err-line{color:var(--danger-fg);font-size:12.5px;min-height:18px;margin-bottom:8px;}
+    .err-line{color:#FCA5A5;font-size:12.5px;min-height:18px;margin-bottom:8px;}
     /* ── access administration ── */
     .admin-stats{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:12px;margin-bottom:16px;}
     .admin-stat{padding:15px 16px;border:1px solid var(--border);border-radius:14px;background:var(--card);}
@@ -1054,89 +936,72 @@ function pageHtml(): string {
     .admin-panel{overflow:hidden;border:1px solid var(--border);border-radius:16px;background:var(--card);}
     .admin-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border);}
     .admin-panel-head strong{font-size:13px;}
-    .admin-search{width:min(310px,45vw);padding:9px 11px;border:1px solid var(--border);border-radius:10px;background:var(--control-bg);outline:none;}
+    .admin-search{width:min(310px,45vw);padding:9px 11px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.03);outline:none;}
     .admin-search:focus{border-color:var(--accent1);box-shadow:0 0 0 3px rgba(99,102,241,.13);}
     .people-list{min-width:720px;}
     .people-row{display:grid;grid-template-columns:minmax(210px,1.25fr) minmax(150px,.9fr) minmax(210px,1.25fr) 100px 96px;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--border);}
     .people-row:last-child{border-bottom:0;}
-    .people-row.head{color:var(--text-muted);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:var(--surface-soft);}
+    .people-row.head{color:var(--text-muted);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:rgba(255,255,255,.015);}
     .identity{display:flex;align-items:center;gap:10px;min-width:0;}
-    .avatar{width:34px;height:34px;display:grid;place-items:center;flex:none;border-radius:10px;background:linear-gradient(135deg,var(--accent-soft),color-mix(in srgb,var(--accent2) 14%,transparent));color:var(--accent-fg);font-size:11px;font-weight:700;}
+    .avatar{width:34px;height:34px;display:grid;place-items:center;flex:none;border-radius:10px;background:linear-gradient(135deg,rgba(99,102,241,.24),rgba(34,211,238,.15));color:#C7D2FE;font-size:11px;font-weight:700;}
     .identity-name{overflow:hidden;font-size:13px;font-weight:600;text-overflow:ellipsis;white-space:nowrap;}
     .identity-meta{overflow:hidden;color:var(--text-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap;}
     .role-list{display:flex;gap:5px;flex-wrap:wrap;}
-    .role-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border:1px solid color-mix(in srgb,var(--accent1) 28%,transparent);border-radius:999px;background:var(--accent-soft);color:var(--accent-fg);font-size:10.5px;}
+    .role-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border:1px solid rgba(99,102,241,.22);border-radius:999px;background:rgba(99,102,241,.10);color:#C7D2FE;font-size:10.5px;}
     .status-dot{display:inline-flex;align-items:center;gap:6px;color:var(--text-sec);font-size:11.5px;}
     .status-dot:before{content:'';width:7px;height:7px;border-radius:50%;background:var(--text-muted);}
     .status-dot.active:before{background:var(--green);box-shadow:0 0 0 3px var(--green-bg);}
-    .mini-action{padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--control-bg);color:var(--text-sec);font-size:11.5px;cursor:pointer;}
+    .mini-action{padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.035);color:var(--text-sec);font-size:11.5px;cursor:pointer;}
     .mini-action:hover{border-color:var(--border-strong);color:var(--text);}
-    .mini-action.danger{border-color:var(--red-bd);background:var(--red-bg);color:var(--danger-fg);}
+    .mini-action.danger{border-color:var(--red-bd);background:var(--red-bg);color:#FCA5A5;}
     .mini-action:disabled{opacity:.55;cursor:wait;}
     .empty-admin{padding:42px 20px;color:var(--text-muted);text-align:center;}
-    .catalog-list{display:grid;gap:8px;padding:12px;}
-    .catalog-row{display:grid;grid-template-columns:minmax(220px,1.2fr) minmax(120px,.5fr) minmax(160px,.65fr) minmax(120px,.5fr);align-items:center;gap:12px;padding:12px 13px;border:1px solid var(--border);border-radius:12px;background:var(--surface-soft);}
-    .catalog-row:hover{background:var(--card-hover);border-color:var(--border-strong);}
-    .catalog-main strong{display:block;font-size:13px;}
-    .catalog-main span,.catalog-meta{display:block;margin-top:3px;color:var(--text-muted);font-size:11px;}
-    .catalog-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;}
-    .product-catalog{overflow:auto;max-height:calc(100vh - 330px);}
-    .product-catalog-table{min-width:1120px;width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px;table-layout:fixed;}
-    .product-catalog-table th{position:sticky;top:0;z-index:1;background:var(--table-head);color:var(--text-sec);font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;}
-    .product-catalog-table th,.product-catalog-table td{padding:11px 12px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);white-space:nowrap;text-align:left;}
-    .product-catalog-table td{background:transparent;}
-    .product-catalog-table tr:nth-child(even) td{background:var(--table-row-alt);}
-    .product-catalog-table td strong{font-size:13px;color:var(--text);}
-    .product-catalog-cell{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .product-catalog-cell.muted{color:var(--text-muted);}
     .roles-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px;}
     .role-card{min-height:170px;padding:16px;border:1px solid var(--border);border-radius:15px;background:var(--card);}
     .role-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:13px;}
     .role-card h3{margin:0;font-size:14px;}
     .role-code{margin-top:3px;color:var(--text-muted);font:10.5px 'IBM Plex Mono',ui-monospace,monospace;}
     .role-actions{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;}
-    .role-count{padding:4px 7px;border-radius:999px;background:var(--surface-strong);color:var(--text-sec);font-size:10px;white-space:nowrap;}
+    .role-count{padding:4px 7px;border-radius:999px;background:rgba(255,255,255,.05);color:var(--text-sec);font-size:10px;white-space:nowrap;}
     .role-perms{display:flex;gap:5px;flex-wrap:wrap;max-height:72px;overflow:hidden;}
-    .perm-chip{padding:3px 6px;border-radius:6px;background:color-mix(in srgb,var(--accent2) 10%,transparent);color:var(--cyan-fg);font:9.5px 'IBM Plex Mono',ui-monospace,monospace;}
+    .perm-chip{padding:3px 6px;border-radius:6px;background:rgba(34,211,238,.07);color:#A5D8E5;font:9.5px 'IBM Plex Mono',ui-monospace,monospace;}
     .modal.wide{width:min(680px,100%);max-height:calc(100dvh - 36px);overflow:auto;}
-    .modal.row-edit-modal{width:min(980px,100%);padding:22px 24px;}
     .modal-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
     .modal-field{margin-bottom:12px;}
     .modal-field label{display:block;margin-bottom:6px;color:var(--text-sec);font-size:11.5px;font-weight:600;}
     .modal-field.full{grid-column:1/-1;}
-    .row-edit-grid{display:block;}
-    .row-edit-form-wrap{max-width:none;}
-    .readonly-field{min-height:42px;display:flex;align-items:center;border:1px solid var(--border);border-radius:var(--radius-ctl);background:rgba(148,163,184,.08);padding:9px 11px;color:var(--text-sec);font-size:13px;font-weight:600;}
+    .row-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+    .row-edit-grid .modal-field{margin-bottom:0;}
     .permission-groups{display:grid;gap:10px;margin-top:12px;}
     .permission-group{padding:11px;border:1px solid var(--border);border-radius:11px;}
-    .permission-group-title{margin-bottom:8px;color:var(--accent-fg);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;}
+    .permission-group-title{margin-bottom:8px;color:#C7D2FE;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;}
     .permission-options{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
     .permission-option{display:flex;align-items:flex-start;gap:7px;color:var(--text-sec);font-size:11.5px;cursor:pointer;}
     .permission-option input{margin-top:2px;}
     /* ── shared request workflow ── */
-    .request-tabs{display:flex;gap:5px;padding:4px;border:1px solid var(--border);border-radius:11px;background:var(--surface-soft);}
+    .request-tabs{display:flex;gap:5px;padding:4px;border:1px solid var(--border);border-radius:11px;background:rgba(255,255,255,.025);}
     .request-tab{padding:7px 11px;border:0;border-radius:8px;background:transparent;color:var(--text-sec);font-size:11.5px;font-weight:600;cursor:pointer;}
-    .request-tab.active{background:var(--accent-soft);color:var(--accent-fg);}
+    .request-tab.active{background:rgba(99,102,241,.18);color:#C7D2FE;}
     .request-list{display:grid;gap:8px;}
     .request-row{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(130px,.7fr) minmax(120px,.65fr) minmax(110px,.55fr) 26px;align-items:center;gap:16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--card);cursor:pointer;transition:border-color .12s,background .12s,translate .12s;}
     .request-row:hover{border-color:var(--border-strong);background:var(--card-hover);translate:0 -1px;}
-    .request-number{color:var(--accent-fg);font:10.5px 'IBM Plex Mono',ui-monospace,monospace;}
+    .request-number{color:#A5B4FC;font:10.5px 'IBM Plex Mono',ui-monospace,monospace;}
     .request-title{margin-top:3px;font-size:13.5px;font-weight:600;}
     .request-meta{color:var(--text-muted);font-size:11px;}
-    .request-status{display:inline-flex;width:max-content;padding:5px 8px;border:1px solid color-mix(in srgb,var(--accent1) 28%,transparent);border-radius:999px;background:var(--accent-soft);color:var(--accent-fg);font-size:10.5px;font-weight:600;}
+    .request-status{display:inline-flex;width:max-content;padding:5px 8px;border:1px solid rgba(99,102,241,.23);border-radius:999px;background:rgba(99,102,241,.09);color:#C7D2FE;font-size:10.5px;font-weight:600;}
     .request-priority{font-size:11.5px;color:var(--text-sec);}
     .request-priority.high,.request-priority.urgent,.request-priority.critical{color:var(--amber);}
     .request-arrow{color:var(--text-muted);font-size:18px;text-align:right;}
     .modal.detail-modal{width:min(940px,100%);max-height:calc(100dvh - 28px);overflow:auto;padding:0;}
-    .detail-head{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:19px 20px;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--panel-bg) 96%,transparent);backdrop-filter:blur(8px);}
+    .detail-head{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:19px 20px;border-bottom:1px solid var(--border);background:rgba(14,21,38,.96);backdrop-filter:blur(8px);}
     .detail-head h2{margin:3px 0 0;font-size:20px;}
-    .icon-close{width:36px;height:36px;border:1px solid var(--border);border-radius:10px;background:var(--control-bg);color:var(--text-sec);cursor:pointer;}
+    .icon-close{width:36px;height:36px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.03);color:var(--text-sec);cursor:pointer;}
     .detail-body{padding:18px 20px 22px;}
     .detail-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:14px;}
-    .detail-cell{padding:10px 11px;border:1px solid var(--border);border-radius:11px;background:var(--surface-soft);}
+    .detail-cell{padding:10px 11px;border:1px solid var(--border);border-radius:11px;background:rgba(255,255,255,.025);}
     .detail-cell span{display:block;margin-bottom:4px;color:var(--text-muted);font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;}
     .detail-cell strong{font-size:12px;font-weight:600;}
-    .detail-section{margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:13px;background:var(--surface-soft);}
+    .detail-section{margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:13px;background:rgba(255,255,255,.02);}
     .detail-section-title{margin-bottom:10px;color:var(--text-sec);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
     .detail-items{width:100%;min-width:650px;border-collapse:collapse;font-size:11.5px;}
     .detail-items th,.detail-items td{padding:8px;border-bottom:1px solid var(--border);text-align:left;}
@@ -1148,48 +1013,33 @@ function pageHtml(): string {
     .timeline{display:grid;gap:0;}
     .timeline-step{position:relative;display:grid;grid-template-columns:18px 1fr;gap:10px;padding:0 0 13px;}
     .timeline-step:not(:last-child):before{content:'';position:absolute;left:6px;top:13px;bottom:0;width:1px;background:var(--border-strong);}
-    .timeline-dot{position:relative;z-index:1;width:13px;height:13px;margin-top:2px;border:2px solid var(--text-muted);border-radius:50%;background:var(--panel-bg);}
+    .timeline-dot{position:relative;z-index:1;width:13px;height:13px;margin-top:2px;border:2px solid var(--text-muted);border-radius:50%;background:#0E1526;}
     .timeline-step.completed .timeline-dot{border-color:var(--green);background:var(--green);}
     .timeline-step.current .timeline-dot{border-color:var(--accent1);box-shadow:0 0 0 4px rgba(99,102,241,.14);}
     .timeline-step.rejected .timeline-dot,.timeline-step.returned .timeline-dot{border-color:var(--red);background:var(--red);}
     .timeline-name{font-size:11.5px;font-weight:600;}
     .timeline-meta{margin-top:2px;color:var(--text-muted);font-size:10.5px;}
     .detail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px;}
-    .action-btn{padding:10px 13px;border:1px solid color-mix(in srgb,var(--accent1) 32%,transparent);border-radius:10px;background:var(--accent-soft);color:var(--accent-fg);font-size:11.5px;font-weight:650;cursor:pointer;}
-    .action-btn.danger{border-color:var(--red-bd);background:var(--red-bg);color:var(--danger-fg);}
+    .action-btn{padding:10px 13px;border:1px solid rgba(99,102,241,.28);border-radius:10px;background:rgba(99,102,241,.14);color:#C7D2FE;font-size:11.5px;font-weight:650;cursor:pointer;}
+    .action-btn.danger{border-color:var(--red-bd);background:var(--red-bg);color:#FCA5A5;}
     .action-fields{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
     .action-fields .full{grid-column:1/-1;}
     .quote-list,.quote-item-fields{display:grid;gap:8px;}
-    .quote-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 11px;border:1px solid var(--border);border-radius:10px;background:var(--surface-soft);font-size:11.5px;}
+    .quote-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 11px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.02);font-size:11.5px;}
     .quote-card.selected{border-color:var(--green-bd);background:var(--green-bg);}
     .quote-item-fields label{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,.45fr);align-items:center;gap:10px;color:var(--text-sec);font-size:11.5px;}
     /* misc */
-    .toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,calc(100vw - 36px));border:1px solid var(--border-strong);border-radius:12px;background:var(--toast-bg);color:var(--text);padding:12px 15px;font-weight:500;z-index:40;box-shadow:var(--elev-shadow);}
-    .modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:var(--scrim);z-index:30;}
-    .modal{width:min(420px,100%);border-radius:16px;background:var(--panel-bg);border:1px solid var(--border);padding:20px;box-shadow:var(--elev-shadow);}
-    body[data-theme="light"] .modal{background:#FFFFFF;color:#0F172A;}
-    body[data-theme="light"] .detail-head{background:rgba(255,255,255,.96);color:#0F172A;}
-    body[data-theme="light"] .detail-section,body[data-theme="light"] .detail-cell{background:#F8FAFC;}
-    body[data-theme="light"] .detail-items th{background:#F1F5F9;color:#475569;}
-    body[data-theme="light"] .detail-items td{color:#0F172A;}
+    .toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,calc(100vw - 36px));border:1px solid var(--border-strong);border-radius:12px;background:#111827;padding:12px 15px;font-weight:500;z-index:40;box-shadow:0 8px 24px rgba(0,0,0,0.4);}
+    .modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:rgba(4,7,14,.6);z-index:30;}
+    .modal{width:min(420px,100%);border-radius:16px;background:#0E1526;border:1px solid var(--border);padding:20px;}
     .modal h2{margin:0 0 8px;font-size:17px;}
     .modal p{margin:0 0 16px;color:var(--text-sec);font-size:13px;}
     .modal-actions{display:flex;justify-content:flex-end;gap:10px;}
-    .err{color:var(--danger-fg);font-size:13px;min-height:18px;}
+    .err{color:#FCA5A5;font-size:13px;min-height:18px;}
     .hidden{display:none !important;}
     .backdrop{display:none;}
     body.sidebar-open{overflow:hidden;}
-    body.sidebar-open .backdrop{display:block;position:fixed;inset:0;z-index:20;background:var(--scrim);}
-    @media (max-width:1200px){
-      .ops-kpis{grid-template-columns:repeat(3,minmax(0,1fr));}
-      .ops-grid{grid-template-columns:1fr;}
-    }
-    @media (max-width:920px){
-      .ops-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}
-      .pipeline{grid-template-columns:repeat(2,minmax(0,1fr));}
-      .pipeline-stage:nth-child(2):after{display:none;}
-      .signed-role{max-width:120px;}
-    }
+    body.sidebar-open .backdrop{display:block;position:fixed;inset:0;z-index:20;background:rgba(4,7,14,.6);}
     @media (max-width:760px){
       .login{padding:14px;place-items:stretch;}
       .login-shell{min-height:calc(100dvh - 28px);grid-template-columns:1fr;}
@@ -1207,16 +1057,7 @@ function pageHtml(): string {
       .cards{grid-template-columns:repeat(2,minmax(0,1fr));}
       .ops-hero{align-items:stretch;flex-direction:column;}
       .ops-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}
-      .pipeline{grid-template-columns:1fr;}
-      .pipeline-stage:after{display:none;}
-      .signed-role{max-width:98px;padding:4px 6px;}
       .ops-grid,.ops-grid[style]{grid-template-columns:1fr !important;}
-      .report-layout{grid-template-columns:1fr;}
-      .report-side{gap:12px;}
-      .report-kpi .v{font-size:22px;}
-      .warehouse-layout{grid-template-columns:1fr;}
-      .warehouse-tools{width:100%;flex-direction:column;align-items:stretch;}
-      .warehouse-tools .fin{max-width:none;}
       .sidebar{position:fixed;inset:0 auto 0 0;z-index:30;width:min(300px,calc(100vw - 42px));height:100dvh;transform:translateX(-105%);transition:transform .2s ease;}
       body.sidebar-open .sidebar{transform:translateX(0);}
       .field-row{grid-template-columns:1fr;}
@@ -1224,34 +1065,11 @@ function pageHtml(): string {
       .modal-form-grid,.permission-options,.columns-grid{grid-template-columns:1fr;}
       .modal-field.full{grid-column:auto;}
       .request-row{grid-template-columns:1fr auto;gap:8px 12px;}
-      .catalog-row{grid-template-columns:1fr;align-items:start;}
-      .catalog-actions{justify-content:flex-start;}
       .request-row>div:nth-child(2),.request-row>div:nth-child(3),.request-row>div:nth-child(4){display:none;}
       .detail-summary{grid-template-columns:1fr 1fr;}
       .action-fields{grid-template-columns:1fr;}
       .action-fields .full{grid-column:auto;}
-      .table-shell{overflow:visible;border:0;background:transparent;}
-      .scroll,.warehouse-table-wrap,.product-catalog{overflow:visible;max-height:none;border:0;border-radius:0;scrollbar-gutter:auto;}
-      #table,.warehouse-table,.product-catalog-table{display:block;width:100% !important;min-width:0 !important;background:transparent;table-layout:auto;}
-      #table colgroup,.warehouse-table colgroup,.product-catalog-table colgroup,
-      #table thead,.warehouse-table thead,.product-catalog-table thead{display:none;}
-      #table tbody,.warehouse-table tbody,.product-catalog-table tbody{display:grid;gap:10px;}
-      #table tbody tr,.warehouse-table tbody tr,.product-catalog-table tbody tr{display:block;overflow:hidden;border:1px solid var(--border);border-radius:14px;background:var(--card);box-shadow:0 6px 18px rgba(0,0,0,.08);}
-      #table tbody td,.warehouse-table tbody td,.product-catalog-table tbody td{display:grid;grid-template-columns:minmax(108px,.8fr) minmax(0,1.2fr);align-items:start;gap:12px;width:100% !important;min-width:0;max-width:none;padding:10px 12px;border-right:0;border-bottom:1px solid var(--border);background:transparent !important;white-space:normal;text-align:right;overflow-wrap:anywhere;}
-      #table tbody td:last-child,.warehouse-table tbody td:last-child,.product-catalog-table tbody td:last-child{border-bottom:0;}
-      #table tbody td::before,.warehouse-table tbody td::before,.product-catalog-table tbody td::before{content:attr(data-label);color:var(--text-muted);font-size:10px;font-weight:800;letter-spacing:.045em;line-height:1.45;text-align:left;text-transform:uppercase;}
-      #table tbody td[colspan],.warehouse-table tbody td[colspan],.product-catalog-table tbody td[colspan]{display:block;text-align:center;}
-      #table tbody td[colspan]::before,.warehouse-table tbody td[colspan]::before,.product-catalog-table tbody td[colspan]::before{display:none;}
-      #table .order-col,.product-catalog-table .order-col{grid-template-columns:auto 1fr;background:var(--table-head) !important;color:var(--text);font-size:12px;text-align:right;}
-      #table .num,.warehouse-table .num,.warehouse-table .qty-main{text-align:right;}
-      #table .actions,.warehouse-table .warehouse-row-actions,.product-catalog-table .catalog-actions{justify-content:flex-end;min-width:0;}
-      #table .mini,.warehouse-table .mini-action,.product-catalog-table .mini-action{min-height:44px;}
-      .product-catalog-cell{max-width:none;white-space:normal;text-align:right;overflow-wrap:anywhere;}
-      .warehouse-table .sku-cell strong,.warehouse-table .sku-cell span{text-align:right;}
-      .stock-chip{margin-left:auto;}
-      .table-pager{align-items:stretch;flex-direction:column;}
-      .pager-info{text-align:center;}
-      .pager-actions{justify-content:center;}
+      .scroll{max-height:calc(100vh - 340px);}
       .topbar-control{display:none;}
       .search-wrap{width:min(460px,58vw);}
     }
@@ -1331,11 +1149,9 @@ function pageHtml(): string {
         </button>
         <div class="nav-sec">Операции</div>
         <button class="side-link" data-view="procurement" id="navProcurement" type="button" aria-label="Снабжение"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M6 6h15l-2 8H8L6 3H3m6 16a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm9 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Снабжение</span></button>
-        <button class="side-link" data-view="warehouse" id="navWarehouse" type="button" aria-label="Склад"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M12 3 4 7.2v9.6L12 21l8-4.2V7.2L12 3Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M4.4 7.4 12 11.5l7.6-4.1M12 11.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Склад</span></button>
-        <button class="side-link" data-view="materials" id="navMaterials" type="button" aria-label="Каталог товаров"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M4 7h16v10H4V7Z" stroke="currentColor" stroke-width="1.8"/><path d="M8 7V5h8v2M8 17v2h8v-2M8 12h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Каталог товаров</span></button>
         <button class="side-link module-preview-btn" data-module="documents" data-module-title="Документы" data-module-note="Договоры, счета, вложения и закрывающие документы" type="button" aria-label="Документы"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M4 5h7l2 2h7v12H4V5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Документы</span></button>
-        <button class="side-link" data-view="suppliers" id="navSuppliers" type="button" aria-label="Поставщики"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M3 7h11v10H3V7Zm11 3h4l3 3v4h-7v-7ZM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Поставщики</span></button>
-        <button class="side-link" data-view="reports" id="navReports" type="button" aria-label="Отчёты"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M5 19V9m7 10V5m7 14v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Отчёты</span></button>
+        <button class="side-link module-preview-btn" data-module="suppliers" data-module-title="Поставщики" data-module-note="Риски, задержки, контакты и история закупок" type="button" aria-label="Поставщики"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M3 7h11v10H3V7Zm11 3h4l3 3v4h-7v-7ZM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Поставщики</span></button>
+        <button class="side-link module-preview-btn" data-module="reports" data-module-title="Отчёты" data-module-note="Бюджет vs факт, скорость маршрутов и поставщики" type="button" aria-label="Отчёты"><span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M5 19V9m7 10V5m7 14v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Отчёты</span></button>
         <div class="nav-sec hidden" id="adminNavLabel">Управление</div>
         <button class="side-link hidden" data-view="people" id="navPeople" type="button" aria-label="Пользователи">
           <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M16 20v-1.5a4.5 4.5 0 0 0-4.5-4.5h-3A4.5 4.5 0 0 0 4 18.5V20M10 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM17 8v6M14 11h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -1348,7 +1164,7 @@ function pageHtml(): string {
         <div class="side-bottom">
           <div class="side-user" id="sideUser">
             <span class="side-avatar" id="sideAvatar">—</span>
-            <div style="min-width:0;"><div class="side-user-name" id="sideUserName">—</div><div class="side-user-login" id="sideUserLogin">—</div><div class="side-user-role" id="sideUserRole">Роль не назначена</div></div>
+            <div style="min-width:0;"><div class="side-user-name" id="sideUserName">—</div><div class="side-user-login" id="sideUserLogin">—</div></div>
           </div>
           <button class="side-link" id="logout" type="button" aria-label="Выйти">
             <span class="side-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 12H4m0 0 3.5-3.5M4 12l3.5 3.5M10 4h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1369,7 +1185,6 @@ function pageHtml(): string {
             </div>
           </div>
           <div class="nav-actions">
-            <div class="signed-role" id="topUserRole" title="Роль пользователя">Роль не назначена</div>
             <div class="search-wrap" id="overviewActions" style="visibility:hidden">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m21 21-4.2-4.2M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
               <input id="search" class="search" placeholder="Поиск заявок, документов, поставщиков..." />
@@ -1400,8 +1215,8 @@ function pageHtml(): string {
             <div class="card kpi-card"><div class="kpi-head"><div class="k">Поставщиков</div><div class="kpi-icon">SUP</div></div><div class="v" id="kSuppliers">0</div><div class="trend good">Контрагенты в выборке</div></div>
           </section>
           <section class="ops-grid">
-            <div class="ops-panel pipeline-panel">
-              <div class="ops-panel-title"><div><span>Pipeline заявок</span><div class="ops-date">Готовность заявок по текущей выборке</div></div><button class="panel-link" data-view-jump="requests" type="button">Открыть заявки ↗</button></div>
+            <div class="ops-panel">
+              <div class="ops-panel-title"><span>Pipeline заявок</span><button class="panel-link" data-view-jump="requests" type="button">Открыть заявки ↗</button></div>
               <div class="pipeline" id="pipelineBars"></div>
             </div>
             <div class="ops-panel">
@@ -1409,126 +1224,8 @@ function pageHtml(): string {
               <div class="compact-list" id="recentActivity"></div>
             </div>
             <div class="ops-panel">
-              <div class="ops-panel-title"><span>Бюджет vs факт</span><button class="panel-link" data-view-jump="reports" type="button">Отчёты ↗</button></div>
+              <div class="ops-panel-title"><span>Бюджет vs факт</span><button class="panel-link module-preview-btn" data-module="reports" data-module-title="Отчёты" data-module-note="Бюджет, скорость маршрутов и поставщики" type="button">Отчёты ↗</button></div>
               <div class="compact-list" id="budgetBars"></div>
-            </div>
-          </section>
-        </div>
-
-        <!-- ── VIEW: warehouse ERP module ── -->
-        <div class="wrap hidden" id="viewWarehouse">
-          <div class="top">
-            <div>
-              <h1>Склад</h1>
-              <div class="sub">Остатки, минимальные уровни, приход, расход и журнал движений</div>
-            </div>
-            <div class="warehouse-actions">
-              <button class="btn ghost" id="warehouseRefresh" type="button">Обновить</button>
-              <button class="btn" id="warehouseReceive" type="button">+ Приход</button>
-              <button class="btn ghost" id="warehouseIssue" type="button">− Расход</button>
-            </div>
-          </div>
-          <section class="ops-kpis warehouse-kpis">
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Номенклатура</div><div class="kpi-icon">SKU</div></div><div class="v" id="wSku">0</div><div class="trend">Материалы с остатком</div></div>
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Доступно</div><div class="kpi-icon">QTY</div></div><div class="v" id="wQty">0</div><div class="trend good">Свободный остаток</div></div>
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Резерв</div><div class="kpi-icon">RES</div></div><div class="v" id="wReserved">0</div><div class="trend">Под заявки</div></div>
-            <div class="card kpi-card"><div class="kpi-head"><div class="k">Ниже минимума</div><div class="kpi-icon">MIN</div></div><div class="v" id="wLow">0</div><div class="trend bad" id="wLowTrend">Контроль пополнения</div></div>
-          </section>
-          <section class="warehouse-layout">
-            <div class="ops-panel warehouse-main">
-              <div class="ops-panel-title">
-                <span>Остатки по складам</span>
-                <div class="warehouse-tools"><input class="search" id="warehouseSearch" placeholder="Поиск по материалу или складу..." /><select class="fin" id="warehouseFilter"><option value="">Все склады</option></select></div>
-              </div>
-              <div class="warehouse-table-wrap"><table class="warehouse-table" id="warehouseTable"></table></div>
-            </div>
-            <div class="ops-panel warehouse-side">
-              <div class="ops-panel-title"><span>Движения</span><button class="panel-link" id="warehouseJournalRefresh" type="button">Обновить ↻</button></div>
-              <div class="compact-list warehouse-journal" id="warehouseJournal"><div class="empty-admin">Загрузка движений...</div></div>
-            </div>
-          </section>
-        </div>
-
-        <!-- ── VIEW: product catalog ── -->
-        <div class="wrap hidden" id="viewMaterials">
-          <div class="top">
-            <div>
-              <h1>Каталог товаров</h1>
-              <div class="sub">Код, наименование, категория, единица измерения, характеристики и бренд</div>
-            </div>
-            <div class="top-actions">
-              <input id="materialsFile" type="file" accept=".xlsx,.xls,.csv" hidden />
-              <button class="btn ghost" id="importMaterials" type="button">Импорт Excel</button>
-              <button class="btn" id="addMaterial" type="button">+ Товар</button>
-            </div>
-          </div>
-          <section class="admin-panel">
-            <div class="admin-panel-head"><strong>Каталог товаров</strong><div class="panel-tools"><button class="mini-action" id="clearMaterialFilters" type="button">Сбросить фильтры</button><input class="admin-search" id="materialsSearch" placeholder="Поиск по коду, названию, категории или бренду..." /></div></div>
-            <div class="catalog-list" id="materialsList"><div class="empty-admin">Загрузка материалов...</div></div>
-            <div class="table-pager" id="materialsPager">
-              <div class="pager-info" id="materialsPagerInfo">Строк нет</div>
-              <div class="pager-actions">
-                <span class="pager-info">Показывать</span>
-                <select id="materialsPageSize"><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
-                <button class="pager-btn" id="materialsFirstPage" type="button">«</button>
-                <button class="pager-btn" id="materialsPrevPage" type="button">‹</button>
-                <span class="pager-info" id="materialsPageInfo">1 / 1</span>
-                <button class="pager-btn" id="materialsNextPage" type="button">›</button>
-                <button class="pager-btn" id="materialsLastPage" type="button">»</button>
-              </div>
-            </div>
-          </section>
-          <div id="materialFilterMenu" class="excel-filter-menu hidden" role="dialog" aria-label="Фильтр каталога товаров"></div>
-        </div>
-
-        <!-- ── VIEW: suppliers directory ── -->
-        <div class="wrap hidden" id="viewSuppliers">
-          <div class="top">
-            <div>
-              <h1>Поставщики</h1>
-              <div class="sub">Контрагенты снабжения: реквизиты, контакты, категории и история закупок</div>
-            </div>
-            <button class="btn" id="addSupplier" type="button">+ Поставщик</button>
-          </div>
-          <section class="admin-panel">
-            <div class="admin-panel-head"><strong>Реестр поставщиков</strong><input class="admin-search" id="suppliersSearch" placeholder="Поиск по названию, ИНН или контакту..." /></div>
-            <div class="catalog-list" id="suppliersList"><div class="empty-admin">Загрузка поставщиков...</div></div>
-          </section>
-        </div>
-
-        <!-- ── VIEW: reports ── -->
-        <div class="wrap hidden" id="viewReports">
-          <div class="top">
-            <div>
-              <h1>Отчёты</h1>
-              <div class="sub">Операционная аналитика по заявкам, закупкам, поставщикам и складу</div>
-            </div>
-            <button class="btn ghost" id="reportsRefresh" type="button">Обновить</button>
-          </div>
-          <section class="ops-kpis report-kpis">
-            <div class="card kpi-card report-kpi"><div class="kpi-head"><div class="k">Активные</div><div class="kpi-icon">REQ</div></div><div class="v" id="rActive">0</div><div class="trend">Незакрытые заявки</div></div>
-            <div class="card kpi-card report-kpi"><div class="kpi-head"><div class="k">Сумма</div><div class="kpi-icon">UZS</div></div><div class="v" id="rAmount">0</div><div class="trend">По видимым строкам</div></div>
-            <div class="card kpi-card report-kpi"><div class="kpi-head"><div class="k">Поставщики</div><div class="kpi-icon">SUP</div></div><div class="v" id="rSuppliers">0</div><div class="trend">В закупках</div></div>
-            <div class="card kpi-card report-kpi"><div class="kpi-head"><div class="k">Ниже минимума</div><div class="kpi-icon">MIN</div></div><div class="v" id="rLowStock">0</div><div class="trend bad">Складской риск</div></div>
-          </section>
-          <section class="report-layout">
-            <div class="ops-panel report-panel report-main">
-              <div class="ops-panel-title"><span>Заявки по статусам</span></div>
-              <div class="compact-list" id="reportStatus"></div>
-            </div>
-            <div class="report-side">
-              <div class="ops-panel report-panel">
-                <div class="ops-panel-title"><span>Топ поставщиков</span></div>
-                <div class="compact-list" id="reportSuppliers"></div>
-              </div>
-              <div class="ops-panel report-panel">
-                <div class="ops-panel-title"><span>Расходы по объектам</span></div>
-                <div class="compact-list" id="reportObjects"></div>
-              </div>
-              <div class="ops-panel report-panel">
-                <div class="ops-panel-title"><span>Складские риски</span></div>
-                <div class="compact-list" id="reportWarehouse"></div>
-              </div>
             </div>
           </section>
         </div>
@@ -1592,7 +1289,6 @@ function pageHtml(): string {
             </div>
           </section>
         </div>
-        <div id="excelFilterMenu" class="excel-filter-menu hidden" role="dialog" aria-label="Фильтр столбца"></div>
 
         <!-- ── VIEW: canonical requests + personal action inbox ── -->
         <div class="wrap hidden" id="viewRequests">
@@ -1740,11 +1436,11 @@ function pageHtml(): string {
       </div>
     </div>
     <div id="rowEditModal" class="modal-backdrop hidden">
-      <form class="modal wide row-edit-modal" id="rowEditForm">
+      <form class="modal wide" id="rowEditForm">
         <h2 id="rowEditTitle">Редактировать строку</h2>
         <p id="rowEditSubtitle">Изменения сохранятся только после нажатия кнопки.</p>
         <input id="rowEditItemId" type="hidden" />
-        <div class="row-edit-grid form-wrap row-edit-form-wrap" id="rowEditFields"></div>
+        <div class="row-edit-grid" id="rowEditFields"></div>
         <div class="err-line" id="rowEditErr"></div>
         <div class="modal-actions">
           <button class="btn ghost" id="rowEditCancel" type="button">Отмена</button>
@@ -1802,53 +1498,6 @@ function pageHtml(): string {
         <div class="modal-actions"><button class="btn ghost" id="actionCancel" type="button">Отмена</button><button class="btn" id="actionSubmit" type="submit">Продолжить</button></div>
       </form>
     </div>
-    <div id="warehouseMoveModal" class="modal-backdrop hidden">
-      <form class="modal wide" id="warehouseMoveForm">
-        <h2 id="warehouseMoveTitle">Приход на склад</h2>
-        <p id="warehouseMoveSubtitle">Движение будет записано в складской журнал.</p>
-        <div class="modal-form-grid">
-          <div class="modal-field full"><label for="warehouseMoveMaterial">Материал</label><select class="fin" id="warehouseMoveMaterial" required></select></div>
-          <div class="modal-field"><label for="warehouseMoveWarehouse">Склад</label><select class="fin" id="warehouseMoveWarehouse"><option value="">Общий остаток</option></select></div>
-          <div class="modal-field"><label for="warehouseMoveQty">Количество</label><input class="fin" id="warehouseMoveQty" type="number" min="0.0001" step="0.0001" required /></div>
-          <div class="modal-field full"><label for="warehouseMoveReason">Основание</label><input class="fin" id="warehouseMoveReason" placeholder="Например: приход по накладной, корректировка, выдача в цех" /></div>
-        </div>
-        <div class="err-line" id="warehouseMoveErr"></div>
-        <div class="modal-actions"><button class="btn ghost" id="warehouseMoveCancel" type="button">Отмена</button><button class="btn" id="warehouseMoveSubmit" type="submit">Сохранить движение</button></div>
-      </form>
-    </div>
-    <div id="materialModal" class="modal-backdrop hidden">
-      <form class="modal wide" id="materialForm">
-        <h2 id="materialTitle">Новый товар</h2>
-        <input id="materialId" type="hidden" />
-        <div class="modal-form-grid">
-          <div class="modal-field"><label for="materialSku">Код</label><input class="fin" id="materialSku" /></div>
-          <div class="modal-field"><label for="materialName">Наименование</label><input class="fin" id="materialName" required /></div>
-          <div class="modal-field"><label for="materialCategory">Категория</label><input class="fin" id="materialCategory" /></div>
-          <div class="modal-field"><label for="materialUnit">Ед. измерения</label><select class="fin" id="materialUnit"></select></div>
-          <div class="modal-field"><label for="materialBrand">Бренд</label><input class="fin" id="materialBrand" /></div>
-          <div class="modal-field full"><label for="materialCharacteristics">Характеристики</label><textarea class="fin" id="materialCharacteristics" placeholder="Размер, состав, цвет, модель, допуски..."></textarea></div>
-        </div>
-        <div class="err-line" id="materialErr"></div>
-        <div class="modal-actions"><button class="btn ghost" id="materialCancel" type="button">Отмена</button><button class="btn" id="materialSave" type="submit">Сохранить</button></div>
-      </form>
-    </div>
-    <div id="supplierModal" class="modal-backdrop hidden">
-      <form class="modal wide" id="supplierForm">
-        <h2 id="supplierTitle">Новый поставщик</h2>
-        <input id="supplierId" type="hidden" />
-        <div class="modal-form-grid">
-          <div class="modal-field full"><label for="supplierName">Название</label><input class="fin" id="supplierName" required /></div>
-          <div class="modal-field"><label for="supplierInn">ИНН</label><input class="fin" id="supplierInn" /></div>
-          <div class="modal-field"><label for="supplierCategory">Категория</label><input class="fin" id="supplierCategory" /></div>
-          <div class="modal-field"><label for="supplierContact">Контактное лицо</label><input class="fin" id="supplierContact" /></div>
-          <div class="modal-field"><label for="supplierPhone">Телефон</label><input class="fin" id="supplierPhone" /></div>
-          <div class="modal-field"><label for="supplierEmail">Email</label><input class="fin" id="supplierEmail" type="email" /></div>
-          <div class="modal-field full"><label for="supplierNote">Примечание</label><input class="fin" id="supplierNote" /></div>
-        </div>
-        <div class="err-line" id="supplierErr"></div>
-        <div class="modal-actions"><button class="btn ghost" id="supplierCancel" type="button">Отмена</button><button class="btn" id="supplierSave" type="submit">Сохранить</button></div>
-      </form>
-    </div>
   </main>
   <script>
     const headers = ${JSON.stringify(HEADERS)};
@@ -1862,9 +1511,6 @@ function pageHtml(): string {
     const fmt = new Intl.NumberFormat('ru-RU');
     const money = (v) => fmt.format(Math.round(Number(v) || 0));
     const numericKeys = new Set(['quantity','unitPrice','exchangeRate','amount','usdAmount','ndsRate','amountWithNds','usdAmountWithNds']);
-    const columnFilters = {};
-    let activeFilterKey = null;
-    let filterDraft = null;
     let pendingDeleteRow = null;
     let editingRow = null;
     let session = null;
@@ -1911,22 +1557,10 @@ function pageHtml(): string {
       const canPeople = hasPermission('users.view','users.manage');
       const canManagePeople = hasPermission('users.manage');
       const canRoles = hasPermission('roles.manage');
-      const canWarehouse = hasPermission('warehouse.view','warehouse.receive','warehouse.issue','warehouse.check_stock');
-      const canMaterials = hasPermission('warehouse.view','settings.manage');
-      const canSuppliers = hasPermission('suppliers.view','suppliers.manage','procurement.view','procurement.quote');
-      const canReports = hasPermission('reports.view','reports.status_summary','audit.view');
       document.getElementById('navOverview').classList.toggle('hidden', !canView);
       document.getElementById('navRequests').classList.toggle('hidden', !canView);
       document.getElementById('navProcurement').classList.toggle('hidden', !canView);
-      document.getElementById('navWarehouse').classList.toggle('hidden', !canWarehouse);
-      document.getElementById('navMaterials').classList.toggle('hidden', !canMaterials);
-      document.getElementById('navSuppliers').classList.toggle('hidden', !canSuppliers);
-      document.getElementById('navReports').classList.toggle('hidden', !canReports);
       document.querySelector('[data-view="create"]').classList.toggle('hidden', !canCreate);
-      document.getElementById('warehouseReceive').classList.toggle('hidden', !hasPermission('warehouse.receive'));
-      document.getElementById('warehouseIssue').classList.toggle('hidden', !hasPermission('warehouse.issue'));
-      document.getElementById('addMaterial').classList.toggle('hidden', !hasPermission('settings.manage'));
-      document.getElementById('addSupplier').classList.toggle('hidden', !hasPermission('suppliers.manage'));
       document.getElementById('adminNavLabel').classList.toggle('hidden', !canPeople && !canRoles);
       document.getElementById('navPeople').classList.toggle('hidden', !canPeople);
       document.getElementById('navRoles').classList.toggle('hidden', !canRoles);
@@ -1935,11 +1569,6 @@ function pageHtml(): string {
       document.getElementById('sideUserName').textContent = session.user.fullName;
       document.getElementById('sideUserLogin').textContent = '@' + session.user.username;
       document.getElementById('sideAvatar').textContent = initials(session.user.fullName);
-      const roleLabel = (session.roles || []).map((role) => role.name || role.code).filter(Boolean).join(', ') || 'Роль не назначена';
-      document.getElementById('sideUserRole').textContent = roleLabel;
-      document.getElementById('sideUserRole').title = roleLabel;
-      document.getElementById('topUserRole').textContent = roleLabel;
-      document.getElementById('topUserRole').title = 'Текущая роль: ' + roleLabel;
     }
     async function enterApp() {
       session = await api('me');
@@ -1955,20 +1584,16 @@ function pageHtml(): string {
 
     /* ── view switching (sidebar = navigation) ── */
     function showView(view) {
-      const views = { overview:'viewOverview', procurement:'viewProcurement', warehouse:'viewWarehouse', materials:'viewMaterials', suppliers:'viewSuppliers', reports:'viewReports', requests:'viewRequests', create:'viewCreate', people:'viewPeople', roles:'viewRoles' };
+      const views = { overview:'viewOverview', procurement:'viewProcurement', requests:'viewRequests', create:'viewCreate', people:'viewPeople', roles:'viewRoles' };
       for (const [key, id] of Object.entries(views)) document.getElementById(id).classList.toggle('hidden', key !== view);
       const procurement = view === 'procurement';
       document.getElementById('overviewActions').style.visibility = procurement ? 'visible' : 'hidden';
-      document.getElementById('navTitle').textContent = ({ overview:'Операционный дашборд', procurement:'Снабжение', warehouse:'Склад', materials:'Каталог товаров', suppliers:'Поставщики', reports:'Отчёты', requests:'Заявки и согласования', create:'Новая заявка', people:'Пользователи', roles:'Роли и права' })[view] || 'Factory OS';
+      document.getElementById('navTitle').textContent = ({ overview:'Операционный дашборд', procurement:'Снабжение', requests:'Заявки и согласования', create:'Новая заявка', people:'Пользователи', roles:'Роли и права' })[view] || 'Factory OS';
       for (const link of document.querySelectorAll('.side-link[data-view]')) {
         link.classList.toggle('active', link.dataset.view === view);
       }
       if (view === 'create') ensureMeta();
       if (view === 'requests') ensureRequests();
-      if (view === 'warehouse') ensureWarehouse();
-      if (view === 'materials') ensureMaterials();
-      if (view === 'suppliers') ensureSuppliers();
-      if (view === 'reports') ensureReports();
       if (view === 'people') ensurePeople();
       if (view === 'roles') ensureRoleData();
       closeSidebar();
@@ -2065,138 +1690,47 @@ function pageHtml(): string {
       return out;
     }
     function filterValues() {
-      return columnFilters;
+      const out = {};
+      for (const select of document.querySelectorAll('select[data-filter-key]')) {
+        const values = [...select.selectedOptions].map((option) => option.value.trim().toLowerCase()).filter(Boolean);
+        const mode = document.querySelector('[data-filter-mode="' + select.dataset.filterKey + '"]')?.value || 'in';
+        if (values.length || mode === 'empty' || mode === 'filled') out[select.dataset.filterKey] = { mode, values };
+      }
+      return out;
     }
-    function filterRawValue(row, key) {
-      const raw = row[key];
-      if (raw === null || raw === undefined || raw === '') return '';
-      return numericKeys.has(key) ? money(raw) : String(raw).trim();
-    }
-    function columnUniqueValues(key) {
-      return [...new Set(rows.map((row) => filterRawValue(row, key)).filter((value) => value !== ''))].sort((a,b) => a.localeCompare(b, 'ru', { numeric:true, sensitivity:'base' }));
+    function filterOptionsHtml(key) {
+      const values = [...new Set(rows.map((row) => String(row[key] ?? '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b, 'ru')).slice(0, 80);
+      return values.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join('');
     }
     function renderFilters() {
+      const previous = filterValues();
+      const box = document.getElementById('filters');
+      box.innerHTML = keys.map((key, i) =>
+        '<div class="filter-field"><label>' + esc(headers[i]) + '</label><div class="filter-row">' +
+        '<select data-filter-mode="' + key + '" aria-label="Тип фильтра: ' + esc(headers[i]) + '">' +
+        '<option value="in">Любое из</option><option value="contains">Содержит</option><option value="empty">Пусто</option><option value="filled">Заполнено</option>' +
+        '</select><select data-filter-key="' + key + '" multiple aria-label="Значения фильтра: ' + esc(headers[i]) + '">' + filterOptionsHtml(key) + '</select></div></div>'
+      ).join('');
+      for (const [key, filter] of Object.entries(previous)) {
+        const mode = document.querySelector('[data-filter-mode="' + key + '"]');
+        const select = document.querySelector('select[data-filter-key="' + key + '"]');
+        if (mode) mode.value = filter.mode || 'in';
+        if (select) for (const option of select.options) option.selected = (filter.values || []).includes(option.value.trim().toLowerCase());
+      }
+      if (!filtersReady) {
+        box.addEventListener('change', resetPageAndRender);
+        filtersReady = true;
+      }
       renderColumnSettings();
     }
-    function rowValue(r, key) { return filterRawValue(r, key).toLowerCase(); }
-    function numericRowValue(r, key) { return Number(r[key]) || 0; }
+    function rowValue(r, key) { return String(r[key] ?? '').toLowerCase(); }
     function rowMatchesFilter(r, key, filter) {
       const value = rowValue(r, key);
-      if (filter.conditionMode) {
-        const term = String(filter.conditionText || '').trim().toLowerCase();
-        if (filter.conditionMode === 'empty' && value) return false;
-        if (filter.conditionMode === 'filled' && !value) return false;
-        if (!['empty','filled'].includes(filter.conditionMode) && term) {
-          if (filter.conditionMode === 'contains' && !value.includes(term)) return false;
-          if (filter.conditionMode === 'not_contains' && value.includes(term)) return false;
-          if (filter.conditionMode === 'equals' && value !== term) return false;
-          if (filter.conditionMode === 'not_equal' && value === term) return false;
-          if (filter.conditionMode === 'begins' && !value.startsWith(term)) return false;
-          if (filter.conditionMode === 'ends' && !value.endsWith(term)) return false;
-          if (filter.conditionMode === 'gt' && numericRowValue(r, key) <= Number(term.replace(/\\s/g, '').replace(',', '.'))) return false;
-          if (filter.conditionMode === 'lt' && numericRowValue(r, key) >= Number(term.replace(/\\s/g, '').replace(',', '.'))) return false;
-        }
-      }
-      if (Array.isArray(filter.values)) return filter.values.includes(value);
-      return true;
-    }
-    function closeExcelFilterMenu() {
-      activeFilterKey = null;
-      filterDraft = null;
-      document.getElementById('excelFilterMenu').classList.add('hidden');
-    }
-    function normalizeFilterValues(values) {
-      return (values || []).map((value) => String(value).trim().toLowerCase()).filter(Boolean);
-    }
-    function activeFilterCount() {
-      return Object.keys(columnFilters).length;
-    }
-    function renderExcelFilterValues() {
-      if (!activeFilterKey || !filterDraft) return;
-      const menu = document.getElementById('excelFilterMenu');
-      const search = menu.querySelector('[data-excel-filter-search]')?.value.trim().toLowerCase() || '';
-      const visible = filterDraft.allValues.filter((value) => !search || value.toLowerCase().includes(search));
-      const list = menu.querySelector('[data-excel-filter-values]');
-      const shown = menu.querySelector('[data-excel-filter-shown]');
-      if (shown) shown.textContent = String(visible.length);
-      if (!list) return;
-      list.innerHTML = visible.map((value) =>
-        '<label class="excel-filter-option" title="' + esc(value) + '"><input type="checkbox" data-filter-value="' + esc(value) + '"' + (filterDraft.selected.has(value.toLowerCase()) ? ' checked' : '') + '><span>' + esc(value) + '</span></label>'
-      ).join('') || '<div class="empty-admin" style="padding:18px 8px">Значений нет</div>';
-    }
-    function renderExcelFilterMenu() {
-      if (!activeFilterKey || !filterDraft) return;
-      const menu = document.getElementById('excelFilterMenu');
-      const label = keyLabel(activeFilterKey);
-      menu.innerHTML =
-        '<div class="excel-filter-title">' + esc(label) + '</div>' +
-        '<button class="excel-filter-action" data-filter-sort="asc" type="button">Сортировать А → Я</button>' +
-        '<button class="excel-filter-action" data-filter-sort="desc" type="button">Сортировать Я → А</button>' +
-        '<div class="excel-filter-sep"></div>' +
-        '<button class="excel-filter-action" data-toggle-condition type="button">Фильтровать по условию <span>▸</span></button>' +
-        '<div class="excel-filter-rule ' + (filterDraft.conditionOpen ? 'open' : '') + '">' +
-          '<select data-condition-mode>' +
-            '<option value="">Без условия</option><option value="contains">Текст содержит</option><option value="not_contains">Текст не содержит</option><option value="equals">Равно</option><option value="not_equal">Не равно</option><option value="begins">Начинается с</option><option value="ends">Заканчивается на</option><option value="gt">Больше</option><option value="lt">Меньше</option><option value="empty">Пусто</option><option value="filled">Заполнено</option>' +
-          '</select>' +
-          '<input data-condition-text placeholder="Значение условия" />' +
-        '</div>' +
-        '<button class="excel-filter-action" data-toggle-values type="button">Фильтровать по значению <span>▾</span></button>' +
-        '<div class="excel-filter-meta"><button class="excel-filter-link" data-filter-select-all type="button">Выбрать все (' + fmt.format(filterDraft.allValues.length) + ')</button><span class="excel-filter-shown">Показано: <strong data-excel-filter-shown>' + fmt.format(filterDraft.allValues.length) + '</strong></span></div>' +
-        '<div class="excel-filter-meta"><button class="excel-filter-link" data-filter-reset type="button">Сбросить</button><span class="excel-filter-shown">' + fmt.format(filterDraft.selected.size) + '</span></div>' +
-        '<div class="excel-filter-search-wrap"><input class="excel-filter-search" data-excel-filter-search aria-label="Поиск значений" /><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>' +
-        '<div class="excel-filter-values" data-excel-filter-values></div>' +
-        '<div class="excel-filter-actions"><button class="btn ghost" data-filter-cancel type="button">Отмена</button><button class="btn" data-filter-ok type="button">OK</button></div>';
-      const mode = menu.querySelector('[data-condition-mode]');
-      const text = menu.querySelector('[data-condition-text]');
-      if (mode) mode.value = filterDraft.conditionMode || '';
-      if (text) {
-        text.value = filterDraft.conditionText || '';
-        text.style.display = ['','empty','filled'].includes(mode?.value || '') ? 'none' : '';
-      }
-      renderExcelFilterValues();
-    }
-    function positionExcelFilterMenu(button) {
-      const menu = document.getElementById('excelFilterMenu');
-      const rect = button.getBoundingClientRect();
-      const top = Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 12);
-      const left = Math.min(Math.max(12, rect.right - menu.offsetWidth), window.innerWidth - menu.offsetWidth - 12);
-      menu.style.top = Math.max(12, top) + 'px';
-      menu.style.left = left + 'px';
-    }
-    function openExcelFilterMenu(key, button) {
-      activeFilterKey = key;
-      const allValues = columnUniqueValues(key);
-      const current = columnFilters[key] || {};
-      const currentValues = current.values && current.values.length ? new Set(current.values) : new Set(allValues.map((value) => value.toLowerCase()));
-      filterDraft = {
-        allValues,
-        selected:currentValues,
-        conditionMode:current.conditionMode || '',
-        conditionText:current.conditionText || '',
-        conditionOpen:Boolean(current.conditionMode),
-      };
-      const menu = document.getElementById('excelFilterMenu');
-      menu.classList.remove('hidden');
-      renderExcelFilterMenu();
-      positionExcelFilterMenu(button);
-      menu.querySelector('[data-excel-filter-search]')?.focus();
-    }
-    function applyExcelFilterDraft() {
-      if (!activeFilterKey || !filterDraft) return;
-      const allLower = filterDraft.allValues.map((value) => value.toLowerCase());
-      const selected = [...filterDraft.selected].filter((value) => allLower.includes(value));
-      const conditionMode = filterDraft.conditionMode || '';
-      const conditionText = String(filterDraft.conditionText || '').trim();
-      const next = {};
-      if (selected.length < allLower.length) next.values = selected;
-      if (conditionMode && (conditionText || conditionMode === 'empty' || conditionMode === 'filled')) {
-        next.conditionMode = conditionMode;
-        next.conditionText = conditionText;
-      }
-      if (Object.keys(next).length) columnFilters[activeFilterKey] = next;
-      else delete columnFilters[activeFilterKey];
-      closeExcelFilterMenu();
-      resetPageAndRender();
+      if (filter.mode === 'empty') return !value;
+      if (filter.mode === 'filled') return !!value;
+      if (!filter.values || !filter.values.length) return true;
+      if (filter.mode === 'contains') return filter.values.some((needle) => value.includes(needle));
+      return filter.values.includes(value);
     }
     function parseDateLike(value) {
       const text = String(value || '').trim();
@@ -2222,43 +1756,10 @@ function pageHtml(): string {
         return String(av).localeCompare(String(bv), 'ru', { numeric: true, sensitivity: 'base' }) * dir;
       });
     }
-    function readColumnWidths(storageKey) {
-      try {
-        const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
-        return parsed && typeof parsed === 'object' ? parsed : {};
-      } catch {
-        return {};
-      }
-    }
-    function saveColumnWidth(storageKey, colId, width) {
-      const widths = readColumnWidths(storageKey);
-      widths[colId] = Math.round(width);
-      localStorage.setItem(storageKey, JSON.stringify(widths));
-    }
-    function tableColGroup(storageKey, cols) {
-      const widths = readColumnWidths(storageKey);
-      return '<colgroup>' + cols.map((col) => {
-        const width = Math.max(54, Number(widths[col.id]) || col.width || 140);
-        return '<col data-col-id="' + esc(col.id) + '" style="width:' + width + 'px">';
-      }).join('') + '</colgroup>';
-    }
-    function resizeHandle(storageKey, colId) {
-      return '<span class="column-resizer" data-resize-table="' + esc(storageKey) + '" data-resize-col="' + esc(colId) + '" title="Изменить ширину"></span>';
-    }
-    function resizeHeaderClass(extra = '') {
-      return ' class="' + (extra ? extra + ' ' : '') + 'resizable-th"';
-    }
-    function syncTableMinWidth(table) {
-      const cols = [...table.querySelectorAll('col')];
-      if (!cols.length) return;
-      const total = cols.reduce((sum, col) => sum + (parseFloat(col.style.width) || col.getBoundingClientRect().width || 0), 0);
-      table.style.minWidth = Math.max(total, 640) + 'px';
-    }
     function headerHtml(key, label) {
       const active = tableState.sortKey === key;
       const mark = active ? (tableState.sortDir === 'asc' ? '▲' : '▼') : '↕';
-      const filtered = Boolean(columnFilters[key]);
-      return '<th' + resizeHeaderClass() + '><div class="head-cell"><button class="sort-head ' + (active ? 'active' : '') + '" type="button" data-sort-key="' + key + '" title="Сортировать по столбцу"><span>' + esc(label) + '</span><span class="sort-mark">' + mark + '</span></button><button class="excel-filter-btn ' + (filtered ? 'active' : '') + '" type="button" data-filter-menu-key="' + key + '" title="Фильтр по столбцу" aria-label="Фильтр: ' + esc(label) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>' + resizeHandle('snab_column_widths', key) + '</th>';
+      return '<th><button class="sort-head ' + (active ? 'active' : '') + '" type="button" data-sort-key="' + key + '" title="Сортировать по столбцу"><span>' + esc(label) + '</span><span class="sort-mark">' + mark + '</span></button></th>';
     }
     function updatePager(total) {
       const pageCount = Math.max(1, Math.ceil(total / tableState.pageSize));
@@ -2285,34 +1786,27 @@ function pageHtml(): string {
       const date = new Date().toLocaleDateString('ru-RU', { weekday:'long', day:'numeric', month:'long' });
       document.getElementById('dashboardDate').textContent = 'Zelal Textile · ' + date;
     }
-    function requestPipeline(data) {
-      const requests = new Map();
+    function groupedByDay(data) {
+      const days = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+      const out = days.map((day) => ({ day, created:0, approved:0, closed:0 }));
       for (const row of data) {
-        const id = row.requestId || row.requestNumber || row.itemId;
-        const current = requests.get(id) || { warehouse:false, supplier:false, contract:false };
-        current.warehouse ||= Boolean(row.warehouse);
-        current.supplier ||= Boolean(row.supplier);
-        current.contract ||= Boolean(row.contractNumber || row.contractDate);
-        requests.set(id,current);
+        const parsed = new Date(row.date || row.createdAt || Date.now());
+        const index = Number.isNaN(parsed.getTime()) ? 0 : (parsed.getDay() + 6) % 7;
+        out[index].created += 1;
+        if (row.supplier) out[index].approved += 1;
+        if (row.contractNumber || row.contractDate) out[index].closed += 1;
       }
-      const values = [...requests.values()];
-      return [
-        { label:'Созданы', meta:'Все заявки', value:values.length },
-        { label:'Склад назначен', meta:'Есть место получения', value:values.filter((item) => item.warehouse).length },
-        { label:'Поставщик выбран', meta:'Определён контрагент', value:values.filter((item) => item.supplier).length },
-        { label:'Договор готов', meta:'Есть договор или дата', value:values.filter((item) => item.contract).length },
-      ];
+      return out;
     }
     function renderPipeline(data) {
-      const stages = requestPipeline(data);
-      const total = Math.max(1, stages[0].value);
-      document.getElementById('pipelineBars').innerHTML = stages.map((stage,index) => {
-        const pct = Math.round(stage.value / total * 100);
-        return '<div class="pipeline-stage" title="' + esc(stage.label + ': ' + stage.value + ' из ' + stages[0].value) + '">' +
-          '<div class="pipeline-step">0' + (index + 1) + '</div><div class="pipeline-value">' + esc(fmt.format(stage.value)) + '</div>' +
-          '<div class="pipeline-label">' + esc(stage.label) + '</div><div class="pipeline-meta">' + esc(stage.meta + ' · ' + pct + '%') + '</div>' +
-          '<div class="pipeline-progress"><span style="width:' + pct + '%"></span></div></div>';
-      }).join('');
+      const max = Math.max(1, ...groupedByDay(data).flatMap((d) => [d.created,d.approved,d.closed]));
+      document.getElementById('pipelineBars').innerHTML = groupedByDay(data).map((d) =>
+        '<div class="pipe-day"><div class="pipe-bars">' +
+        '<span class="pipe-bar" style="height:' + Math.max(6, d.created / max * 100) + '%"></span>' +
+        '<span class="pipe-bar approved" style="height:' + Math.max(6, d.approved / max * 100) + '%"></span>' +
+        '<span class="pipe-bar closed" style="height:' + Math.max(6, d.closed / max * 100) + '%"></span>' +
+        '</div><span>' + d.day + '</span></div>'
+      ).join('');
     }
     function renderCompactPanels(data) {
       const missing = data.filter((row) => !row.warehouse || !row.supplier || !row.contractNumber).slice(0, 4);
@@ -2357,9 +1851,7 @@ function pageHtml(): string {
       });
       document.getElementById('kRows').textContent = fmt.format(data.length);
       document.getElementById('kRequests').textContent = fmt.format(new Set(data.map((r) => r.requestNumber).filter(Boolean)).size);
-      const totalAmount = data.reduce((sum, r) => sum + Number(r.amount || 0), 0);
-      document.getElementById('kAmount').textContent = compactMoney(totalAmount);
-      document.getElementById('kAmount').title = money(totalAmount) + ' UZS';
+      document.getElementById('kAmount').textContent = money(data.reduce((sum, r) => sum + Number(r.amount || 0), 0));
       document.getElementById('kSuppliers').textContent = fmt.format(new Set(data.map((r) => r.supplier).filter(Boolean)).size);
       renderOpsDashboard(data);
       const sorted = sortedRows(data);
@@ -2368,24 +1860,22 @@ function pageHtml(): string {
       const activeKeys = visibleKeys();
       const activeGroups = visibleGroups(activeKeys);
       const table = document.getElementById('table');
-      const mainCols = [{ id:'__order', width:58 }, ...activeKeys.map((key) => ({ id:key, width:numericKeys.has(key) ? 132 : 160 })), { id:'__actions', width:190 }];
+      table.style.minWidth = Math.max(980, activeKeys.length * 126 + 130) + 'px';
       table.innerHTML =
-        tableColGroup('snab_column_widths', mainCols) +
-        '<thead><tr><th class="group order-col"></th>' + activeGroups.map((g) => '<th class="group" colspan="' + g[1] + '">' + esc(g[0]) + '</th>').join('') + '<th class="group" colspan="1"></th></tr><tr>' +
-        '<th' + resizeHeaderClass('order-col') + '>№' + resizeHandle('snab_column_widths', '__order') + '</th>' + activeKeys.map((key) => headerHtml(key, keyLabel(key))).join('') + '<th' + resizeHeaderClass() + '>Действия' + resizeHandle('snab_column_widths', '__actions') + '</th></tr></thead><tbody>' +
-        (pageRows.length ? pageRows.map((r, index) => '<tr data-item-id="' + esc(r.itemId) + '"><td class="order-col" data-label="№">' + esc(String((tableState.page - 1) * tableState.pageSize + index + 1)) + '</td>' + activeKeys.map((k) => cellHtml(r, k)).join('') + actionsHtml(r) + '</tr>').join('') : '<tr><td colspan="' + (activeKeys.length + 2) + '"><div class="table-empty">Нет строк под выбранные фильтры</div></td></tr>') +
+        '<thead><tr>' + activeGroups.map((g) => '<th class="group" colspan="' + g[1] + '">' + esc(g[0]) + '</th>').join('') + '<th class="group" colspan="1"></th></tr><tr>' +
+        activeKeys.map((key) => headerHtml(key, keyLabel(key))).join('') + '<th>Действия</th></tr></thead><tbody>' +
+        (pageRows.length ? pageRows.map((r) => '<tr data-item-id="' + esc(r.itemId) + '">' + activeKeys.map((k) => cellHtml(r, k)).join('') + actionsHtml(r) + '</tr>').join('') : '<tr><td colspan="' + (activeKeys.length + 1) + '"><div class="table-empty">Нет строк под выбранные фильтры</div></td></tr>') +
         '</tbody>';
-      syncTableMinWidth(table);
     }
     function cellHtml(r, k) {
       const value = numericKeys.has(k) ? String(Math.round(Number(r[k]) || 0)) : String(r[k] ?? '');
       const cls = numericKeys.has(k) ? 'num' : '';
-      return '<td class="' + cls + '" data-label="' + esc(keyLabel(k)) + '">' + esc(numericKeys.has(k) ? money(value) : value) + '</td>';
+      return '<td class="' + cls + '">' + esc(numericKeys.has(k) ? money(value) : value) + '</td>';
     }
     function actionsHtml() {
       const edit = hasPermission('procurement.quote','requests.edit','settings.manage') ? '<button class="mini save" data-action="edit">Редактировать</button>' : '';
       const del = hasPermission('requests.edit','settings.manage') ? '<button class="mini delete" data-action="delete">Удалить</button>' : '';
-      return '<td data-label="Действия"><div class="actions">' + edit + del + '</div></td>';
+      return '<td><div class="actions">' + edit + del + '</div></td>';
     }
     function rowPayloadFromModal() {
       const out = {};
@@ -2396,118 +1886,14 @@ function pageHtml(): string {
       }
       return out;
     }
-    function optionTags(options, current) {
-      const seen = new Set();
-      const list = [];
-      for (const option of options || []) {
-        const value = typeof option === 'string' ? option : (option.value ?? option.v ?? option.label ?? option.l ?? '');
-        const label = typeof option === 'string' ? option : (option.label ?? option.l ?? option.value ?? option.v ?? '');
-        const id = String(value);
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        list.push({ value:id, label:String(label || id) });
-      }
-      const raw = String(current || '');
-      if (raw && !seen.has(raw)) list.unshift({ value:raw, label:raw });
-      return '<option value="">—</option>' + list.map((option) => '<option value="' + esc(option.value) + '"' + (option.value === raw ? ' selected' : '') + '>' + esc(option.label) + '</option>').join('');
-    }
-    function unitOptionTags(current) {
-      const defaults = ['шт', 'кг', 'г', 'л', 'м', 'т', 'м²', 'рулон', 'упак'].map((u) => ({ value:u, label:u }));
-      return optionTags((meta?.units && meta.units.length ? meta.units : defaults), current);
-    }
-    function rowEditControl(row, key, options = {}) {
+    function rowEditField(row, key) {
+      const index = keys.indexOf(key);
+      const label = headers[index] || key;
       const value = row[key] ?? '';
-      const attrs = ' data-row-edit-key="' + key + '"';
-      if (options.textarea) return '<textarea class="fin"' + attrs + ' placeholder="' + esc(options.placeholder || '—') + '">' + esc(String(value)) + '</textarea>';
-      if (options.select) return '<select class="fin"' + attrs + '>' + optionTags(options.select, value) + '</select>';
-      const type = options.type || (numericKeys.has(key) ? 'number' : 'text');
-      const extra = type === 'number' ? ' step="any" min="0"' : '';
-      return '<input class="fin"' + attrs + ' type="' + esc(type) + '"' + extra + ' value="' + esc(String(value ?? '')) + '" placeholder="' + esc(options.placeholder || '') + '" />';
-    }
-    function rowEditField(row, key, label, options = {}) {
-      return '<div class="field ' + (options.full ? 'full' : '') + '"><label class="f">' + esc(label) + '</label>' + rowEditControl(row, key, options) + '</div>';
-    }
-    function rowEditReadonly(label, value) {
-      return '<div class="field"><label class="f">' + esc(label) + '</label><div class="readonly-field">' + esc(value || '—') + '</div></div>';
-    }
-    function rowEditAmountPreview(row) {
-      const amount = Math.round((Number(row.quantity) || 0) * (Number(row.unitPrice) || 0));
-      return '<div class="total-row"><span class="lbl">Итого по позиции:</span><span class="val" id="rowEditTotal">' + esc(money(amount) + ' UZS') + '</span></div>';
-    }
-    function renderRowEditForm(row) {
-      const objectOptions = (meta?.objects || []);
-      const warehouseOptions = (meta?.warehouses || []).map((w) => ({ value:w, label:w }));
-      const purposeOptions = (meta?.purposes || []);
-      const originOptions = (meta?.origins || []);
-      const unitOptions = (meta?.units || []);
-      const paymentOptions = ['Банк','Нал.','Наличные','Перечисление','ПЕР','НАЛ'].map((v) => ({ value:v, label:v }));
-      return '' +
-        '<div class="fcard">' +
-          '<div class="fcard-title"><span class="num-badge">1</span>Тип и контекст заявки</div>' +
-          '<div class="field-row">' +
-            rowEditReadonly('Номер заявки', row.requestNumber) +
-            rowEditReadonly('Заявитель', row.requester) +
-          '</div>' +
-          '<div class="field-row">' +
-            rowEditField(row, 'object', 'Объект', { select:objectOptions }) +
-            rowEditField(row, 'warehouse', 'Склад назначения', { select:warehouseOptions }) +
-          '</div>' +
-          '<div class="field">' +
-            '<label class="f">Происхождение</label>' +
-            rowEditControl(row, 'productType', { select:originOptions }) +
-          '</div>' +
-        '</div>' +
-        '<div class="fcard">' +
-          '<div class="fcard-title"><span class="num-badge">2</span>Параметры заявки</div>' +
-          '<div class="field-row">' +
-            rowEditField(row, 'expenseArticle', 'Назначение / цель', { select:purposeOptions }) +
-            rowEditField(row, 'cfoReceiver', 'Получатель ЦФО') +
-          '</div>' +
-          '<div class="field-row">' +
-            rowEditField(row, 'contractNumber', 'Номер договора') +
-            rowEditField(row, 'contractDate', 'Дата договора', { type:'date' }) +
-          '</div>' +
-        '</div>' +
-        '<div class="fcard">' +
-          '<div class="fcard-title"><span class="num-badge">3</span>Позиция<small>как в новой заявке</small></div>' +
-          '<div class="items-shell"><table class="items"><thead><tr>' +
-            '<th style="width:34px;">№</th><th style="width:26%;">Наименование *</th><th style="width:12%;">Код</th>' +
-            '<th style="width:9%;">Кол-во *</th><th style="width:10%;">Ед. изм</th><th style="width:12%;">Цена</th>' +
-            '<th style="width:11%;">Банк/Нал</th><th>Примечание</th>' +
-          '</tr></thead><tbody><tr>' +
-            '<td class="idx">1</td>' +
-            '<td>' + rowEditControl(row, 'materialName', { placeholder:'Наименование' }) + '</td>' +
-            '<td>' + rowEditControl(row, 'productCode', { placeholder:'Код' }) + '</td>' +
-            '<td>' + rowEditControl(row, 'quantity', { type:'number' }) + '</td>' +
-            '<td>' + rowEditControl(row, 'unit', { select:unitOptions }) + '</td>' +
-            '<td>' + rowEditControl(row, 'unitPrice', { type:'number' }) + '</td>' +
-            '<td>' + rowEditControl(row, 'paymentType', { select:paymentOptions }) + '</td>' +
-            '<td>' + rowEditControl(row, 'productNote', { placeholder:'—' }) + '</td>' +
-          '</tr></tbody></table></div>' +
-          '<div class="field-row" style="margin-top:12px">' +
-            rowEditField(row, 'ndsRate', 'Ставка НДС %', { select:[{ value:'0', label:'0%' }, { value:'12', label:'12%' }] }) +
-            '<div class="field"><label class="f">Расчёт</label><div class="readonly-field">Количество × цена за единицу</div></div>' +
-          '</div>' +
-          rowEditAmountPreview(row) +
-        '</div>' +
-        '<div class="fcard">' +
-          '<div class="fcard-title"><span class="num-badge">4</span>Поставщик и контакт</div>' +
-          '<div class="field-row">' +
-            rowEditField(row, 'supplier', 'Поставщик') +
-            rowEditField(row, 'person', 'Контактное лицо') +
-          '</div>' +
-          rowEditField(row, 'contacts', 'Контакты', { full:true }) +
-        '</div>';
-    }
-    function syncRowEditTotal() {
-      const form = document.getElementById('rowEditForm');
-      const qtyInput = form.querySelector('[data-row-edit-key="quantity"]');
-      const priceInput = form.querySelector('[data-row-edit-key="unitPrice"]');
-      const total = document.getElementById('rowEditTotal');
-      if (!qtyInput || !priceInput || !total) return;
-      const quantity = Number(qtyInput.value.replace(/\\s/g, '').replace(',', '.')) || 0;
-      const price = Number(priceInput.value.replace(/\\s/g, '').replace(',', '.')) || 0;
-      total.textContent = money(quantity * price) + ' UZS';
+      const input = numericKeys.has(key)
+        ? '<input class="fin" data-row-edit-key="' + key + '" type="number" step="any" value="' + esc(String(value ?? 0)) + '" />'
+        : '<input class="fin" data-row-edit-key="' + key + '" value="' + esc(String(value)) + '" />';
+      return '<div class="modal-field"><label>' + esc(label) + '</label>' + input + '</div>';
     }
     function openRowEdit(itemId) {
       const row = rows.find((item) => item.itemId === itemId);
@@ -2517,8 +1903,7 @@ function pageHtml(): string {
       document.getElementById('rowEditTitle').textContent = 'Редактировать строку ' + (row.requestNumber || '');
       document.getElementById('rowEditSubtitle').textContent = row.materialName || 'Проверьте данные перед сохранением.';
       document.getElementById('rowEditErr').textContent = '';
-      document.getElementById('rowEditFields').innerHTML = renderRowEditForm(row);
-      syncRowEditTotal();
+      document.getElementById('rowEditFields').innerHTML = [...editableKeys].map((key) => rowEditField(row, key)).join('');
       document.getElementById('rowEditModal').classList.remove('hidden');
     }
     function closeRowEdit() {
@@ -2632,702 +2017,6 @@ function pageHtml(): string {
       const row = event.target.closest('[data-request-id]');
       if (row) { event.preventDefault(); openRequest(row.dataset.requestId); }
     });
-
-    /* ── warehouse ERP module ── */
-    let warehouseLoaded = false;
-    let warehouseBalances = [];
-    let warehouseMovements = [];
-    let warehouseMeta = { materials: [], warehouses: [] };
-    let warehouseMoveMode = 'receive';
-    function qty(v) {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
-    }
-    function warehouseName(id, fallback) {
-      return fallback || (warehouseMeta.warehouses.find((w) => w.id === id) || {}).name || 'Общий остаток';
-    }
-    function movementLabel(type) {
-      return ({ income:'Приход', outcome:'Расход', adjustment:'Коррекция', transfer:'Перемещение', reservation:'Резерв', release:'Снятие резерва', write_off:'Списание', return:'Возврат', correction:'Исправление' })[type] || type || 'Движение';
-    }
-    function movementSign(type) {
-      if (type === 'income' || type === 'return' || type === 'release') return '+';
-      if (type === 'outcome' || type === 'write_off' || type === 'reservation') return '-';
-      return '±';
-    }
-    async function ensureWarehouse(force = false) {
-      if (warehouseLoaded && !force) return renderWarehouse();
-      document.getElementById('warehouseTable').innerHTML = '<tbody><tr><td class="table-empty">Загрузка остатков...</td></tr></tbody>';
-      document.getElementById('warehouseJournal').innerHTML = '<div class="empty-admin">Загрузка движений...</div>';
-      try {
-        const data = await Promise.all([
-          coreApi('/warehouse/balances'),
-          coreApi('/warehouse/movements'),
-          api('warehouse/meta'),
-        ]);
-        warehouseBalances = data[0] || [];
-        warehouseMovements = data[1] || [];
-        warehouseMeta = data[2] || { materials: [], warehouses: [] };
-        warehouseLoaded = true;
-        renderWarehouseFilter();
-        renderWarehouse();
-      } catch (err) {
-        document.getElementById('warehouseTable').innerHTML = '<tbody><tr><td class="table-empty">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить склад') + '</td></tr></tbody>';
-        document.getElementById('warehouseJournal').innerHTML = '<div class="empty-admin">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить склад') + '</div>';
-      }
-    }
-    function renderWarehouseFilter() {
-      const current = document.getElementById('warehouseFilter').value;
-      document.getElementById('warehouseFilter').innerHTML = '<option value="">Все склады</option>' + warehouseMeta.warehouses.map((w) => '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>').join('');
-      document.getElementById('warehouseFilter').value = current;
-    }
-    function renderWarehouse() {
-      const query = document.getElementById('warehouseSearch').value.trim().toLowerCase();
-      const warehouseId = document.getElementById('warehouseFilter').value;
-      const rows = warehouseBalances.filter((b) => {
-        if (warehouseId && b.warehouseId !== warehouseId) return false;
-        return !query || [b.materialName,b.materialUnit,b.warehouseName].some((v) => String(v || '').toLowerCase().includes(query));
-      });
-      const available = rows.reduce((sum, b) => sum + qty(b.availableQty), 0);
-      const reserved = rows.reduce((sum, b) => sum + qty(b.reservedQty), 0);
-      const low = rows.filter((b) => qty(b.minQty) > 0 && qty(b.availableQty) <= qty(b.minQty)).length;
-      document.getElementById('wSku').textContent = fmt.format(new Set(rows.map((b) => b.materialId)).size);
-      document.getElementById('wQty').textContent = fmt.format(available);
-      document.getElementById('wReserved').textContent = fmt.format(reserved);
-      document.getElementById('wLow').textContent = fmt.format(low);
-      document.getElementById('wLowTrend').textContent = low ? 'Нужно пополнение' : 'Все остатки в норме';
-      const warehouseCols = [{ id:'material', width:240 }, { id:'warehouse', width:170 }, { id:'available', width:130 }, { id:'reserved', width:120 }, { id:'min', width:120 }, { id:'status', width:150 }, { id:'actions', width:170 }];
-      const warehouseTh = (id, label, cls = '') => '<th' + resizeHeaderClass(cls) + '>' + esc(label) + resizeHandle('snab_warehouse_column_widths', id) + '</th>';
-      const warehouseTable = document.getElementById('warehouseTable');
-      warehouseTable.innerHTML =
-        tableColGroup('snab_warehouse_column_widths', warehouseCols) +
-        '<thead><tr>' + warehouseTh('material','Материал') + warehouseTh('warehouse','Склад') + warehouseTh('available','Доступно','num') + warehouseTh('reserved','Резерв','num') + warehouseTh('min','Минимум','num') + warehouseTh('status','Статус') + warehouseTh('actions','') + '</tr></thead><tbody>' +
-        (rows.map((b) => {
-          const isLow = qty(b.minQty) > 0 && qty(b.availableQty) <= qty(b.minQty);
-          return '<tr data-material-id="' + esc(b.materialId) + '" data-warehouse-id="' + esc(b.warehouseId || '') + '">' +
-            '<td class="sku-cell" data-label="Материал"><strong>' + esc(b.materialName || 'Материал') + '</strong><span>' + esc(b.materialUnit || 'ед.') + '</span></td>' +
-            '<td data-label="Склад">' + esc(warehouseName(b.warehouseId,b.warehouseName)) + '</td>' +
-            '<td class="qty-main ' + (isLow ? 'qty-low' : 'qty-ok') + '" data-label="Доступно">' + esc(money(b.availableQty)) + '</td>' +
-            '<td class="num" data-label="Резерв">' + esc(money(b.reservedQty)) + '</td>' +
-            '<td class="num" data-label="Минимум">' + esc(money(b.minQty)) + '</td>' +
-            '<td data-label="Статус"><span class="stock-chip ' + (isLow ? 'low' : 'ok') + '">' + (isLow ? 'Ниже минимума' : 'В норме') + '</span></td>' +
-            '<td data-label="Действия"><div class="warehouse-row-actions">' +
-              (hasPermission('warehouse.receive') ? '<button class="mini-action" data-warehouse-move="receive">Приход</button>' : '') +
-              (hasPermission('warehouse.issue') ? '<button class="mini-action" data-warehouse-move="issue">Расход</button>' : '') +
-            '</div></td></tr>';
-        }).join('') || '<tr><td colspan="7" class="table-empty">Остатков пока нет. Сделайте первый приход.</td></tr>') +
-        '</tbody>';
-      syncTableMinWidth(warehouseTable);
-      renderWarehouseJournal();
-    }
-    function renderWarehouseJournal() {
-      document.getElementById('warehouseJournal').innerHTML = warehouseMovements.slice(0, 80).map((m) => {
-        const cls = m.movementType === 'income' ? 'income' : m.movementType === 'outcome' ? 'outcome' : 'adjustment';
-        return '<div class="movement-row"><span class="move-type ' + cls + '">' + movementSign(m.movementType) + '</span>' +
-          '<div><strong>' + esc(m.materialName || 'Материал') + '</strong><small>' + esc(movementLabel(m.movementType)) + (m.reason ? ' · ' + esc(m.reason) : '') + '</small><small>' + esc(dateText(m.createdAt,true)) + '</small></div>' +
-          '<div class="movement-qty">' + esc(movementSign(m.movementType) + money(m.quantity)) + '</div></div>';
-      }).join('') || '<div class="empty-admin">Движений пока нет</div>';
-    }
-    async function refreshWarehouse() {
-      warehouseLoaded = false;
-      await ensureWarehouse(true);
-    }
-    function openWarehouseMove(mode, preset = {}) {
-      warehouseMoveMode = mode;
-      document.getElementById('warehouseMoveTitle').textContent = mode === 'receive' ? 'Приход на склад' : 'Расход со склада';
-      document.getElementById('warehouseMoveSubtitle').textContent = mode === 'receive' ? 'Увеличивает доступный остаток выбранного материала.' : 'Списывает материал со склада без отдельного шага в заявке.';
-      document.getElementById('warehouseMoveErr').textContent = '';
-      document.getElementById('warehouseMoveQty').value = '';
-      document.getElementById('warehouseMoveReason').value = '';
-      document.getElementById('warehouseMoveMaterial').innerHTML = '<option value="">Выберите материал</option>' + warehouseMeta.materials.map((m) => '<option value="' + esc(m.id) + '">' + esc(m.name + (m.defaultUnit ? ' · ' + m.defaultUnit : '')) + '</option>').join('');
-      document.getElementById('warehouseMoveWarehouse').innerHTML = '<option value="">Общий остаток</option>' + warehouseMeta.warehouses.map((w) => '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>').join('');
-      document.getElementById('warehouseMoveMaterial').value = preset.materialId || '';
-      document.getElementById('warehouseMoveWarehouse').value = preset.warehouseId || '';
-      document.getElementById('warehouseMoveSubmit').textContent = mode === 'receive' ? 'Оприходовать' : 'Списать расход';
-      document.getElementById('warehouseMoveModal').classList.remove('hidden');
-      document.getElementById('warehouseMoveMaterial').focus();
-    }
-    function closeWarehouseMove() { document.getElementById('warehouseMoveModal').classList.add('hidden'); }
-    document.getElementById('warehouseSearch').addEventListener('input', renderWarehouse);
-    document.getElementById('warehouseFilter').addEventListener('change', renderWarehouse);
-    document.getElementById('warehouseRefresh').addEventListener('click', refreshWarehouse);
-    document.getElementById('warehouseJournalRefresh').addEventListener('click', refreshWarehouse);
-    document.getElementById('warehouseReceive').addEventListener('click', () => openWarehouseMove('receive'));
-    document.getElementById('warehouseIssue').addEventListener('click', () => openWarehouseMove('issue'));
-    document.getElementById('warehouseTable').addEventListener('click', (event) => {
-      const button = event.target.closest('[data-warehouse-move]');
-      if (!button) return;
-      const row = button.closest('[data-material-id]');
-      openWarehouseMove(button.dataset.warehouseMove, { materialId: row.dataset.materialId, warehouseId: row.dataset.warehouseId });
-    });
-    document.getElementById('warehouseMoveCancel').addEventListener('click', closeWarehouseMove);
-    document.getElementById('warehouseMoveModal').addEventListener('click', (event) => { if (event.target.id === 'warehouseMoveModal') closeWarehouseMove(); });
-    document.getElementById('warehouseMoveForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const payload = {
-        materialId:document.getElementById('warehouseMoveMaterial').value,
-        warehouseId:document.getElementById('warehouseMoveWarehouse').value || undefined,
-        quantity:Number(document.getElementById('warehouseMoveQty').value),
-        reason:document.getElementById('warehouseMoveReason').value.trim() || undefined,
-      };
-      const submit = document.getElementById('warehouseMoveSubmit');
-      const error = document.getElementById('warehouseMoveErr');
-      error.textContent = '';
-      submit.disabled = true;
-      try {
-        await coreApi('/warehouse/' + (warehouseMoveMode === 'receive' ? 'receive' : 'issue'), 'POST', payload);
-        closeWarehouseMove();
-        toast(warehouseMoveMode === 'receive' ? 'Приход сохранён' : 'Расход сохранён');
-        await refreshWarehouse();
-      } catch (err) {
-        error.textContent = err instanceof Error ? err.message : 'Не удалось сохранить движение';
-      } finally {
-        submit.disabled = false;
-      }
-    });
-
-    /* ── materials catalog ── */
-    let materialsLoaded = false;
-    let materialRows = [];
-    const materialColumns = [
-      { key:'sku', label:'Код' },
-      { key:'name', label:'Наименование' },
-      { key:'category', label:'Категория' },
-      { key:'defaultUnit', label:'Ед. измерения' },
-      { key:'characteristics', label:'Характеристики' },
-      { key:'brand', label:'Бренд' },
-    ];
-    const materialTableState = { sortKey:'name', sortDir:'asc', page:1, pageSize:25 };
-    const materialFilters = {};
-    let materialActiveFilterKey = null;
-    let materialFilterDraft = null;
-    async function ensureMaterials(force = false) {
-      if (materialsLoaded && !force) return renderMaterials();
-      document.getElementById('materialsList').innerHTML = '<div class="empty-admin">Загрузка материалов...</div>';
-      try {
-        materialRows = await coreApi('/admin/materials');
-        materialsLoaded = true;
-        renderMaterials();
-      } catch (err) {
-        document.getElementById('materialsList').innerHTML = '<div class="empty-admin">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить материалы') + '</div>';
-      }
-    }
-    function materialValue(row, key) {
-      return String(row[key] || '').trim();
-    }
-    function materialRowValue(row, key) {
-      return materialValue(row, key).toLowerCase();
-    }
-    function materialUniqueValues(key) {
-      return [...new Set(materialRows.map((row) => materialValue(row, key)).filter(Boolean))].sort((a,b) => a.localeCompare(b, 'ru', { numeric:true, sensitivity:'base' }));
-    }
-    function materialMatchesFilter(row, key, filter) {
-      const value = materialRowValue(row, key);
-      if (filter.conditionMode) {
-        const term = String(filter.conditionText || '').trim().toLowerCase();
-        if (filter.conditionMode === 'empty' && value) return false;
-        if (filter.conditionMode === 'filled' && !value) return false;
-        if (!['empty','filled'].includes(filter.conditionMode) && term) {
-          if (filter.conditionMode === 'contains' && !value.includes(term)) return false;
-          if (filter.conditionMode === 'not_contains' && value.includes(term)) return false;
-          if (filter.conditionMode === 'equals' && value !== term) return false;
-          if (filter.conditionMode === 'not_equal' && value === term) return false;
-          if (filter.conditionMode === 'begins' && !value.startsWith(term)) return false;
-          if (filter.conditionMode === 'ends' && !value.endsWith(term)) return false;
-        }
-      }
-      if (Array.isArray(filter.values)) return filter.values.includes(value);
-      return true;
-    }
-    function filteredMaterialRows() {
-      const q = document.getElementById('materialsSearch').value.trim().toLowerCase();
-      return materialRows.filter((m) => {
-        if (q && ![m.name,m.sku,m.category,m.defaultUnit,m.characteristics,m.brand].some((v) => String(v || '').toLowerCase().includes(q))) return false;
-        for (const [key, filter] of Object.entries(materialFilters)) if (!materialMatchesFilter(m, key, filter)) return false;
-        return true;
-      });
-    }
-    function sortedMaterialRows(data) {
-      const key = materialTableState.sortKey;
-      const dir = materialTableState.sortDir === 'desc' ? -1 : 1;
-      return [...data].sort((a, b) => materialValue(a, key).localeCompare(materialValue(b, key), 'ru', { numeric:true, sensitivity:'base' }) * dir);
-    }
-    function materialHeaderHtml(column) {
-      const active = materialTableState.sortKey === column.key;
-      const mark = active ? (materialTableState.sortDir === 'asc' ? '▲' : '▼') : '↕';
-      const filtered = Boolean(materialFilters[column.key]);
-      return '<th' + resizeHeaderClass() + '><div class="head-cell"><button class="sort-head ' + (active ? 'active' : '') + '" type="button" data-material-sort="' + column.key + '"><span>' + esc(column.label) + '</span><span class="sort-mark">' + mark + '</span></button><button class="excel-filter-btn ' + (filtered ? 'active' : '') + '" type="button" data-material-filter="' + column.key + '" title="Фильтр: ' + esc(column.label) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>' + resizeHandle('snab_material_column_widths', column.key) + '</th>';
-    }
-    function updateMaterialsPager(total) {
-      const pageCount = Math.max(1, Math.ceil(total / materialTableState.pageSize));
-      if (materialTableState.page > pageCount) materialTableState.page = pageCount;
-      const start = total ? (materialTableState.page - 1) * materialTableState.pageSize + 1 : 0;
-      const end = Math.min(total, materialTableState.page * materialTableState.pageSize);
-      document.getElementById('materialsPagerInfo').textContent = total ? 'Показаны ' + fmt.format(start) + '–' + fmt.format(end) + ' из ' + fmt.format(total) : 'Строк нет';
-      document.getElementById('materialsPageInfo').textContent = materialTableState.page + ' / ' + pageCount;
-      document.getElementById('materialsFirstPage').disabled = materialTableState.page <= 1;
-      document.getElementById('materialsPrevPage').disabled = materialTableState.page <= 1;
-      document.getElementById('materialsNextPage').disabled = materialTableState.page >= pageCount;
-      document.getElementById('materialsLastPage').disabled = materialTableState.page >= pageCount;
-      document.getElementById('materialsPageSize').value = String(materialTableState.pageSize);
-      return pageCount;
-    }
-    function renderMaterials() {
-      const rows = sortedMaterialRows(filteredMaterialRows());
-      const total = rows.length;
-      updateMaterialsPager(total);
-      const start = (materialTableState.page - 1) * materialTableState.pageSize;
-      const pageRows = rows.slice(start, start + materialTableState.pageSize);
-      const materialCols = [{ id:'__order', width:58 }, { id:'sku', width:130 }, { id:'name', width:260 }, { id:'category', width:170 }, { id:'defaultUnit', width:130 }, { id:'characteristics', width:260 }, { id:'brand', width:160 }, { id:'__actions', width:170 }];
-      document.getElementById('materialsList').innerHTML =
-        '<div class="product-catalog"><table class="product-catalog-table">' + tableColGroup('snab_material_column_widths', materialCols) + '<thead><tr><th' + resizeHeaderClass('order-col') + '>№' + resizeHandle('snab_material_column_widths', '__order') + '</th>' + materialColumns.map(materialHeaderHtml).join('') + '<th' + resizeHeaderClass() + '>Действия' + resizeHandle('snab_material_column_widths', '__actions') + '</th></tr></thead><tbody>' +
-        (pageRows.map((m, index) =>
-          '<tr>' +
-            '<td class="order-col" data-label="№">' + fmt.format(start + index + 1) + '</td>' +
-            '<td data-label="Код"><div class="product-catalog-cell">' + esc(m.sku || '—') + '</div></td>' +
-            '<td data-label="Наименование"><div class="product-catalog-cell"><strong>' + esc(m.name || '—') + '</strong></div></td>' +
-            '<td data-label="Категория"><div class="product-catalog-cell muted">' + esc(m.category || '—') + '</div></td>' +
-            '<td data-label="Единица"><div class="product-catalog-cell muted">' + esc(m.defaultUnit || '—') + '</div></td>' +
-            '<td data-label="Характеристики"><div class="product-catalog-cell muted" title="' + esc(m.characteristics || '') + '">' + esc(m.characteristics || '—') + '</div></td>' +
-            '<td data-label="Бренд"><div class="product-catalog-cell muted">' + esc(m.brand || '—') + '</div></td>' +
-            '<td data-label="Действия"><div class="catalog-actions">' + (hasPermission('settings.manage') ? '<button class="mini-action" data-edit-material="' + esc(m.id) + '">Изменить</button><button class="mini-action danger" data-delete-material="' + esc(m.id) + '">Архив</button>' : '') + '</div></td>' +
-          '</tr>'
-        ).join('') || '<tr><td colspan="8"><div class="empty-admin">Товаров нет. Добавьте первый товар или импортируйте Excel.</div></td></tr>') + '</tbody></table></div>';
-      syncTableMinWidth(document.querySelector('#materialsList table'));
-    }
-    function resetMaterialsPageAndRender() {
-      materialTableState.page = 1;
-      renderMaterials();
-    }
-    function closeMaterialFilterMenu() {
-      materialActiveFilterKey = null;
-      materialFilterDraft = null;
-      document.getElementById('materialFilterMenu').classList.add('hidden');
-    }
-    function renderMaterialFilterValues() {
-      if (!materialActiveFilterKey || !materialFilterDraft) return;
-      const menu = document.getElementById('materialFilterMenu');
-      const search = menu.querySelector('[data-excel-filter-search]')?.value.trim().toLowerCase() || '';
-      const visible = materialFilterDraft.allValues.filter((value) => !search || value.toLowerCase().includes(search));
-      const list = menu.querySelector('[data-excel-filter-values]');
-      const shown = menu.querySelector('[data-excel-filter-shown]');
-      if (shown) shown.textContent = String(visible.length);
-      if (!list) return;
-      list.innerHTML = visible.map((value) =>
-        '<label class="excel-filter-option" title="' + esc(value) + '"><input type="checkbox" data-filter-value="' + esc(value) + '"' + (materialFilterDraft.selected.has(value.toLowerCase()) ? ' checked' : '') + '><span>' + esc(value) + '</span></label>'
-      ).join('') || '<div class="empty-admin" style="padding:18px 8px">Значений нет</div>';
-    }
-    function renderMaterialFilterMenu() {
-      if (!materialActiveFilterKey || !materialFilterDraft) return;
-      const menu = document.getElementById('materialFilterMenu');
-      const column = materialColumns.find((c) => c.key === materialActiveFilterKey);
-      menu.innerHTML =
-        '<div class="excel-filter-title">' + esc(column ? column.label : materialActiveFilterKey) + '</div>' +
-        '<button class="excel-filter-action" data-material-filter-sort="asc" type="button">Сортировать А → Я</button>' +
-        '<button class="excel-filter-action" data-material-filter-sort="desc" type="button">Сортировать Я → А</button>' +
-        '<div class="excel-filter-sep"></div>' +
-        '<button class="excel-filter-action" data-toggle-condition type="button">Фильтровать по условию <span>▸</span></button>' +
-        '<div class="excel-filter-rule ' + (materialFilterDraft.conditionOpen ? 'open' : '') + '">' +
-          '<select data-condition-mode>' +
-            '<option value="">Без условия</option><option value="contains">Текст содержит</option><option value="not_contains">Текст не содержит</option><option value="equals">Равно</option><option value="not_equal">Не равно</option><option value="begins">Начинается с</option><option value="ends">Заканчивается на</option><option value="empty">Пусто</option><option value="filled">Заполнено</option>' +
-          '</select>' +
-          '<input data-condition-text placeholder="Значение условия" />' +
-        '</div>' +
-        '<button class="excel-filter-action" data-toggle-values type="button">Фильтровать по значению <span>▾</span></button>' +
-        '<div class="excel-filter-meta"><button class="excel-filter-link" data-filter-select-all type="button">Выбрать все (' + fmt.format(materialFilterDraft.allValues.length) + ')</button><span class="excel-filter-shown">Показано: <strong data-excel-filter-shown>' + fmt.format(materialFilterDraft.allValues.length) + '</strong></span></div>' +
-        '<div class="excel-filter-meta"><button class="excel-filter-link" data-filter-reset type="button">Сбросить</button><span class="excel-filter-shown">' + fmt.format(materialFilterDraft.selected.size) + '</span></div>' +
-        '<div class="excel-filter-search-wrap"><input class="excel-filter-search" data-excel-filter-search aria-label="Поиск значений" /><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>' +
-        '<div class="excel-filter-values" data-excel-filter-values></div>' +
-        '<div class="excel-filter-actions"><button class="btn ghost" data-filter-cancel type="button">Отмена</button><button class="btn" data-filter-ok type="button">OK</button></div>';
-      const mode = menu.querySelector('[data-condition-mode]');
-      const text = menu.querySelector('[data-condition-text]');
-      if (mode) mode.value = materialFilterDraft.conditionMode || '';
-      if (text) {
-        text.value = materialFilterDraft.conditionText || '';
-        text.style.display = ['','empty','filled'].includes(mode?.value || '') ? 'none' : '';
-      }
-      renderMaterialFilterValues();
-    }
-    function positionMaterialFilterMenu(button) {
-      const menu = document.getElementById('materialFilterMenu');
-      const rect = button.getBoundingClientRect();
-      menu.classList.remove('hidden');
-      const top = Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 12);
-      const left = Math.min(Math.max(12, rect.right - menu.offsetWidth), window.innerWidth - menu.offsetWidth - 12);
-      menu.style.top = Math.max(12, top) + 'px';
-      menu.style.left = left + 'px';
-    }
-    function openMaterialFilterMenu(key, button) {
-      materialActiveFilterKey = key;
-      const allValues = materialUniqueValues(key);
-      const current = materialFilters[key] || {};
-      materialFilterDraft = {
-        allValues,
-        selected:current.values && current.values.length ? new Set(current.values) : new Set(allValues.map((value) => value.toLowerCase())),
-        conditionMode:current.conditionMode || '',
-        conditionText:current.conditionText || '',
-        conditionOpen:Boolean(current.conditionMode),
-      };
-      renderMaterialFilterMenu();
-      positionMaterialFilterMenu(button);
-      document.getElementById('materialFilterMenu').querySelector('[data-excel-filter-search]')?.focus();
-    }
-    function applyMaterialFilterDraft() {
-      if (!materialActiveFilterKey || !materialFilterDraft) return;
-      const allLower = materialFilterDraft.allValues.map((value) => value.toLowerCase());
-      const selected = [...materialFilterDraft.selected].filter((value) => allLower.includes(value));
-      const conditionMode = materialFilterDraft.conditionMode || '';
-      const conditionText = String(materialFilterDraft.conditionText || '').trim();
-      const next = {};
-      if (selected.length < allLower.length) next.values = selected;
-      if (conditionMode && (conditionText || conditionMode === 'empty' || conditionMode === 'filled')) {
-        next.conditionMode = conditionMode;
-        next.conditionText = conditionText;
-      }
-      if (Object.keys(next).length) materialFilters[materialActiveFilterKey] = next;
-      else delete materialFilters[materialActiveFilterKey];
-      closeMaterialFilterMenu();
-      resetMaterialsPageAndRender();
-    }
-    function readFileDataUrl(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(reader.error || new Error('Не удалось прочитать файл'));
-        reader.readAsDataURL(file);
-      });
-    }
-    async function importMaterialsFile(file) {
-      if (!file) return;
-      if (file.size > 8 * 1024 * 1024) throw new Error('Файл слишком большой');
-      const dataBase64 = await readFileDataUrl(file);
-      const result = await coreApi('/admin/materials/import', 'POST', { filename:file.name, dataBase64 });
-      toast('Импорт: создано ' + fmt.format(result.created || 0) + ', обновлено ' + fmt.format(result.updated || 0));
-      materialsLoaded = false; warehouseLoaded = false;
-      await ensureMaterials(true);
-    }
-    function openMaterial(row) {
-      document.getElementById('materialId').value = row ? row.id : '';
-      document.getElementById('materialTitle').textContent = row ? 'Изменить товар' : 'Новый товар';
-      document.getElementById('materialName').value = row ? row.name || '' : '';
-      document.getElementById('materialSku').value = row ? row.sku || '' : '';
-      document.getElementById('materialCategory').value = row ? row.category || '' : '';
-      document.getElementById('materialUnit').innerHTML = unitOptionTags(row ? row.defaultUnit || '' : '');
-      document.getElementById('materialUnit').value = row ? row.defaultUnit || '' : '';
-      document.getElementById('materialCharacteristics').value = row ? row.characteristics || '' : '';
-      document.getElementById('materialBrand').value = row ? row.brand || '' : '';
-      document.getElementById('materialErr').textContent = '';
-      document.getElementById('materialModal').classList.remove('hidden');
-      document.getElementById('materialName').focus();
-    }
-    function closeMaterial() { document.getElementById('materialModal').classList.add('hidden'); }
-    document.getElementById('materialsSearch').addEventListener('input', resetMaterialsPageAndRender);
-    document.getElementById('addMaterial').addEventListener('click', () => openMaterial(null));
-    document.getElementById('importMaterials').addEventListener('click', () => document.getElementById('materialsFile').click());
-    document.getElementById('materialsFile').addEventListener('change', async (event) => {
-      const input = event.target;
-      const file = input.files && input.files[0];
-      if (!file) return;
-      const button = document.getElementById('importMaterials');
-      button.disabled = true;
-      try {
-        await importMaterialsFile(file);
-      } catch (err) {
-        toast(err instanceof Error ? err.message : 'Не удалось импортировать Excel');
-      } finally {
-        input.value = '';
-        button.disabled = false;
-      }
-    });
-    document.getElementById('clearMaterialFilters').addEventListener('click', () => {
-      for (const key of Object.keys(materialFilters)) delete materialFilters[key];
-      closeMaterialFilterMenu();
-      document.getElementById('materialsSearch').value = '';
-      resetMaterialsPageAndRender();
-    });
-    document.getElementById('materialsPageSize').addEventListener('change', (event) => {
-      materialTableState.pageSize = Number(event.target.value) || 25;
-      resetMaterialsPageAndRender();
-    });
-    document.getElementById('materialsFirstPage').addEventListener('click', () => { materialTableState.page = 1; renderMaterials(); });
-    document.getElementById('materialsPrevPage').addEventListener('click', () => { materialTableState.page = Math.max(1, materialTableState.page - 1); renderMaterials(); });
-    document.getElementById('materialsNextPage').addEventListener('click', () => { materialTableState.page += 1; renderMaterials(); });
-    document.getElementById('materialsLastPage').addEventListener('click', () => {
-      const total = filteredMaterialRows().length;
-      materialTableState.page = Math.max(1, Math.ceil(total / materialTableState.pageSize));
-      renderMaterials();
-    });
-    document.getElementById('materialCancel').addEventListener('click', closeMaterial);
-    document.getElementById('materialsList').addEventListener('click', async (event) => {
-      const sort = event.target.closest('[data-material-sort]');
-      if (sort) {
-        const key = sort.dataset.materialSort;
-        if (materialTableState.sortKey === key) materialTableState.sortDir = materialTableState.sortDir === 'asc' ? 'desc' : 'asc';
-        else { materialTableState.sortKey = key; materialTableState.sortDir = 'asc'; }
-        closeMaterialFilterMenu();
-        renderMaterials();
-        return;
-      }
-      const filterButton = event.target.closest('[data-material-filter]');
-      if (filterButton) {
-        event.stopPropagation();
-        const key = filterButton.dataset.materialFilter;
-        if (materialActiveFilterKey === key) closeMaterialFilterMenu();
-        else openMaterialFilterMenu(key, filterButton);
-        return;
-      }
-      const edit = event.target.closest('[data-edit-material]');
-      if (edit) return openMaterial(materialRows.find((m) => m.id === edit.dataset.editMaterial));
-      const del = event.target.closest('[data-delete-material]');
-      if (!del) return;
-      const row = materialRows.find((m) => m.id === del.dataset.deleteMaterial);
-      if (!row || !window.confirm('Архивировать товар "' + row.name + '"?')) return;
-      del.disabled = true;
-      try {
-        await coreApi('/admin/materials/' + encodeURIComponent(row.id), 'DELETE');
-        toast('Товар архивирован');
-        materialsLoaded = false; warehouseLoaded = false;
-        await ensureMaterials(true);
-      } catch (err) { toast(err instanceof Error ? err.message : 'Не удалось архивировать материал'); del.disabled = false; }
-    });
-    document.getElementById('materialFilterMenu').addEventListener('click', (event) => {
-      event.stopPropagation();
-      const menu = event.currentTarget;
-      const sort = event.target.closest('[data-material-filter-sort]');
-      if (sort && materialActiveFilterKey) {
-        materialTableState.sortKey = materialActiveFilterKey;
-        materialTableState.sortDir = sort.dataset.materialFilterSort;
-        closeMaterialFilterMenu();
-        renderMaterials();
-        return;
-      }
-      if (event.target.closest('[data-toggle-condition]')) {
-        materialFilterDraft.conditionOpen = !materialFilterDraft.conditionOpen;
-        renderMaterialFilterMenu();
-        return;
-      }
-      if (event.target.closest('[data-filter-select-all]')) {
-        const visible = [...menu.querySelectorAll('[data-filter-value]')].map((input) => input.value.toLowerCase());
-        const allVisibleSelected = visible.length && visible.every((value) => materialFilterDraft.selected.has(value));
-        for (const value of visible) {
-          if (allVisibleSelected) materialFilterDraft.selected.delete(value);
-          else materialFilterDraft.selected.add(value);
-        }
-        renderMaterialFilterValues();
-        return;
-      }
-      if (event.target.closest('[data-filter-reset]')) {
-        materialFilterDraft.selected.clear();
-        materialFilterDraft.conditionMode = '';
-        materialFilterDraft.conditionText = '';
-        materialFilterDraft.conditionOpen = false;
-        renderMaterialFilterMenu();
-        return;
-      }
-      if (event.target.closest('[data-filter-cancel]')) {
-        closeMaterialFilterMenu();
-        return;
-      }
-      if (event.target.closest('[data-filter-ok]')) applyMaterialFilterDraft();
-    });
-    document.getElementById('materialFilterMenu').addEventListener('input', (event) => {
-      if (!materialFilterDraft) return;
-      if (event.target.matches('[data-excel-filter-search]')) renderMaterialFilterValues();
-      if (event.target.matches('[data-condition-text]')) materialFilterDraft.conditionText = event.target.value;
-      if (event.target.matches('[data-filter-value]')) {
-        const value = event.target.value.toLowerCase();
-        if (event.target.checked) materialFilterDraft.selected.add(value);
-        else materialFilterDraft.selected.delete(value);
-      }
-    });
-    document.getElementById('materialFilterMenu').addEventListener('change', (event) => {
-      if (!materialFilterDraft) return;
-      if (event.target.matches('[data-condition-mode]')) {
-        materialFilterDraft.conditionMode = event.target.value;
-        const input = document.getElementById('materialFilterMenu').querySelector('[data-condition-text]');
-        if (input) input.style.display = ['','empty','filled'].includes(event.target.value) ? 'none' : '';
-      }
-      if (event.target.matches('[data-filter-value]')) {
-        const value = event.target.value.toLowerCase();
-        if (event.target.checked) materialFilterDraft.selected.add(value);
-        else materialFilterDraft.selected.delete(value);
-      }
-    });
-    document.getElementById('materialForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const id = document.getElementById('materialId').value;
-      const data = {
-        sku:document.getElementById('materialSku').value.trim(),
-        name:document.getElementById('materialName').value.trim(),
-        category:document.getElementById('materialCategory').value.trim(),
-        defaultUnit:document.getElementById('materialUnit').value.trim(),
-        characteristics:document.getElementById('materialCharacteristics').value.trim(),
-        brand:document.getElementById('materialBrand').value.trim(),
-      };
-      const save = document.getElementById('materialSave');
-      const error = document.getElementById('materialErr');
-      error.textContent = '';
-      save.disabled = true;
-      try {
-        if (id) await coreApi('/admin/materials/' + encodeURIComponent(id), 'PUT', data);
-        else await coreApi('/admin/materials', 'POST', data);
-        toast(id ? 'Товар обновлён' : 'Товар создан');
-        closeMaterial();
-        materialsLoaded = false; warehouseLoaded = false;
-        await ensureMaterials(true);
-      } catch (err) { error.textContent = err instanceof Error ? err.message : 'Не удалось сохранить материал'; }
-      finally { save.disabled = false; }
-    });
-
-    /* ── suppliers directory ── */
-    let suppliersLoaded = false;
-    let supplierRows = [];
-    async function ensureSuppliers(force = false) {
-      if (suppliersLoaded && !force) return renderSuppliers();
-      document.getElementById('suppliersList').innerHTML = '<div class="empty-admin">Загрузка поставщиков...</div>';
-      try {
-        supplierRows = await coreApi('/suppliers');
-        suppliersLoaded = true;
-        renderSuppliers();
-      } catch (err) {
-        document.getElementById('suppliersList').innerHTML = '<div class="empty-admin">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить поставщиков') + '</div>';
-      }
-    }
-    function renderSuppliers() {
-      const q = document.getElementById('suppliersSearch').value.trim().toLowerCase();
-      const rows = supplierRows.filter((s) => !q || [s.name,s.inn,s.phone,s.email,s.contactPerson,s.category].some((v) => String(v || '').toLowerCase().includes(q)));
-      document.getElementById('suppliersList').innerHTML = rows.map((s) =>
-        '<div class="catalog-row"><div class="catalog-main"><strong>' + esc(s.name) + '</strong><span>' + esc(s.inn ? 'ИНН ' + s.inn : 'ИНН не задан') + '</span></div>' +
-        '<div class="catalog-meta">' + esc(s.category || 'Без категории') + '</div><div class="catalog-meta">' + esc([s.contactPerson,s.phone,s.email].filter(Boolean).join(' · ') || 'Контакты не заданы') + '</div>' +
-        '<div class="catalog-actions">' + (hasPermission('suppliers.manage') ? '<button class="mini-action" data-edit-supplier="' + esc(s.id) + '">Изменить</button><button class="mini-action danger" data-delete-supplier="' + esc(s.id) + '">Архив</button>' : '') + '</div></div>'
-      ).join('') || '<div class="empty-admin">Поставщиков нет. Добавьте первого контрагента.</div>';
-    }
-    function openSupplier(row) {
-      document.getElementById('supplierId').value = row ? row.id : '';
-      document.getElementById('supplierTitle').textContent = row ? 'Изменить поставщика' : 'Новый поставщик';
-      document.getElementById('supplierName').value = row ? row.name || '' : '';
-      document.getElementById('supplierInn').value = row ? row.inn || '' : '';
-      document.getElementById('supplierCategory').value = row ? row.category || '' : '';
-      document.getElementById('supplierContact').value = row ? row.contactPerson || '' : '';
-      document.getElementById('supplierPhone').value = row ? row.phone || '' : '';
-      document.getElementById('supplierEmail').value = row ? row.email || '' : '';
-      document.getElementById('supplierNote').value = row ? row.note || '' : '';
-      document.getElementById('supplierErr').textContent = '';
-      document.getElementById('supplierModal').classList.remove('hidden');
-      document.getElementById('supplierName').focus();
-    }
-    function closeSupplier() { document.getElementById('supplierModal').classList.add('hidden'); }
-    document.getElementById('suppliersSearch').addEventListener('input', renderSuppliers);
-    document.getElementById('addSupplier').addEventListener('click', () => openSupplier(null));
-    document.getElementById('supplierCancel').addEventListener('click', closeSupplier);
-    document.getElementById('suppliersList').addEventListener('click', async (event) => {
-      const edit = event.target.closest('[data-edit-supplier]');
-      if (edit) return openSupplier(supplierRows.find((s) => s.id === edit.dataset.editSupplier));
-      const del = event.target.closest('[data-delete-supplier]');
-      if (!del) return;
-      const row = supplierRows.find((s) => s.id === del.dataset.deleteSupplier);
-      if (!row || !window.confirm('Архивировать поставщика "' + row.name + '"?')) return;
-      del.disabled = true;
-      try {
-        await coreApi('/suppliers/' + encodeURIComponent(row.id), 'DELETE');
-        toast('Поставщик архивирован');
-        suppliersLoaded = false;
-        await ensureSuppliers(true);
-      } catch (err) { toast(err instanceof Error ? err.message : 'Не удалось архивировать поставщика'); del.disabled = false; }
-    });
-    document.getElementById('supplierForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const id = document.getElementById('supplierId').value;
-      const data = {
-        name:document.getElementById('supplierName').value.trim(),
-        inn:document.getElementById('supplierInn').value.trim(),
-        category:document.getElementById('supplierCategory').value.trim(),
-        contactPerson:document.getElementById('supplierContact').value.trim(),
-        phone:document.getElementById('supplierPhone').value.trim(),
-        email:document.getElementById('supplierEmail').value.trim(),
-        note:document.getElementById('supplierNote').value.trim(),
-      };
-      const save = document.getElementById('supplierSave');
-      const error = document.getElementById('supplierErr');
-      error.textContent = '';
-      save.disabled = true;
-      try {
-        if (id) await coreApi('/suppliers/' + encodeURIComponent(id), 'PATCH', data);
-        else await coreApi('/suppliers', 'POST', data);
-        toast(id ? 'Поставщик обновлён' : 'Поставщик создан');
-        closeSupplier();
-        suppliersLoaded = false;
-        await ensureSuppliers(true);
-      } catch (err) { error.textContent = err instanceof Error ? err.message : 'Не удалось сохранить поставщика'; }
-      finally { save.disabled = false; }
-    });
-
-    /* ── reports ── */
-    let reportsLoaded = false;
-    async function ensureReports(force = false) {
-      if (!force && reportsLoaded) return renderReports();
-      try {
-        if (!rows.length) await load();
-        if (!warehouseLoaded && hasPermission('warehouse.view')) await ensureWarehouse(true);
-        reportsLoaded = true;
-        renderReports();
-      } catch (err) {
-        document.getElementById('reportStatus').innerHTML = '<div class="empty-admin">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить отчёты') + '</div>';
-      }
-    }
-    function aggregateBy(data, key, amountKey = 'amount') {
-      const map = new Map();
-      for (const row of data) {
-        const label = String(row[key] || 'Не указано');
-        const cur = map.get(label) || { count:0, amount:0 };
-        cur.count += 1;
-        cur.amount += Number(row[amountKey]) || 0;
-        map.set(label, cur);
-      }
-      return [...map.entries()].map(([label, v]) => ({ label, ...v })).sort((a,b) => b.amount - a.amount || b.count - a.count);
-    }
-    function compactMoney(value) {
-      const n = Math.round(Number(value) || 0);
-      const abs = Math.abs(n);
-      if (abs >= 1_000_000_000_000) return (n / 1_000_000_000_000).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' трлн';
-      if (abs >= 1_000_000_000) return (n / 1_000_000_000).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млрд';
-      if (abs >= 1_000_000) return (n / 1_000_000).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн';
-      return money(n);
-    }
-    function rowWord(count) {
-      const n = Math.abs(Number(count) || 0);
-      const last = n % 10;
-      const lastTwo = n % 100;
-      if (last === 1 && lastTwo !== 11) return 'строка';
-      if (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14)) return 'строки';
-      return 'строк';
-    }
-    function metricRows(data) {
-      return data.slice(0, 8).map((x) => {
-        const fullAmount = money(x.amount);
-        return '<div class="report-row" title="' + esc(x.label + ' · ' + fmt.format(x.count) + ' ' + rowWord(x.count) + ' · ' + fullAmount + ' UZS') + '">' +
-          '<div class="report-name"><strong>' + esc(x.label) + '</strong><span>' + esc(fmt.format(x.count) + ' ' + rowWord(x.count)) + '</span></div>' +
-          '<div class="report-value">' + esc(compactMoney(x.amount)) + '</div></div>';
-      }).join('') || '<div class="empty-admin">Данных пока нет</div>';
-    }
-    function renderReports() {
-      const active = rows.filter((r) => !['closed','rejected','cancelled','archived'].includes(String(r.status || ''))).length;
-      const total = rows.reduce((s,r) => s + (Number(r.amount) || 0), 0);
-      const supplierCount = new Set(rows.map((r) => r.supplier).filter(Boolean)).size;
-      const low = warehouseBalances.filter((b) => qty(b.minQty) > 0 && qty(b.availableQty) <= qty(b.minQty)).length;
-      document.getElementById('rActive').textContent = fmt.format(active);
-      document.getElementById('rAmount').textContent = compactMoney(total);
-      document.getElementById('rAmount').title = money(total) + ' UZS';
-      document.getElementById('rSuppliers').textContent = fmt.format(supplierCount);
-      document.getElementById('rLowStock').textContent = fmt.format(low);
-      document.getElementById('reportStatus').innerHTML = metricRows(aggregateBy(rows,'status'));
-      document.getElementById('reportSuppliers').innerHTML = metricRows(aggregateBy(rows,'supplier'));
-      document.getElementById('reportObjects').innerHTML = metricRows(aggregateBy(rows,'object'));
-      document.getElementById('reportWarehouse').innerHTML = warehouseBalances.filter((b) => qty(b.minQty) > 0 && qty(b.availableQty) <= qty(b.minQty)).slice(0, 8).map((b) =>
-        '<div class="report-row"><div class="report-name"><strong>' + esc(b.materialName || 'Материал') + '</strong><span>' + esc(warehouseName(b.warehouseId,b.warehouseName)) + '</span></div><div class="report-value qty-low">' + esc(compactMoney(b.availableQty)) + ' / ' + esc(compactMoney(b.minQty)) + '</div></div>'
-      ).join('') || '<div class="empty-admin">Складских рисков нет</div>';
-    }
-    document.getElementById('reportsRefresh').addEventListener('click', async () => { reportsLoaded = false; await ensureReports(true); });
-
     function detailCell(label, value) {
       return '<div class="detail-cell"><span>' + esc(label) + '</span><strong>' + esc(value || '—') + '</strong></div>';
     }
@@ -3884,9 +2573,7 @@ function pageHtml(): string {
     document.getElementById('sidebarBackdrop').addEventListener('click', closeSidebar);
     document.getElementById('toggleFilters').addEventListener('click', () => {
       document.getElementById('tableSettingsPanel').classList.add('hidden');
-      closeExcelFilterMenu();
-      document.getElementById('filtersPanel').classList.remove('open');
-      toast('Фильтры теперь в заголовках столбцов');
+      document.getElementById('filtersPanel').classList.toggle('open');
     });
     document.getElementById('toggleTableSettings').addEventListener('click', (event) => {
       event.stopPropagation();
@@ -3895,41 +2582,7 @@ function pageHtml(): string {
       document.getElementById('tableSettingsPanel').classList.toggle('hidden');
     });
     document.getElementById('tableSettingsPanel').addEventListener('click', (event) => event.stopPropagation());
-    document.addEventListener('click', () => {
-      document.getElementById('tableSettingsPanel').classList.add('hidden');
-      closeExcelFilterMenu();
-      closeMaterialFilterMenu();
-    });
-    document.addEventListener('pointerdown', (event) => {
-      const handle = event.target.closest('[data-resize-col]');
-      if (!handle) return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeExcelFilterMenu();
-      closeMaterialFilterMenu();
-      const table = handle.closest('table');
-      const storageKey = handle.dataset.resizeTable;
-      const colId = handle.dataset.resizeCol;
-      if (!table || !storageKey || !colId) return;
-      const col = [...table.querySelectorAll('col')].find((item) => item.dataset.colId === colId);
-      if (!col) return;
-      const startX = event.clientX;
-      const startWidth = parseFloat(col.style.width) || handle.closest('th').getBoundingClientRect().width || 120;
-      document.body.classList.add('column-resizing');
-      const move = (moveEvent) => {
-        const width = Math.max(54, startWidth + moveEvent.clientX - startX);
-        col.style.width = width + 'px';
-        syncTableMinWidth(table);
-      };
-      const up = () => {
-        document.removeEventListener('pointermove', move);
-        document.removeEventListener('pointerup', up);
-        document.body.classList.remove('column-resizing');
-        saveColumnWidth(storageKey, colId, parseFloat(col.style.width) || startWidth);
-      };
-      document.addEventListener('pointermove', move);
-      document.addEventListener('pointerup', up);
-    });
+    document.addEventListener('click', () => document.getElementById('tableSettingsPanel').classList.add('hidden'));
     document.getElementById('columnSettings').addEventListener('change', (event) => {
       const input = event.target.closest('[data-column-key]');
       if (!input) return;
@@ -3947,76 +2600,11 @@ function pageHtml(): string {
     document.getElementById('showDefaultColumns').addEventListener('click', () => setVisibleColumns([...defaultVisibleKeys]));
     document.getElementById('showAllColumns').addEventListener('click', () => setVisibleColumns(keys));
     document.getElementById('clearFilters').addEventListener('click', () => {
-      for (const key of Object.keys(columnFilters)) delete columnFilters[key];
-      closeExcelFilterMenu();
+      for (const select of document.querySelectorAll('select[data-filter-key]')) for (const option of select.options) option.selected = false;
+      for (const select of document.querySelectorAll('[data-filter-mode]')) select.value = 'in';
       document.getElementById('search').value = '';
       document.getElementById('mobileSearch').value = '';
       resetPageAndRender();
-    });
-    document.getElementById('excelFilterMenu').addEventListener('click', (event) => {
-      event.stopPropagation();
-      const menu = event.currentTarget;
-      const sort = event.target.closest('[data-filter-sort]');
-      if (sort && activeFilterKey) {
-        tableState.sortKey = activeFilterKey;
-        tableState.sortDir = sort.dataset.filterSort;
-        closeExcelFilterMenu();
-        render();
-        return;
-      }
-      if (event.target.closest('[data-toggle-condition]')) {
-        filterDraft.conditionOpen = !filterDraft.conditionOpen;
-        renderExcelFilterMenu();
-        return;
-      }
-      if (event.target.closest('[data-filter-select-all]')) {
-        const visible = [...menu.querySelectorAll('[data-filter-value]')].map((input) => input.value.toLowerCase());
-        const allVisibleSelected = visible.length && visible.every((value) => filterDraft.selected.has(value));
-        for (const value of visible) {
-          if (allVisibleSelected) filterDraft.selected.delete(value);
-          else filterDraft.selected.add(value);
-        }
-        renderExcelFilterValues();
-        return;
-      }
-      if (event.target.closest('[data-filter-reset]')) {
-        filterDraft.selected.clear();
-        filterDraft.conditionMode = '';
-        filterDraft.conditionText = '';
-        filterDraft.conditionOpen = false;
-        renderExcelFilterMenu();
-        return;
-      }
-      if (event.target.closest('[data-filter-cancel]')) {
-        closeExcelFilterMenu();
-        return;
-      }
-      if (event.target.closest('[data-filter-ok]')) {
-        applyExcelFilterDraft();
-      }
-    });
-    document.getElementById('excelFilterMenu').addEventListener('input', (event) => {
-      if (!filterDraft) return;
-      if (event.target.matches('[data-excel-filter-search]')) renderExcelFilterValues();
-      if (event.target.matches('[data-condition-text]')) filterDraft.conditionText = event.target.value;
-      if (event.target.matches('[data-filter-value]')) {
-        const value = event.target.value.toLowerCase();
-        if (event.target.checked) filterDraft.selected.add(value);
-        else filterDraft.selected.delete(value);
-      }
-    });
-    document.getElementById('excelFilterMenu').addEventListener('change', (event) => {
-      if (!filterDraft) return;
-      if (event.target.matches('[data-condition-mode]')) {
-        filterDraft.conditionMode = event.target.value;
-        const input = document.querySelector('[data-condition-text]');
-        if (input) input.style.display = ['','empty','filled'].includes(event.target.value) ? 'none' : '';
-      }
-      if (event.target.matches('[data-filter-value]')) {
-        const value = event.target.value.toLowerCase();
-        if (event.target.checked) filterDraft.selected.add(value);
-        else filterDraft.selected.delete(value);
-      }
     });
     document.getElementById('pageSize').addEventListener('change', (event) => {
       tableState.pageSize = Number(event.target.value) || 25;
@@ -4043,17 +2631,8 @@ function pageHtml(): string {
       document.getElementById('togglePassword').setAttribute('aria-label', next === 'password' ? 'Показать пароль' : 'Скрыть пароль');
     });
     document.getElementById('table').addEventListener('click', async (e) => {
-      const filterButton = e.target.closest('[data-filter-menu-key]');
-      if (filterButton) {
-        e.stopPropagation();
-        const key = filterButton.dataset.filterMenuKey;
-        if (activeFilterKey === key) closeExcelFilterMenu();
-        else openExcelFilterMenu(key, filterButton);
-        return;
-      }
       const sort = e.target.closest('[data-sort-key]');
       if (sort) {
-        closeExcelFilterMenu();
         const key = sort.dataset.sortKey;
         if (tableState.sortKey === key) tableState.sortDir = tableState.sortDir === 'asc' ? 'desc' : 'asc';
         else { tableState.sortKey = key; tableState.sortDir = numericKeys.has(key) ? 'desc' : 'asc'; }
@@ -4080,8 +2659,6 @@ function pageHtml(): string {
     document.getElementById('rowEditModal').addEventListener('click', (event) => {
       if (event.target.id === 'rowEditModal') closeRowEdit();
     });
-    document.getElementById('rowEditFields').addEventListener('input', syncRowEditTotal);
-    document.getElementById('rowEditFields').addEventListener('change', syncRowEditTotal);
     document.getElementById('rowEditForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       const btn = document.getElementById('rowEditSave');
@@ -4137,12 +2714,10 @@ export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router 
       return;
     }
     const permissions = await getUserPermissionCodes(db, user.id);
-    const roles = await dashboardUserRoles(db, user.id);
     res.json({
       token: issueSession(user.id, sessionSecret, 12 * 60 * 60),
       user: { id: user.id, fullName: user.fullName, username: user.username, holdingId: user.holdingId },
       permissions,
-      roles,
     });
   });
 
@@ -4152,7 +2727,6 @@ export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router 
     res.json({
       user: { id: actor.id, fullName: actor.fullName, username: actor.username, holdingId: actor.holdingId },
       permissions: actor.permissions,
-      roles: actor.roles,
     });
   });
 
@@ -4170,24 +2744,6 @@ export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router 
     const actor = await requireDashboardActor(db, req, res, sessionSecret, ['requests.create']);
     if (!actor) return;
     res.json(await fetchCreateMeta(db, actor.holdingId));
-  });
-
-  r.post('/api/warehouse/meta', async (req: Request, res: Response) => {
-    const actor = await requireDashboardActor(db, req, res, sessionSecret, ['warehouse.view', 'warehouse.receive', 'warehouse.issue']);
-    if (!actor) return;
-    const [materials, warehouses] = await Promise.all([
-      db
-        .select({ id: schema.materials.id, name: schema.materials.name, sku: schema.materials.sku, category: schema.materials.category, defaultUnit: schema.materials.defaultUnit, characteristics: schema.materials.characteristics, brand: schema.materials.brand })
-        .from(schema.materials)
-        .where(eq(schema.materials.holdingId, actor.holdingId))
-        .orderBy(schema.materials.name),
-      db
-        .select({ id: schema.warehouses.id, name: schema.warehouses.name })
-        .from(schema.warehouses)
-        .where(and(eq(schema.warehouses.holdingId, actor.holdingId), eq(schema.warehouses.status, 'active')))
-        .orderBy(schema.warehouses.name),
-    ]);
-    res.json({ materials, warehouses });
   });
 
   r.post('/api/requests', async (req: Request, res: Response) => {

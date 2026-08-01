@@ -122,7 +122,7 @@ describe('constructor / admin API', () => {
 
     const cfg = await request(app).get('/api/config').set('Authorization', `Bearer ${token}`).expect(200);
     expect(cfg.body.factoryName).toBe('Zelal');
-    expect(cfg.body.stages.length).toBe(9);
+    expect(cfg.body.stages.length).toBe(10);
 
     await request(app)
       .put('/api/admin/settings')
@@ -451,15 +451,16 @@ describe('admin: workflow (Block D)', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'WF' })
       .expect(201);
+    const fin = await roleId(db, 'finance');
     const s1 = await request(app)
       .post(`/api/admin/workflows/${wf.body.id}/steps`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Шаг 1', step_kind: 'approval', order_index: 1, threshold_amount: 5000000 })
+      .send({ name: 'Шаг 1', approver_role_id: fin, order_index: 1, threshold_amount: 5000000 })
       .expect(201);
     const s2 = await request(app)
       .post(`/api/admin/workflows/${wf.body.id}/steps`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Шаг 2', step_kind: 'approval', order_index: 2 })
+      .send({ name: 'Шаг 2', approver_role_id: fin, order_index: 2 })
       .expect(201);
     await request(app)
       .put(`/api/admin/workflows/${wf.body.id}/steps/${s1.body.id}`)
@@ -489,10 +490,9 @@ describe('admin: workflow (Block D)', () => {
   it('blocks step changes while the chain has in-flight requests (Г2)', async () => {
     const { app, db, holding } = await make();
     const token = await login(app, '999');
-    const requesterToken = await login(app, 'demo_requester');
     await request(app)
       .post('/api/requests')
-      .set('Authorization', `Bearer ${requesterToken}`)
+      .set('Authorization', `Bearer ${token}`)
       .send({ title: 'X', items: [{ name: 'M', quantity: 1, unitPrice: 1000 }] })
       .expect(201);
     const [wf] = await db

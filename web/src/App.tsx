@@ -182,7 +182,7 @@ interface TenantConfig {
 }
 
 export default function App() {
-  const { lang, setLang, t, tl } = useI18n();
+  const { lang, setLang, t } = useI18n();
   const [me, setMe] = useState<Me | null>(null);
   const [config, setConfig] = useState<TenantConfig | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -200,30 +200,6 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
-  useEffect(() => {
-    const root = document.documentElement;
-    const setViewport = () => {
-      const vv = window.visualViewport;
-      root.style.setProperty('--tg-vh', `${Math.round(vv?.height ?? window.innerHeight)}px`);
-    };
-    const scrollFocusedControl = (target: EventTarget | null) => {
-      const el = target instanceof HTMLElement ? target : null;
-      if (!el || !el.matches('input, textarea, select')) return;
-      window.setTimeout(() => {
-        el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
-      }, 180);
-    };
-    setViewport();
-    window.visualViewport?.addEventListener('resize', setViewport);
-    window.visualViewport?.addEventListener('scroll', setViewport);
-    const onFocusIn = (e: FocusEvent) => scrollFocusedControl(e.target);
-    document.addEventListener('focusin', onFocusIn);
-    return () => {
-      window.visualViewport?.removeEventListener('resize', setViewport);
-      window.visualViewport?.removeEventListener('scroll', setViewport);
-      document.removeEventListener('focusin', onFocusIn);
-    };
-  }, []);
 
   // Header bell badge — unread notification count (best-effort; failure keeps 0).
   const refreshUnread = useCallback(() => {
@@ -278,7 +254,7 @@ export default function App() {
     })();
   }, [loadMe]);
 
-  if (booting) return <Centered>{tl('Загрузка…')}</Centered>;
+  if (booting) return <Centered>Загрузка…</Centered>;
   if (!me)
     return (
       <DevLogin
@@ -301,14 +277,14 @@ export default function App() {
   const TITLES: Record<Screen['name'], string> = {
     home: t('nav.home'),
     list: t('nav.requests'),
-    create: tl('Новая заявка'),
+    create: 'Новая заявка',
     detail: t('screen.detail'),
     approvals: t('nav.approvals'),
     warehouse: t('nav.warehouse'),
     procurement: t('nav.procurement'),
-    notifications: tl('Уведомления'),
+    notifications: 'Уведомления',
     menu: t('nav.menu'),
-    admin: tl('Администрирование'),
+    admin: 'Администрирование',
   };
   const title = TITLES[screen.name];
   const fullBleed = ['home', 'list', 'detail', 'create', 'approvals', 'warehouse', 'notifications'].includes(screen.name);
@@ -352,23 +328,23 @@ export default function App() {
               {/* FIXES 2026-07-17 (лист H): Uzb / Рус / Türkçe (Eng заменён турецким). */}
               {SWITCHER_LANGS.map((code) => <option key={code} value={code}>{LANG_LABELS[code]}</option>)}
             </select>
-            <button aria-label={tl('Уведомления')} onClick={() => setScreen({ name: 'notifications' })} style={{ ...iconBtn, position: 'relative' }}>
+            <button aria-label="Уведомления" onClick={() => setScreen({ name: 'notifications' })} style={{ ...iconBtn, position: 'relative' }}>
               <Icon name="bell" size={20} />
               {unread > 0 && (
                 <span
-                  aria-label={tl(`${unread} непрочитанных`)}
+                  aria-label={`${unread} непрочитанных`}
                   style={{ position: 'absolute', top: -3, right: -3, minWidth: 17, height: 17, padding: '0 4px', borderRadius: 9, background: 'var(--danger)', color: '#fff', fontSize: 10, fontWeight: 700, lineHeight: '17px', textAlign: 'center', boxShadow: '0 0 0 2px var(--header)' }}
                 >
                   {unread > 99 ? '99+' : unread}
                 </span>
               )}
             </button>
-            <button aria-label={tl('Сменить тему')} onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} style={iconBtn}>
+            <button aria-label="Сменить тему" onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} style={iconBtn}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
             </button>
             {/* FIXES 2026-07-17: имя пользователя в шапке убрано — оно и так есть
                 в приветствии на главной. */}
-            <button aria-label={tl('Выйти')} onClick={() => { clearToken(); setMe(null); }} style={iconBtn}>
+            <button aria-label="Выйти" onClick={() => { clearToken(); setMe(null); }} style={iconBtn}>
               <Icon name="logout" size={20} />
             </button>
           </div>
@@ -378,7 +354,7 @@ export default function App() {
       <main className={fullBleed ? 'flex-1 overflow-y-auto' : 'flex-1 overflow-y-auto p-4'}>
         {!me.user.holdingId && (
           <div className={fullBleed ? 'p-4' : ''}>
-            <Note>{tl('Вы не привязаны к организации. Попросите администратора назначить вам права.')}</Note>
+            <Note>Вы не привязаны к организации. Попросите администратора назначить вам права.</Note>
           </div>
         )}
         {screen.name === 'home' && (
@@ -612,12 +588,10 @@ function RequestRowButton({ id, title, requestNumber, status, onOpen, obyekt, de
   id: string; title: string | null; requestNumber: string; status: string; onOpen: (id: string) => void;
   obyekt?: string | null; departmentName?: string | null; neededDate?: string | null; createdAt?: string | null;
 }) {
-  const { lang, tl } = useI18n();
-  const locale = lang === 'uz' ? 'uz-UZ' : lang === 'tr' ? 'tr-TR' : lang === 'en' ? 'en-US' : 'ru-RU';
   const rows: { k: string; v: string }[] = [];
   if (obyekt) rows.push({ k: 'Объект', v: obyekt });
   if (departmentName) rows.push({ k: 'Отдел снабжения', v: departmentName });
-  if (createdAt) rows.push({ k: 'Создана', v: fmtDate(createdAt, locale) });
+  if (createdAt) rows.push({ k: 'Создана', v: fmtDate(createdAt) });
   return (
     <button
       onClick={() => onOpen(id)}
@@ -634,13 +608,13 @@ function RequestRowButton({ id, title, requestNumber, status, onOpen, obyekt, de
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {rows.map((r) => (
             <div key={r.k} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-              <span style={{ fontSize: 11.5, color: 'var(--fg3)', fontWeight: 500, flex: 'none' }}>{tl(r.k)}</span>
+              <span style={{ fontSize: 11.5, color: 'var(--fg3)', fontWeight: 500, flex: 'none' }}>{r.k}</span>
               <span style={{ fontSize: 12.5, color: 'var(--fg)', fontWeight: 600, textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.v}</span>
             </div>
           ))}
         </div>
       ) : (
-        <div style={{ fontSize: 12, color: 'var(--fg2)' }}>{tl(statusMeta(status).label)}</div>
+        <div style={{ fontSize: 12, color: 'var(--fg2)' }}>{statusMeta(status).label}</div>
       )}
     </button>
   );
@@ -672,7 +646,6 @@ function QueuePreview({ title, load, onOpen, onSeeAll, emptyText, tick = 0 }: {
   emptyText: string;
   tick?: number;
 }) {
-  const { tl } = useI18n();
   const [rows, setRows] = useState<QueueItem[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -690,17 +663,17 @@ function QueuePreview({ title, load, onOpen, onSeeAll, emptyText, tick = 0 }: {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <div style={{ ...SECTION_LABEL, marginBottom: 0 }}>{title}{rows ? ` · ${rows.length}` : ''}</div>
         {onSeeAll && rows && rows.length > 0 && (
-          <button onClick={onSeeAll} style={{ border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>{tl('все →')}</button>
+          <button onClick={onSeeAll} style={{ border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>все →</button>
         )}
       </div>
       {!rows && !err && <div className="animate-pulse" style={{ height: 60, borderRadius: 14, background: 'var(--skel)' }} />}
       {err && (
         <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, padding: '14px 16px', fontSize: 13, color: 'var(--danger)' }}>
-          {tl('Не удалось загрузить:')} {err}
+          Не удалось загрузить: {err}
         </div>
       )}
       {rows && !err && rows.length === 0 && (
-        <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '20px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>{tl(emptyText)}</div>
+        <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '20px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>{emptyText}</div>
       )}
       {rows && rows.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
@@ -880,7 +853,7 @@ function Home({
   onOpen: (id: string) => void;
   tick?: number;
 }) {
-  const { t, tl } = useI18n();
+  const { t } = useI18n();
   const [dash, setDash] = useState<DashboardData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -933,7 +906,7 @@ function Home({
     <div>
       {/* Greeting — navy, continues the header with no seam */}
       <div style={{ background: 'var(--header)', color: 'var(--hfg)', padding: '4px 20px 46px' }}>
-        <div style={{ fontSize: 14, color: 'var(--hfg2)', fontWeight: 500 }}>{tl('Добрый день,')}</div>
+        <div style={{ fontSize: 14, color: 'var(--hfg2)', fontWeight: 500 }}>Добрый день,</div>
         <div style={{ fontSize: 25, fontWeight: 700, letterSpacing: '-.02em', marginTop: 3 }}>{me.user.fullName}</div>
         <div
           style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 10, padding: '5px 12px', borderRadius: 9, background: 'var(--accent)', fontSize: 12.5, fontWeight: 600, color: '#fff' }}
@@ -947,7 +920,7 @@ function Home({
       {err && (
         <div style={{ position: 'relative', marginTop: -32, padding: '0 20px' }}>
           <div style={{ background: 'var(--card)', border: '1px solid var(--danger)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '16px', fontSize: 13.5, color: 'var(--danger)' }}>
-            {tl('Не удалось загрузить дашборд:')} {err}
+            Не удалось загрузить дашборд: {err}
           </div>
         </div>
       )}
@@ -966,7 +939,7 @@ function Home({
                     {c.onClick && <span style={{ color: 'var(--fg3)' }}><Icon name="chev" size={17} sw={2.2} /></span>}
                   </div>
                   <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 30, fontWeight: 600, lineHeight: 1, color: 'var(--fg)' }}>{c.value ?? '—'}</div>
-                  <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{tl(c.label)}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--fg2)', fontWeight: 500, lineHeight: 1.25 }}>{c.label}</div>
                 </>
               );
               const base: CSSProperties = { minWidth: 0, width: '100%', minHeight: 118, textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadow)', padding: '14px 15px', display: 'flex', flexDirection: 'column', gap: 9 };
@@ -992,7 +965,7 @@ function Home({
         if (ADMIN_PERMS.some(can)) actions.push({ label: 'Администрирование', tint: 'accent', ic: 'gear', onClick: () => onNav({ name: 'admin' }) });
         return actions.length > 0 ? (
           <div style={{ padding: '24px 20px 0' }}>
-            <div style={SECTION_LABEL}>{tl('Быстрые действия')}</div>
+            <div style={SECTION_LABEL}>Быстрые действия</div>
             <div style={{ display: 'flex', gap: 12 }}>
               {actions.map((a) => (
                 <button
@@ -1003,7 +976,7 @@ function Home({
                   <span style={{ width: 42, height: 42, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: TINT_BG[a.tint], color: TINT_FG[a.tint] }}>
                     <Icon name={a.ic} size={22} sw={a.ic === 'plus' ? 2.4 : 1.9} />
                   </span>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.2 }}>{tl(a.label)}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)', lineHeight: 1.2 }}>{a.label}</span>
                 </button>
               ))}
             </div>
@@ -1014,7 +987,7 @@ function Home({
       {/* requests-by-status breakdown — FIXES 2026-07-17 (лист F): у всех пользователей. */}
       {!err && byStatusEntries.length > 0 && (
         <div style={{ padding: '24px 20px 0' }}>
-          <div style={SECTION_LABEL}>{tl('Заявки по статусам')}</div>
+          <div style={SECTION_LABEL}>Заявки по статусам</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {byStatusEntries.map(([st, n]) => {
               const m = statusMeta(st);
@@ -1025,7 +998,7 @@ function Home({
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '7px 11px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card)', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, color: 'var(--fg2)' }}
                 >
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: m.color }} />
-                  {tl(m.label)}
+                  {m.label}
                   <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: 'var(--fg)' }}>{n}</span>
                 </button>
               );
@@ -1037,7 +1010,7 @@ function Home({
       {/* Queue slot 1 — My Approvals (role-aware) */}
       {!err && can('approvals.approve') && (
         <QueuePreview
-          title={tl('Ждут моего решения')}
+          title="Ждут моего решения"
           load={async () => pickItems(await api.inbox())}
           onOpen={onOpen}
           onSeeAll={() => onNav({ name: 'approvals' })}
@@ -1048,39 +1021,19 @@ function Home({
 
       {/* Queue slot 2 — profile queue (procurement / finance) */}
       {!err && profileQueue && (
-        <QueuePreview title={tl(profileQueue.title)} load={profileQueue.load} onOpen={onOpen} onSeeAll={profileQueue.onSeeAll} emptyText={profileQueue.emptyText} tick={tick} />
+        <QueuePreview title={profileQueue.title} load={profileQueue.load} onOpen={onOpen} onSeeAll={profileQueue.onSeeAll} emptyText={profileQueue.emptyText} tick={tick} />
       )}
 
-      {!err && can('warehouse.view') && (
-        <div style={{ padding: '24px 20px 0' }}>
-          <div style={SECTION_LABEL}>{tl('Склад')}</div>
-          <button
-            onClick={() => onNav({ name: 'warehouse' })}
-            style={{ width: '100%', textAlign: 'left', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: 'var(--shadowSm)', padding: 16, display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }}
-          >
-            <span style={{ width: 44, height: 44, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: dash?.lowStock ? 'var(--danger-bg)' : 'var(--success-bg)', color: dash?.lowStock ? 'var(--danger)' : 'var(--success)', flex: 'none' }}>
-              <Icon name={dash?.lowStock ? 'alert' : 'box'} size={22} />
-            </span>
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ display: 'block', fontSize: 14.5, fontWeight: 750, color: 'var(--fg)' }}>{tl('Складской обзор')}</span>
-              <span style={{ display: 'block', marginTop: 3, fontSize: 12.5, color: 'var(--fg2)' }}>
-                {dash?.lowStock ? `${dash.lowStock} · ${tl('Позиции ниже минимума')}` : tl('Все остатки в норме')}
-              </span>
-            </span>
-            <span style={{ color: 'var(--accent)', fontSize: 12.5, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              {tl('Открыть склад')} <Icon name="chev" size={15} sw={2.2} />
-            </span>
-          </button>
-        </div>
-      )}
+      {/* FIXES 2026-07-17 (лист D): карточка «Приёмка и выдача» убрана — на склад
+          ведут карточка «Низкий остаток» и вкладка «Склад» в нижней навигации. */}
 
       {/* Queue slot 3 — Recent activity (own for requester, holding for oversight) */}
       <div style={{ padding: '24px 20px 24px' }}>
-        <div style={SECTION_LABEL}>{tl('Последние события')}</div>
+        <div style={SECTION_LABEL}>Последние события</div>
         {!dash && !err && <div className="animate-pulse" style={{ height: 68, borderRadius: 14, background: 'var(--skel)' }} />}
         {dash && dash.activity.length === 0 && (
           <div style={{ background: 'var(--card)', border: '1px dashed var(--border)', borderRadius: 14, padding: '24px 16px', textAlign: 'center', fontSize: 13, color: 'var(--fg3)' }}>
-            {tl('Пока нет событий — здесь появятся обновления по вашим заявкам.')}
+            Пока нет событий — здесь появятся обновления по вашим заявкам.
           </div>
         )}
         {dash && dash.activity.length > 0 && (
@@ -1174,7 +1127,6 @@ function RequestsList({
   initialMine?: boolean;
   tick?: number;
 }) {
-  const { tl } = useI18n();
   const [rows, setRows] = useState<RequestRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -1247,12 +1199,12 @@ function RequestsList({
       <div style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg)', padding: '14px 16px 8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--fg2)' }}>
-            {tl('Все заявки')} {selectedDate ? (filtered ? `· ${filtered.length}` : '') : total != null ? `· ${total}` : ''}
+            Все заявки {selectedDate ? (filtered ? `· ${filtered.length}` : '') : total != null ? `· ${total}` : ''}
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {/* bug #12: calendar collapsed into a small toggle next to "+ Создать" */}
             <button
-              aria-label={tl('Календарь')}
+              aria-label="Календарь"
               onClick={() => setShowCalendar((v) => !v)}
               style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 10, border: '1px solid var(--border)', background: showCalendar || selectedDate ? 'var(--accent-bg)' : 'var(--card)', color: showCalendar || selectedDate ? 'var(--accent)' : 'var(--fg2)', cursor: 'pointer', position: 'relative' }}
             >
@@ -1261,14 +1213,14 @@ function RequestsList({
             </button>
             {me.permissions.includes('reports.view') && (
               <button
-                aria-label={tl('Экспорт в Excel (CSV)')}
+                aria-label="Экспорт в Excel (CSV)"
                 onClick={async () => {
                   try {
                     const url = await api.exportRequestsUrl();
                     const link = document.createElement('a');
                     link.href = url; link.download = `zayavki-${new Date().toISOString().slice(0, 10)}.csv`; link.click();
                     URL.revokeObjectURL(url);
-                  } catch { alert(tl('Не удалось выгрузить CSV')); }
+                  } catch { alert('Не удалось выгрузить CSV'); }
                 }}
                 style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--fg2)', cursor: 'pointer' }}
               >
@@ -1277,7 +1229,7 @@ function RequestsList({
             )}
             {me.permissions.includes('requests.create') && (
               <button onClick={onCreate} style={{ padding: '8px 13px', borderRadius: 10, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                {tl('+ Создать')}
+                + Создать
               </button>
             )}
           </div>
@@ -1286,7 +1238,7 @@ function RequestsList({
           <div style={{ marginBottom: 8 }}>
             <MiniCalendar requestDates={requestDates} selectedDate={selectedDate} onSelect={(d) => { setSelectedDate(d); }} />
             {selectedDate && (
-              <button onClick={() => setSelectedDate(null)} style={{ marginTop: 6, border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>{tl('Сбросить дату')}</button>
+              <button onClick={() => setSelectedDate(null)} style={{ marginTop: 6, border: 'none', background: 'none', color: 'var(--accent)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0 }}>Сбросить дату</button>
             )}
           </div>
         )}
@@ -1294,7 +1246,7 @@ function RequestsList({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={tl('Поиск по номеру или названию...')}
+            placeholder="Поиск по номеру или названию..."
             style={{ flex: 1, padding: '9px 13px', fontSize: 13, border: '1.5px solid var(--border)', borderRadius: 10, background: 'var(--card)', color: 'var(--fg)', outline: 'none', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}
           />
           {/* №13: «Только мои» — сразу после «Все» */}
@@ -1302,26 +1254,26 @@ function RequestsList({
             onClick={() => setMineOnly((v) => !v)}
             style={{ padding: '9px 12px', fontSize: 12, fontWeight: 700, border: `1.5px solid ${mineOnly ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, background: mineOnly ? 'var(--accent-bg)' : 'var(--card)', color: mineOnly ? 'var(--accent)' : 'var(--fg2)', cursor: 'pointer', whiteSpace: 'nowrap' }}
           >
-            {tl('Только мои')}
+            Только мои
           </button>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             style={{ padding: '9px 10px', fontSize: 12, border: '1.5px solid var(--border)', borderRadius: 10, background: 'var(--card)', color: 'var(--fg)', outline: 'none', appearance: 'none', cursor: 'pointer' }}
           >
-            <option value="">{tl('Все')}</option>
-            <option value="pending_approval">{tl('На согласовании')}</option>
-            <option value="needs_revision">{tl('Возвращено на доработку')}</option>
-            <option value="approved">{tl('Согласована')}</option>
-            <option value="rejected">{tl('Отклонена')}</option>
-            <option value="draft">{tl('Черновик')}</option>
-            <option value="warehouse_check">{tl('Склад')}</option>
-            <option value="procurement">{tl('Закупка')}</option>
-            <option value="finance_payment">{tl('Ожидает оплаты')}</option>
-            <option value="delivery">{tl('Доставка')}</option>
-            <option value="receiving">{tl('Приёмка')}</option>
-            <option value="issue">{tl('Выдача')}</option>
-            <option value="closed">{tl('Закрыта')}</option>
+            <option value="">Все</option>
+            <option value="pending_approval">На согласовании</option>
+            <option value="needs_revision">Возвращено на доработку</option>
+            <option value="approved">Согласована</option>
+            <option value="rejected">Отклонена</option>
+            <option value="draft">Черновик</option>
+            <option value="warehouse_check">Склад</option>
+            <option value="procurement">Закупка</option>
+            <option value="finance_payment">Ожидает оплаты</option>
+            <option value="delivery">Доставка</option>
+            <option value="receiving">Приёмка</option>
+            <option value="issue">Выдача</option>
+            <option value="closed">Закрыта</option>
           </select>
         </div>
       </div>
@@ -1332,11 +1284,11 @@ function RequestsList({
           <span style={{ width: 76, height: 76, borderRadius: 22, background: 'var(--chip)', color: 'var(--fg3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Icon name="file" size={34} />
           </span>
-          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg)', marginTop: 18 }}>{tl(search || statusFilter ? 'Ничего не найдено' : 'Здесь пока пусто')}</div>
-          <div style={{ fontSize: 13.5, color: 'var(--fg2)', marginTop: 6, lineHeight: 1.5, maxWidth: 240 }}>{tl(search || statusFilter ? 'Попробуйте другой запрос или сбросьте фильтр.' : 'Заявок нет. Создайте первую с главного экрана.')}</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg)', marginTop: 18 }}>{search || statusFilter ? 'Ничего не найдено' : 'Здесь пока пусто'}</div>
+          <div style={{ fontSize: 13.5, color: 'var(--fg2)', marginTop: 6, lineHeight: 1.5, maxWidth: 240 }}>{search || statusFilter ? 'Попробуйте другой запрос или сбросьте фильтр.' : 'Заявок нет. Создайте первую с главного экрана.'}</div>
           {!search && !statusFilter && me.permissions.includes('requests.create') && (
             <button onClick={onCreate} style={{ marginTop: 18, padding: '12px 20px', borderRadius: 11, border: 'none', background: 'var(--accent)', color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
-              {tl('+ Новая заявка')}
+              + Новая заявка
             </button>
           )}
         </div>
@@ -1368,14 +1320,14 @@ function RequestsList({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: s.color }} />
                     <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: 'var(--fg)', fontWeight: 600 }}>{r.requestNumber}</span>
-                    {isMine && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-bg)', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 6px' }}>{tl('Создано мной')}</span>}
+                    {isMine && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-bg)', border: '1px solid var(--accent)', borderRadius: 6, padding: '2px 6px' }}>Создано мной</span>}
                   </div>
                   <StatusPill status={r.status} />
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {cardRows.map((cr) => (
                     <div key={cr.k} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-                      <span style={{ fontSize: 12, color: 'var(--fg3)', fontWeight: 500, flex: 'none' }}>{tl(cr.k)}</span>
+                      <span style={{ fontSize: 12, color: 'var(--fg3)', fontWeight: 500, flex: 'none' }}>{cr.k}</span>
                       <span style={{ fontSize: 13, color: 'var(--fg)', fontWeight: 600, textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cr.v}</span>
                     </div>
                   ))}
@@ -1394,7 +1346,7 @@ function RequestsList({
               disabled={loadingMore}
               style={{ width: '100%', padding: 14, borderRadius: 11, border: '1.5px solid var(--border)', background: 'var(--card)', color: 'var(--accent)', fontSize: 14, fontWeight: 600, cursor: loadingMore ? 'wait' : 'pointer', opacity: loadingMore ? 0.5 : 1, marginTop: 4 }}
             >
-              {loadingMore ? tl('Загрузка...') : tl('Показать ещё')}
+              {loadingMore ? 'Загрузка...' : 'Показать ещё'}
             </button>
           )}
         </div>
@@ -2422,9 +2374,9 @@ function actionBtnStyle(action: string): CSSProperties {
   return { ...base, background: 'var(--accent)', color: '#fff', boxShadow: '0 8px 18px -8px var(--accent)' };
 }
 
-function fmtDate(iso: string, locale = 'ru-RU'): string {
+function fmtDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   } catch {
     return iso;
   }
@@ -2454,11 +2406,10 @@ function groupByDay(rows: RequestRow[]): { key: string; label: string; items: Re
   return groups;
 }
 function DateDivider({ label }: { label: string }) {
-  const { tl } = useI18n();
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 2px 0' }}>
       <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
-      <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--fg3)', textTransform: 'uppercase', letterSpacing: '.04em', whiteSpace: 'nowrap' }}>{tl(label)}</span>
+      <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--fg3)', textTransform: 'uppercase', letterSpacing: '.04em', whiteSpace: 'nowrap' }}>{label}</span>
       <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
     </div>
   );
@@ -3721,12 +3672,11 @@ function nextActionHint(stepKind: string): string {
 }
 
 function StatusPill({ status }: { status: string }) {
-  const { tl } = useI18n();
   const s = statusMeta(status);
   return (
     <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 8, background: s.bg, color: s.color, fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap' }}>
       <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.color }} />
-      {tl(s.label)}
+      {s.label}
     </span>
   );
 }

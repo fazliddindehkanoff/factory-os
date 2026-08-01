@@ -21,7 +21,8 @@ interface StepSpec {
   threshold?: number;
 }
 
-// Approved full-cycle path. The UI prepends request creation as progress stage 1.
+// Approved full-cycle path. The UI prepends request creation as progress stage 1,
+// so these nine workflow steps are displayed as stages 2–10.
 const STEP_SPECS: StepSpec[] = [
   { code: 'dept_head', order: 1, name: 'Руководитель отдела', kind: 'approval' },
   { code: 'warehouse', order: 2, name: 'Проверка склада', kind: 'warehouse_check' },
@@ -34,6 +35,10 @@ const STEP_SPECS: StepSpec[] = [
   { code: 'director', order: 7, name: 'Директор', kind: 'approval', condition: { inStock: false } },
   { code: 'procurement', order: 8, name: 'Снабженец — оформление заказа', kind: 'ordering', condition: { inStock: false } },
   { code: 'warehouse', order: 9, name: 'Склад — приёмка', kind: 'receiving', condition: { inStock: false } },
+  // Ветка «есть в наличии»: склад подтвердил полное наличие → склад сразу
+  // выдаёт (остаток списывается) → закрыта. Руководитель отдела НЕ согласует —
+  // ему уходит только уведомление (routes, FIXES 2026-07-20).
+  { code: 'warehouse', order: 10, name: 'Склад — выдача в отдел', kind: 'issue', condition: { inStock: true } },
 ];
 
 async function roleIdByCode(db: Db, code: string): Promise<string | undefined> {

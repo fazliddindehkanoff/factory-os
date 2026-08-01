@@ -108,34 +108,9 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
-  overscroll-behavior-y: none;
-  touch-action: manipulation;
 }
 * {
   box-sizing: border-box;
-}
-html,
-body,
-#root {
-  min-height: 100dvh;
-}
-input,
-textarea,
-select,
-button {
-  font: inherit;
-}
-input,
-textarea,
-select {
-  scroll-margin-block: 96px 160px;
-}
-@supports (-webkit-touch-callout: none) {
-  input,
-  textarea,
-  select {
-    font-size: 16px !important;
-  }
 }
 ::-webkit-scrollbar {
   width: 0;

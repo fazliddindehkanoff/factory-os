@@ -114,7 +114,6 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
     .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
     .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
   const isChiefEngineer = assignedRoles.some((r: { code: string }) => r.code === 'deputy_director');
-  const isOwner = assignedRoles.some((r: { code: string }) => r.code === 'owner');
   // Activity feed follows the request-visibility model (bug #2): own + involved +
   // role-in-workflow; top roles see the whole holding.
   const vis = await getRequestVisibility(db, userId);
@@ -199,12 +198,10 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   // count missed action steps, so the KPI showed 0 while the queue showed 1.
   // Тот же SQL-префильтр, что у инбокса (фикс LIMIT-100) — KPI и список совпадают.
   let pendingForMe = 0;
-  if (!isOwner) {
-    const inflight = await inboxCandidates(db, userId, holdingId);
-    for (const r of inflight) {
-      const acts = await availableActions(db, r, userId);
-      if (acts.length > 0) pendingForMe++;
-    }
+  const inflight = await inboxCandidates(db, userId, holdingId);
+  for (const r of inflight) {
+    const acts = await availableActions(db, r, userId);
+    if (acts.length > 0) pendingForMe++;
   }
 
   // Additive aggregates — computed ONLY when the caller holds the gating permission
