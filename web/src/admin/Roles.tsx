@@ -29,7 +29,7 @@ const MODULE_LABEL: Record<string, string> = {
   reports: 'Отчёты',
 };
 
-export function Roles() {
+export function Roles({ canManage }: { canManage: boolean }) {
   const [roles, setRoles] = useState<Role[] | null>(null);
   const [perms, setPerms] = useState<Perm[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +51,7 @@ export function Roles() {
       <RoleEditor
         role={selected}
         perms={perms}
+        canManage={canManage}
         onBack={() => { load(); setSelected(null); }}
         onChanged={() => { load(); setSelected(null); }}
         onRefresh={load}
@@ -65,9 +66,11 @@ export function Roles() {
   return (
     <div className="space-y-4">
       {error && <Err>{error}</Err>}
-      <PrimaryBtn className="w-full" onClick={() => setCreateOpen(true)}>
-        + Создать набор прав
-      </PrimaryBtn>
+      {canManage && (
+        <PrimaryBtn className="w-full" onClick={() => setCreateOpen(true)}>
+          + Создать набор прав
+        </PrimaryBtn>
+      )}
       <div className="space-y-2.5">
         {roles.map((r) => (
           <button
@@ -96,6 +99,7 @@ export function Roles() {
 function RoleEditor({
   role,
   perms,
+  canManage,
   onBack,
   onChanged,
   onRefresh,
@@ -103,6 +107,7 @@ function RoleEditor({
 }: {
   role: Role;
   perms: Perm[];
+  canManage: boolean;
   onBack: () => void;
   onChanged: () => void;
   onRefresh: () => void;
@@ -113,7 +118,7 @@ function RoleEditor({
   const [saved, setSaved] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [name, setName] = useState(role.name);
-  const readOnly = role.isSystem;
+  const readOnly = !canManage;
 
   const groups = useMemo(() => {
     const m = new Map<string, Perm[]>();
@@ -182,6 +187,8 @@ function RoleEditor({
         </div>
         {role.isSystem ? (
           <Pill tone="system">системная</Pill>
+        ) : !canManage ? (
+          <Pill tone="muted">только просмотр</Pill>
         ) : (
           <div className="flex gap-1.5">
             <MiniBtn onClick={() => setRenameOpen(true)}>✎</MiniBtn>
@@ -192,9 +199,9 @@ function RoleEditor({
         )}
       </div>
 
-      {readOnly && (
+      {!canManage && (
         <div className="mb-4 rounded-xl bg-white/5 px-3 py-2.5 text-xs text-fg2">
-          Системный набор — права только для просмотра.
+          Создавать и менять роли может только super admin.
         </div>
       )}
 

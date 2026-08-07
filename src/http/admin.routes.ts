@@ -8,9 +8,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type RequestHandler } from 'express';
-import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import multer from 'multer';
+import ExcelJS from 'exceljs';
+import { and, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { hashPassword } from '../auth/password.js';
+import { normalizePhone } from '../auth/phone.js';
 import { hasPermission, type Scope } from '../rbac/rbac.js';
 import { PERMISSIONS } from '../rbac/permissions.js';
 import { STEP_KINDS, TERMINAL_STATUSES, ON_REJECT_POLICIES, actionsForKind, type OnRejectPolicy } from '../workflow/step-kinds.js';
@@ -37,6 +40,41 @@ function actor(req: Request): AuthedUser {
 
 function str(v: unknown): string {
   return String(v ?? '').trim();
+}
+
+const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+
+/**
+ * Reads the first worksheet of an uploaded .xlsx buffer, matches header cells
+ * against `aliases` (canonical field -> accepted header labels, case/space
+ * insensitive), and returns one plain object per data row keyed by canonical
+ * field name. Rows are skipped only by the caller (e.g. missing required key).
+ */
+async function parseImportSheet(buffer: Buffer, aliases: Record<string, string[]>): Promise<Record<string, string>[]> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  const ws = wb.worksheets[0];
+  if (!ws) throw new ValidationError('В файле нет листов');
+  const norm = (v: unknown) => String(v ?? '').trim().toLowerCase();
+  const headerRow = ws.getRow(1);
+  const colByField = new Map<string, number>();
+  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    const label = norm(cell.value);
+    for (const [field, labels] of Object.entries(aliases)) {
+      if (labels.some((l) => norm(l) === label) && !colByField.has(field)) colByField.set(field, colNumber);
+    }
+  });
+  const rows: Record<string, string>[] = [];
+  for (let i = 2; i <= ws.rowCount; i++) {
+    const row = ws.getRow(i);
+    const out: Record<string, string> = {};
+    for (const [field, colNumber] of colByField.entries()) {
+      const cell = row.getCell(colNumber);
+      out[field] = str(cell.value && typeof cell.value === 'object' && 'text' in (cell.value as object) ? (cell.value as { text: string }).text : cell.value);
+    }
+    if (Object.values(out).some((v) => v)) rows.push(out);
+  }
+  return rows;
 }
 
 interface AuditEntry {
@@ -269,6 +307,19 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       }
     };
 
+  const requireOwner: RequestHandler = async (req, res, next) => {
+    try {
+      const u = actor(req);
+      if (!u.holdingId || !(await actorIsOwner(u.id, u.holdingId))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      next();
+    } catch (e) {
+      next(e);
+    }
+  };
+
   /** Admin section is reachable if the user holds ANY of the manage permissions. */
   const requireAnyPerm =
     (codes: string[]): RequestHandler =>
@@ -300,6 +351,22 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     return rows.map((x: { code: string }) => x.code);
   }
 
+  async function actorIsOwner(userId: string, holdingId: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: schema.userRoles.id })
+      .from(schema.userRoles)
+      .innerJoin(schema.roles, eq(schema.roles.id, schema.userRoles.roleId))
+      .where(
+        and(
+          eq(schema.userRoles.userId, userId),
+          eq(schema.userRoles.holdingId, holdingId),
+          eq(schema.userRoles.status, 'active'),
+          eq(schema.roles.code, 'owner'),
+        ),
+      );
+    return rows.length > 0;
+  }
+
   /**
    * R6: anti-escalation must also cover REVOCATION. You may archive a user or strip
    * their roles only if you yourself hold (at holding scope) every permission their
@@ -316,6 +383,26 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     if (missing.length) {
       throw new ForbiddenError('Нельзя администрировать пользователя с более широкими правами, чем ваши');
     }
+  }
+
+  /** Active 'owner' role assignments in a holding, optionally excluding one
+   *  assignment id (the one about to be revoked) — used to guarantee a holding
+   *  is never left with zero owners, whether by self-revocation or someone
+   *  else revoking/archiving the last owner. */
+  async function activeOwnerCount(holdingId: string, excludeAssignmentId?: string): Promise<number> {
+    const rows: { id: string }[] = await db
+      .select({ id: schema.userRoles.id })
+      .from(schema.userRoles)
+      .innerJoin(schema.roles, eq(schema.roles.id, schema.userRoles.roleId))
+      .where(
+        and(
+          eq(schema.userRoles.holdingId, holdingId),
+          eq(schema.userRoles.status, 'active'),
+          eq(schema.roles.code, 'owner'),
+          excludeAssignmentId ? ne(schema.userRoles.id, excludeAssignmentId) : undefined,
+        ),
+      );
+    return rows.length;
   }
 
   /** Count active user-role assignments scoped to each department. */
@@ -363,7 +450,147 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     }
   });
 
+  // Owner-only request administration. Deletion is deliberately soft: the
+  // request row and all business history remain in PostgreSQL, while regular
+  // user-facing queries hide rows whose status is `deleted`.
+  r.get('/requests', requireOwner, async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const rows = await db
+        .select({
+          id: schema.requests.id,
+          requestNumber: schema.requests.requestNumber,
+          title: schema.requests.title,
+          status: schema.requests.status,
+          requesterName: schema.users.fullName,
+          createdAt: schema.requests.createdAt,
+        })
+        .from(schema.requests)
+        .leftJoin(schema.users, eq(schema.users.id, schema.requests.requesterId))
+        .where(and(eq(schema.requests.holdingId, u.holdingId as string), ne(schema.requests.status, 'deleted')))
+        .orderBy(desc(schema.requests.createdAt));
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  async function softDeleteRequests(requestIds: string[], u: AuthedUser): Promise<number> {
+    if (!u.holdingId || requestIds.length === 0) return 0;
+    return db.transaction(async (tx: Db) => {
+      const rows = await tx
+        .select({ id: schema.requests.id, status: schema.requests.status })
+        .from(schema.requests)
+        .where(
+          and(
+            eq(schema.requests.holdingId, u.holdingId as string),
+            inArray(schema.requests.id, requestIds),
+            ne(schema.requests.status, 'deleted'),
+          ),
+        );
+      if (!rows.length) return 0;
+      const ids = rows.map((row: { id: string }) => row.id);
+      const now = new Date();
+      await tx
+        .update(schema.requests)
+        .set({ status: 'deleted', currentStepId: null, closedAt: now, updatedAt: now })
+        .where(inArray(schema.requests.id, ids));
+      await tx.insert(schema.requestStatusHistory).values(
+        rows.map((row: { id: string; status: string }) => ({
+          requestId: row.id,
+          oldStatus: row.status,
+          newStatus: 'deleted',
+          changedBy: u.id,
+          comment: 'Удалено супер-администратором',
+          source: 'admin',
+        })),
+      );
+      await tx.insert(schema.auditLogs).values(
+        rows.map((row: { id: string; status: string }) => ({
+          holdingId: u.holdingId as string,
+          userId: u.id,
+          action: 'request.deleted',
+          module: 'requests',
+          entityType: 'request',
+          entityId: row.id,
+          oldValue: { status: row.status },
+          newValue: { status: 'deleted' },
+          source: 'admin',
+        })),
+      );
+      return rows.length;
+    });
+  }
+
+  r.delete('/requests/:id', requireOwner, async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const deleted = await softDeleteRequests([str(req.params.id)], u);
+      if (!deleted) throw new NotFoundError('Заявка не найдена');
+      res.json({ ok: true, deleted });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/requests/delete-all', requireOwner, async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const rows = await db
+        .select({ id: schema.requests.id })
+        .from(schema.requests)
+        .where(and(eq(schema.requests.holdingId, u.holdingId as string), ne(schema.requests.status, 'deleted')));
+      const deleted = await softDeleteRequests(rows.map((row: { id: string }) => row.id), u);
+      res.json({ ok: true, deleted });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   /** Tree: holding → factories → (departments[+userCount], warehouses). Soft-deleted hidden. */
+  // Flat lists (as opposed to /structure's factory-nested tree) for the settings
+  // pages that manage otdels/branches/warehouses directly.
+  r.get('/factories', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const rows = await db.select().from(schema.factories).where(eq(schema.factories.holdingId, u.holdingId as string));
+      res.json(rows.filter((f: { status: string }) => f.status !== 'inactive'));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.get('/departments', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const rows = await db.select().from(schema.departments).where(eq(schema.departments.holdingId, u.holdingId as string));
+      const live = rows.filter((d: { status: string }) => d.status === 'active');
+      const links = live.length
+        ? await db
+            .select()
+            .from(schema.departmentFactories)
+            .where(inArray(schema.departmentFactories.departmentId, live.map((d: { id: string }) => d.id)))
+        : [];
+      const factoryIdsByDept = new Map<string, string[]>();
+      for (const l of links as { departmentId: string; factoryId: string }[]) {
+        factoryIdsByDept.set(l.departmentId, [...(factoryIdsByDept.get(l.departmentId) ?? []), l.factoryId]);
+      }
+      res.json(live.map((d: { id: string }) => ({ ...d, factoryIds: factoryIdsByDept.get(d.id) ?? [] })));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.get('/warehouses', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const rows = await db.select().from(schema.warehouses).where(eq(schema.warehouses.holdingId, u.holdingId as string));
+      res.json(rows.filter((w: { status: string }) => w.status !== 'inactive'));
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.get('/structure', requirePerm('settings.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
@@ -475,6 +702,22 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     }
   });
 
+  /** Replace a department's branch (factory) multi-assignment wholesale. Ids are
+   *  trusted to belong to the same holding by the caller (validated below). */
+  async function syncDepartmentFactories(tx: Db, departmentId: string, factoryIds: string[]): Promise<void> {
+    await tx.delete(schema.departmentFactories).where(eq(schema.departmentFactories.departmentId, departmentId));
+    if (factoryIds.length > 0) {
+      await tx.insert(schema.departmentFactories).values(factoryIds.map((factoryId) => ({ departmentId, factoryId })));
+    }
+  }
+
+  async function validatedFactoryIds(body: Record<string, unknown>, holdingId: string): Promise<string[] | undefined> {
+    if (!Array.isArray(body.factoryIds)) return undefined;
+    const ids = [...new Set((body.factoryIds as unknown[]).map((v) => str(v)).filter(Boolean))];
+    for (const id of ids) await loadHoldingRow(db, schema.factories, id, holdingId);
+    return ids;
+  }
+
   r.post('/departments', requirePerm('settings.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
@@ -483,10 +726,21 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       const factoryId = str(body.factory_id) || null;
       if (!name) throw new ValidationError('name обязателен');
       if (factoryId) await loadHoldingRow(db, schema.factories, factoryId, u.holdingId as string);
-      const [dept] = await db
-        .insert(schema.departments)
-        .values({ holdingId: u.holdingId, factoryId, name })
-        .returning();
+      const factoryIds = await validatedFactoryIds(body, u.holdingId as string);
+      const dept = await db.transaction(async (tx: Db) => {
+        const [row] = await tx
+          .insert(schema.departments)
+          .values({
+            holdingId: u.holdingId,
+            factoryId,
+            name,
+            nameUz: str(body.nameUz) || null,
+            nameTr: str(body.nameTr) || null,
+          })
+          .returning();
+        if (factoryIds) await syncDepartmentFactories(tx, row.id, factoryIds);
+        return row;
+      });
       res.status(201).json(dept);
     } catch (e) {
       next(e);
@@ -496,15 +750,25 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
   r.put('/departments/:id', requirePerm('settings.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
+      const id = req.params.id as string;
       const body = (req.body ?? {}) as Record<string, unknown>;
       const name = str(body.name);
       if (!name) throw new ValidationError('name обязателен');
-      await loadHoldingRow(db, schema.departments, req.params.id as string, u.holdingId as string);
-      const [updated] = await db
-        .update(schema.departments)
-        .set({ name })
-        .where(eq(schema.departments.id, req.params.id as string))
-        .returning();
+      await loadHoldingRow(db, schema.departments, id, u.holdingId as string);
+      const factoryIds = await validatedFactoryIds(body, u.holdingId as string);
+      const updated = await db.transaction(async (tx: Db) => {
+        const [row] = await tx
+          .update(schema.departments)
+          .set({
+            name,
+            ...(body.nameUz !== undefined ? { nameUz: str(body.nameUz) || null } : {}),
+            ...(body.nameTr !== undefined ? { nameTr: str(body.nameTr) || null } : {}),
+          })
+          .where(eq(schema.departments.id, id))
+          .returning();
+        if (factoryIds) await syncDepartmentFactories(tx, id, factoryIds);
+        return row;
+      });
       res.json(updated);
     } catch (e) {
       next(e);
@@ -593,33 +857,66 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
   /** Create a shared Factory OS identity that can use the web dashboard, Telegram,
    *  or both. Role assignment stays on the existing scoped endpoint so the same
    *  anti-escalation rules are applied to every channel. */
+  /** Replace a user's otdel (department) multi-assignment wholesale — restricts
+   *  which department the create-request wizard offers them (see GET /config). */
+  async function syncUserDepartments(tx: Db, userId: string, departmentIds: string[]): Promise<void> {
+    await tx.delete(schema.userDepartments).where(eq(schema.userDepartments.userId, userId));
+    if (departmentIds.length > 0) {
+      await tx.insert(schema.userDepartments).values(departmentIds.map((departmentId) => ({ userId, departmentId })));
+    }
+  }
+
+  async function validatedDepartmentIds(body: Record<string, unknown>, holdingId: string): Promise<string[] | undefined> {
+    if (!Array.isArray(body.departmentIds)) return undefined;
+    const ids = [...new Set((body.departmentIds as unknown[]).map((v) => str(v)).filter(Boolean))];
+    for (const id of ids) await loadHoldingRow(db, schema.departments, id, holdingId);
+    return ids;
+  }
+
   r.post('/users', requirePerm('users.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
       const body = (req.body ?? {}) as Record<string, unknown>;
       const fullName = str(body.fullName ?? body.name);
-      const username = str(body.username).toLowerCase();
       const password = String(body.password ?? '');
       const telegramId = str(body.telegramId ?? body.telegram_id) || null;
       const email = str(body.email) || null;
-      const phone = str(body.phone) || null;
+      const phoneRaw = str(body.phone);
+      const phone = phoneRaw ? normalizePhone(phoneRaw) : null;
       const position = str(body.position) || null;
       if (!fullName) throw new ValidationError('Укажите имя пользователя');
-      if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(username)) {
+      // Most staff only ever use the Telegram bot (phone-verified, see /users/invite's
+      // model) and never log into the dashboard — a username/password pair is only
+      // required when this account needs dashboard login. Without an explicit username,
+      // fall back to the normalized phone (same value the bot's contact-share flow will
+      // match on) so admins aren't forced to invent a login for every phone-only hire.
+      const usernameRaw = str(body.username).toLowerCase();
+      const username = usernameRaw || phone || '';
+      if (!username && !telegramId) {
+        throw new ValidationError('Укажите телефон, логин или Telegram ID — иначе учётную запись нечем будет найти');
+      }
+      if (username && !/^[a-z0-9][a-z0-9._-]{2,63}$/.test(username)) {
         throw new ValidationError('Логин: 3–64 символа, латиница, цифры, точка, дефис или подчёркивание');
       }
-      if (password.length < 8) throw new ValidationError('Пароль должен содержать минимум 8 символов');
+      if (password && password.length < 8) throw new ValidationError('Пароль должен содержать минимум 8 символов');
 
-      const [sameUsername] = await db
-        .select({ id: schema.users.id })
-        .from(schema.users)
-        .where(sql`lower(${schema.users.username}) = ${username}`)
-        .limit(1);
-      if (sameUsername) throw new ConflictError('Этот логин уже используется');
+      if (username) {
+        const [sameUsername] = await db
+          .select({ id: schema.users.id })
+          .from(schema.users)
+          .where(sql`lower(${schema.users.username}) = ${username}`)
+          .limit(1);
+        if (sameUsername) throw new ConflictError('Этот логин уже используется');
+      }
       if (telegramId) {
         const [sameTelegram] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.telegramId, telegramId));
         if (sameTelegram) throw new ConflictError('Этот Telegram ID уже используется');
       }
+      if (phone) {
+        const [samePhone] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.phone, phone));
+        if (samePhone) throw new ConflictError('Этот телефон уже используется');
+      }
+      const departmentIds = await validatedDepartmentIds(body, u.holdingId as string);
 
       const created = await db.transaction(async (tx: Db) => {
         const [row] = await tx
@@ -627,8 +924,11 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
           .values({
             holdingId: u.holdingId,
             fullName,
-            username,
-            passwordHash: hashPassword(password, sessionSecret),
+            username: username || null,
+            passwordHash: password ? hashPassword(password, sessionSecret) : null,
+            // An admin-assigned password (e.g. phone-as-starting-password) must be
+            // replaced by the user themselves before it's trustworthy as a credential.
+            mustChangePassword: !!password,
             telegramId,
             email,
             phone,
@@ -636,6 +936,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
             status: 'active',
           })
           .returning();
+        if (departmentIds) await syncUserDepartments(tx, row.id, departmentIds);
         await writeAudit(tx, {
           holdingId: u.holdingId as string,
           userId: u.id,
@@ -684,9 +985,21 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         const password = String(body.password);
         if (password.length < 8) throw new ValidationError('Пароль должен содержать минимум 8 символов');
         patch.passwordHash = hashPassword(password, sessionSecret);
+        // An admin resetting someone's password on their behalf is the same
+        // trust situation as the initial assignment — force a self-chosen one.
+        patch.mustChangePassword = true;
       }
-      for (const key of ['email', 'phone', 'position'] as const) {
+      for (const key of ['email', 'position'] as const) {
         if (key in body) patch[key] = str(body[key]) || null;
+      }
+      if ('phone' in body) {
+        const phoneRaw = str(body.phone);
+        const phone = phoneRaw ? normalizePhone(phoneRaw) : null;
+        if (phone) {
+          const [same] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.phone, phone));
+          if (same && same.id !== id) throw new ConflictError('Этот телефон уже используется');
+        }
+        patch.phone = phone;
       }
       if ('telegramId' in body || 'telegram_id' in body) {
         const telegramId = str(body.telegramId ?? body.telegram_id) || null;
@@ -703,7 +1016,12 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         patch.status = status;
       }
 
-      const [updated] = await db.update(schema.users).set(patch).where(eq(schema.users.id, id)).returning();
+      const departmentIds = await validatedDepartmentIds(body, u.holdingId as string);
+      const updated = await db.transaction(async (tx: Db) => {
+        const [row] = await tx.update(schema.users).set(patch).where(eq(schema.users.id, id)).returning();
+        if (departmentIds) await syncUserDepartments(tx, id, departmentIds);
+        return row;
+      });
       await writeAudit(db, {
         holdingId: u.holdingId as string,
         userId: u.id,
@@ -731,7 +1049,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       if (factoryId) await loadHoldingRow(db, schema.factories, factoryId, u.holdingId as string);
       const [wh] = await db
         .insert(schema.warehouses)
-        .values({ holdingId: u.holdingId, factoryId, name })
+        .values({ holdingId: u.holdingId, factoryId, name, nameUz: str(body.nameUz) || null, nameTr: str(body.nameTr) || null })
         .returning();
       res.status(201).json(wh);
     } catch (e) {
@@ -746,9 +1064,19 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       const name = str(body.name);
       if (!name) throw new ValidationError('name обязателен');
       await loadHoldingRow(db, schema.warehouses, req.params.id as string, u.holdingId as string);
+      let factoryId: string | null | undefined;
+      if ('factory_id' in body) {
+        factoryId = str(body.factory_id) || null;
+        if (factoryId) await loadHoldingRow(db, schema.factories, factoryId, u.holdingId as string);
+      }
       const [updated] = await db
         .update(schema.warehouses)
-        .set({ name })
+        .set({
+          name,
+          ...(factoryId !== undefined ? { factoryId } : {}),
+          ...(body.nameUz !== undefined ? { nameUz: str(body.nameUz) || null } : {}),
+          ...(body.nameTr !== undefined ? { nameTr: str(body.nameTr) || null } : {}),
+        })
         .where(eq(schema.warehouses.id, req.params.id as string))
         .returning();
       res.json(updated);
@@ -803,6 +1131,16 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         .where(eq(schema.userRoles.holdingId, hid));
       const roles = await db.select().from(schema.roles);
       const roleById = new Map<string, { code: string }>(roles.map((rr: { id: string; code: string }) => [rr.id, rr]));
+      const deptLinks = users.length
+        ? await db
+            .select()
+            .from(schema.userDepartments)
+            .where(inArray(schema.userDepartments.userId, users.map((usr: { id: string }) => usr.id)))
+        : [];
+      const deptIdsByUser = new Map<string, string[]>();
+      for (const l of deptLinks as { userId: string; departmentId: string }[]) {
+        deptIdsByUser.set(l.userId, [...(deptIdsByUser.get(l.userId) ?? []), l.departmentId]);
+      }
       const out = users.map((usr: { id: string; fullName: string; telegramId: string | null; username: string | null; email: string | null; phone: string | null; position: string | null; status: string }) => ({
         id: usr.id,
         fullName: usr.fullName,
@@ -812,6 +1150,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         phone: usr.phone,
         position: usr.position,
         status: usr.status,
+        departmentIds: deptIdsByUser.get(usr.id) ?? [],
         roles: assigns
           .filter((a: { userId: string; status: string }) => a.userId === usr.id && a.status === 'active')
           .map((a: { id: string; roleId: string; factoryId: string | null; departmentId: string | null }) => ({
@@ -834,11 +1173,17 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       const u = actor(req);
       const body = (req.body ?? {}) as Record<string, unknown>;
       const telegramId = str(body.telegram_id);
+      const phoneRaw = str(body.phone);
+      const phone = phoneRaw ? normalizePhone(phoneRaw) : '';
       const name = str(body.name);
-      if (!telegramId) throw new ValidationError('telegram_id обязателен');
+      if (!telegramId && !phone) throw new ValidationError('Укажите telegram_id или телефон');
       if (!name) throw new ValidationError('name обязателен');
 
-      const [existing] = await db.select().from(schema.users).where(eq(schema.users.telegramId, telegramId));
+      // Prefer matching by whichever identifier was supplied; phone is how the bot
+      // will later link a Telegram id to this row via /start's contact-share flow.
+      const existing = telegramId
+        ? (await db.select().from(schema.users).where(eq(schema.users.telegramId, telegramId)))[0]
+        : (await db.select().from(schema.users).where(eq(schema.users.phone, phone)))[0];
       if (existing) {
         if (existing.holdingId && existing.holdingId !== u.holdingId) {
           throw new ConflictError('Пользователь уже принадлежит другой организации');
@@ -848,7 +1193,13 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
             .update(schema.users)
             // The admin-entered name wins: a person who self-registered keeps a Telegram
             // display name until an admin sets it here — so reactivation must update it too.
-            .set({ holdingId: u.holdingId, status: 'active', fullName: name, updatedAt: new Date() })
+            .set({
+              holdingId: u.holdingId,
+              status: 'active',
+              fullName: name,
+              ...(phone ? { phone, username: existing.username ?? phone } : {}),
+              updatedAt: new Date(),
+            })
             .where(eq(schema.users.id, existing.id))
             .returning();
           await writeAudit(tx, {
@@ -866,10 +1217,23 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         res.status(200).json(updated);
         return;
       }
+      if (phone) {
+        const [samePhone] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.phone, phone));
+        if (samePhone) throw new ConflictError('Этот телефон уже используется');
+      }
       const created = await db.transaction(async (tx: Db) => {
         const [row] = await tx
           .insert(schema.users)
-          .values({ telegramId, fullName: name, holdingId: u.holdingId, status: 'active' })
+          .values({
+            telegramId: telegramId || null,
+            phone: phone || null,
+            // Phone-provisioned users have no dashboard login yet — the phone doubles
+            // as a stable, human-recognizable username until they set one explicitly.
+            username: phone || null,
+            fullName: name,
+            holdingId: u.holdingId,
+            status: 'active',
+          })
           .returning();
         await writeAudit(tx, {
           holdingId: u.holdingId as string,
@@ -878,7 +1242,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
           module: 'admin',
           entityType: 'user',
           entityId: row.id,
-          newValue: { telegramId, fullName: name },
+          newValue: { telegramId, phone, fullName: name },
         });
         return row;
       });
@@ -900,6 +1264,14 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       if (id === u.id) throw new ValidationError('Нельзя удалить самого себя');
       const target = await loadHoldingRow(db, schema.users, id, u.holdingId as string);
       await assertActorOutranks(u.id, u.holdingId as string, id); // R6
+      const targetOwnerRoles = await db
+        .select({ id: schema.userRoles.id })
+        .from(schema.userRoles)
+        .innerJoin(schema.roles, eq(schema.roles.id, schema.userRoles.roleId))
+        .where(and(eq(schema.userRoles.userId, id), eq(schema.userRoles.status, 'active'), eq(schema.roles.code, 'owner')));
+      if (targetOwnerRoles.length > 0 && (await activeOwnerCount(u.holdingId as string)) <= targetOwnerRoles.length) {
+        throw new ValidationError('Нельзя удалить последнего учредителя организации — назначьте другого учредителя перед этим');
+      }
 
       await db.transaction(async (tx: Db) => {
         await tx.update(schema.users).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.users.id, id));
@@ -1091,6 +1463,10 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       if (!row || row.userId !== userId || row.holdingId !== u.holdingId || row.status !== 'active') {
         throw new NotFoundError('Назначение не найдено');
       }
+      const [assignedRole] = await db.select({ code: schema.roles.code }).from(schema.roles).where(eq(schema.roles.id, row.roleId));
+      if (assignedRole?.code === 'owner' && (await activeOwnerCount(u.holdingId as string, assignmentId)) === 0) {
+        throw new ValidationError('Нельзя снять последнего учредителя организации — назначьте другого учредителя перед этим');
+      }
       await db.transaction(async (tx: Db) => {
         await tx.update(schema.userRoles).set({ status: 'revoked' }).where(eq(schema.userRoles.id, assignmentId));
         await writeAudit(tx, {
@@ -1113,6 +1489,58 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
   // Block C — Roles & permissions
   // ─────────────────────────────────────────────────────────────────────────
 
+  async function materializeSystemRoleForHolding(
+    systemRole: { id: string; code: string; name: string; description: string | null },
+    holdingId: string,
+  ): Promise<{ id: string; code: string; name: string; holdingId: string | null; isSystem: boolean }> {
+    const [existing] = await db
+      .select()
+      .from(schema.roles)
+      .where(and(eq(schema.roles.holdingId, holdingId), eq(schema.roles.code, systemRole.code)));
+    if (existing) return existing;
+
+    return db.transaction(async (tx: Db) => {
+      const [created] = await tx
+        .insert(schema.roles)
+        .values({
+          holdingId,
+          code: systemRole.code,
+          name: systemRole.name,
+          description: systemRole.description,
+          // This is a holding-specific permission overlay for a built-in role,
+          // not a user-created role. Keep its built-in protections in the UI
+          // and mutation endpoints after the first customization.
+          isSystem: true,
+        })
+        .returning();
+      const mappings = await tx
+        .select({ permissionId: schema.rolePermissions.permissionId })
+        .from(schema.rolePermissions)
+        .where(eq(schema.rolePermissions.roleId, systemRole.id));
+      if (mappings.length) {
+        await tx.insert(schema.rolePermissions).values(
+          mappings.map((mapping: { permissionId: string }) => ({ roleId: created.id, permissionId: mapping.permissionId })),
+        );
+      }
+
+      const holdingUsers = await tx.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.holdingId, holdingId));
+      if (holdingUsers.length) {
+        await tx
+          .update(schema.userRoles)
+          .set({ roleId: created.id })
+          .where(and(eq(schema.userRoles.roleId, systemRole.id), inArray(schema.userRoles.userId, holdingUsers.map((user: { id: string }) => user.id))));
+      }
+      const workflows = await tx.select({ id: schema.workflows.id }).from(schema.workflows).where(eq(schema.workflows.holdingId, holdingId));
+      if (workflows.length) {
+        await tx
+          .update(schema.workflowSteps)
+          .set({ approverRoleId: created.id })
+          .where(and(eq(schema.workflowSteps.approverRoleId, systemRole.id), inArray(schema.workflowSteps.workflowId, workflows.map((workflow: { id: string }) => workflow.id))));
+      }
+      return created;
+    });
+  }
+
   r.get('/permissions', requirePerm('roles.manage'), (_req, res) => {
     res.json(PERMISSIONS);
   });
@@ -1129,7 +1557,9 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       const rp = await db.select().from(schema.rolePermissions);
       const perms = await db.select().from(schema.permissions);
       const codeById = new Map<string, string>(perms.map((p: { id: string; code: string }) => [p.id, p.code]));
-      const out = roles.map((role: { id: string; code: string; name: string; isSystem: boolean }) => ({
+      const tenantCodes = new Set(roles.filter((role: { holdingId: string | null }) => role.holdingId === hid).map((role: { code: string }) => role.code));
+      const visibleRoles = roles.filter((role: { holdingId: string | null; code: string }) => role.holdingId !== null || !tenantCodes.has(role.code));
+      const out = visibleRoles.map((role: { id: string; code: string; name: string; isSystem: boolean }) => ({
         id: role.id,
         code: role.code,
         name: role.name,
@@ -1145,7 +1575,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     }
   });
 
-  r.post('/roles', requirePerm('roles.manage'), async (req, res, next) => {
+  r.post('/roles', requireOwner, async (req, res, next) => {
     try {
       const u = actor(req);
       const body = (req.body ?? {}) as Record<string, unknown>;
@@ -1163,7 +1593,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
   });
 
   /** Rename a custom role. System roles are immutable. */
-  r.put('/roles/:id', requirePerm('roles.manage'), async (req, res, next) => {
+  r.put('/roles/:id', requireOwner, async (req, res, next) => {
     try {
       const u = actor(req);
       const id = req.params.id as string;
@@ -1184,7 +1614,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
 
   // BUG 4 FIX: DELETE /roles/:id now checks workflowSteps.approverRoleId before deleting
   /** Delete a custom role. Blocked if it is a system role or still assigned. */
-  r.delete('/roles/:id', requirePerm('roles.manage'), async (req, res, next) => {
+  r.delete('/roles/:id', requireOwner, async (req, res, next) => {
     try {
       const u = actor(req);
       const id = req.params.id as string;
@@ -1227,18 +1657,19 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     }
   });
 
-  r.put('/roles/:id/permissions', requirePerm('roles.manage'), async (req, res, next) => {
+  r.put('/roles/:id/permissions', requireOwner, async (req, res, next) => {
     try {
       const u = actor(req);
       const roleId = req.params.id as string;
       const body = (req.body ?? {}) as Record<string, unknown>;
       const codes: string[] = Array.isArray(body.codes) ? (body.codes as unknown[]).map((c) => String(c)) : [];
 
-      // A system role's permission set is fixed; only custom roles in this holding are editable.
       const [role] = await db.select().from(schema.roles).where(eq(schema.roles.id, roleId));
       if (!role) throw new NotFoundError('Роль не найдена');
-      if (role.isSystem || role.holdingId === null) throw new ForbiddenError('Права системной роли нельзя менять');
-      if (role.holdingId !== u.holdingId) throw new NotFoundError('Роль не найдена');
+      if (role.holdingId !== null && role.holdingId !== u.holdingId) throw new NotFoundError('Роль не найдена');
+      if (role.code === 'owner' && !codes.includes('roles.manage')) {
+        throw new ValidationError('Роль owner должна сохранять право roles.manage');
+      }
 
       // Anti-escalation: a holding role's permissions can be assigned holding-wide, so
       // the actor must hold each requested code at holding scope — not merely "somewhere".
@@ -1247,14 +1678,17 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         // FIX non-critical: use ForbiddenError instead of inline res.status(403).json()
         throw new ForbiddenError('Нельзя выдать права, которых нет у вас: ' + escalating.join(', '));
       }
+      const effectiveRole = role.holdingId === null || role.isSystem
+        ? await materializeSystemRoleForHolding(role, u.holdingId as string)
+        : role;
 
-      const before = await rolePermissionCodes(roleId);
+      const before = await rolePermissionCodes(effectiveRole.id);
       const perms = await db.select().from(schema.permissions);
       const idByCode = new Map<string, string>(perms.map((p: { code: string; id: string }) => [p.code, p.id]));
       await db.transaction(async (tx: Db) => {
-        await tx.delete(schema.rolePermissions).where(eq(schema.rolePermissions.roleId, roleId));
+        await tx.delete(schema.rolePermissions).where(eq(schema.rolePermissions.roleId, effectiveRole.id));
         const rows = codes
-          .map((c) => ({ roleId, permissionId: idByCode.get(c) }))
+          .map((c) => ({ roleId: effectiveRole.id, permissionId: idByCode.get(c) }))
           .filter((x): x is { roleId: string; permissionId: string } => Boolean(x.permissionId));
         if (rows.length) await tx.insert(schema.rolePermissions).values(rows);
         await writeAudit(tx, {
@@ -1263,12 +1697,12 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
           action: 'role.permissions_updated',
           module: 'admin',
           entityType: 'role',
-          entityId: roleId,
+          entityId: effectiveRole.id,
           oldValue: { codes: before },
           newValue: { codes },
         });
       });
-      res.json({ ok: true, count: codes.length });
+      res.json({ ok: true, count: codes.length, roleId: effectiveRole.id });
     } catch (e) {
       next(e);
     }
@@ -1769,17 +2203,24 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
   r.get('/materials', requireAnyPerm(['warehouse.view', 'settings.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
+      const code = str(req.query.code).toLowerCase();
       const rows = await db
         .select()
         .from(schema.materials)
         .where(eq(schema.materials.holdingId, u.holdingId as string));
-      res.json(rows.filter((m: { status: string }) => m.status !== 'archived'));
+      const live = rows.filter((m: { status: string }) => m.status !== 'archived');
+      if (!code) {
+        res.json(live);
+        return;
+      }
+      // Namenklatura "autocomplete by code" lookup: exact match on sku, case-insensitive.
+      res.json(live.filter((m: { sku: string | null }) => (m.sku ?? '').trim().toLowerCase() === code));
     } catch (e) {
       next(e);
     }
   });
 
-  r.post('/materials', requirePerm('settings.manage'), async (req, res, next) => {
+  r.post('/materials', requireAnyPerm(['settings.manage', 'materials.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
       const body = (req.body ?? {}) as Record<string, unknown>;
@@ -1792,6 +2233,9 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
           name,
           sku: str(body.sku) || null,
           defaultUnit: str(body.defaultUnit) || null,
+          category: str(body.category) || null,
+          nameUz: str(body.nameUz) || null,
+          nameTr: str(body.nameTr) || null,
         })
         .returning();
       await writeAudit(db, {
@@ -1809,7 +2253,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     }
   });
 
-  r.put('/materials/:id', requirePerm('settings.manage'), async (req, res, next) => {
+  r.put('/materials/:id', requireAnyPerm(['settings.manage', 'materials.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
       const id = req.params.id as string;
@@ -1824,6 +2268,9 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       }
       if (body.sku !== undefined) patch.sku = str(body.sku) || null;
       if (body.defaultUnit !== undefined) patch.defaultUnit = str(body.defaultUnit) || null;
+      if (body.category !== undefined) patch.category = str(body.category) || null;
+      if (body.nameUz !== undefined) patch.nameUz = str(body.nameUz) || null;
+      if (body.nameTr !== undefined) patch.nameTr = str(body.nameTr) || null;
       if (Object.keys(patch).length === 0) {
         res.json(mat);
         return;
@@ -1835,7 +2282,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     }
   });
 
-  r.delete('/materials/:id', requirePerm('settings.manage'), async (req, res, next) => {
+  r.delete('/materials/:id', requireAnyPerm(['settings.manage', 'materials.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
       const id = req.params.id as string;
@@ -1852,6 +2299,244 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         oldValue: { name: mat.name },
       });
       res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  const MATERIAL_IMPORT_ALIASES = {
+    sku: ['Код', 'Код товара', 'SKU', 'Code'],
+    name: ['Наименование', 'Название', 'Название (RU)', 'Name', 'RU'],
+    nameUz: ['Название (UZ)', 'UZ', 'Nomi'],
+    nameTr: ['Наименование (тур., оригинал)', 'Название (TR)', 'TR'],
+    category: ['Категория', 'Category'],
+    defaultUnit: ['Ед. изм.', 'Ед.изм', 'Единица измерения', 'Unit'],
+  };
+
+  r.post('/materials/import', requireAnyPerm(['settings.manage', 'materials.manage']), importUpload.single('file'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      if (!req.file) throw new ValidationError('Файл не передан');
+      const rows = await parseImportSheet(req.file.buffer, MATERIAL_IMPORT_ALIASES);
+      const existing = await db.select().from(schema.materials).where(eq(schema.materials.holdingId, u.holdingId as string));
+      const bySku = new Map(existing.map((m: { sku: string | null }) => [(m.sku ?? '').trim().toLowerCase(), m]));
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      await db.transaction(async (tx: Db) => {
+        for (const row of rows) {
+          const sku = str(row.sku);
+          const name = str(row.name) || str(row.nameTr) || sku;
+          if (!sku && !name) { skipped++; continue; }
+          const match = sku ? bySku.get(sku.toLowerCase()) : undefined;
+          const patch: Record<string, unknown> = {};
+          if (row.name) patch.name = str(row.name);
+          if (row.nameUz) patch.nameUz = str(row.nameUz);
+          if (row.nameTr) patch.nameTr = str(row.nameTr);
+          if (row.category) patch.category = str(row.category);
+          if (row.defaultUnit) patch.defaultUnit = str(row.defaultUnit);
+          if (match) {
+            if (Object.keys(patch).length > 0) {
+              await tx.update(schema.materials).set(patch).where(eq(schema.materials.id, (match as { id: string }).id));
+              updated++;
+            } else skipped++;
+          } else {
+            await tx.insert(schema.materials).values({ holdingId: u.holdingId, name, sku: sku || null, ...patch });
+            created++;
+          }
+        }
+      });
+      await writeAudit(db, {
+        holdingId: u.holdingId as string,
+        userId: u.id,
+        action: 'material.imported',
+        module: 'admin',
+        entityType: 'material',
+        entityId: null,
+        newValue: { created, updated, skipped, total: rows.length },
+      });
+      res.json({ created, updated, skipped, total: rows.length });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Unit types — managed, orderable list consumed by both the create-request
+  // wizard's "Ед. изм." field and the namenklatura page. ──────────────────────
+  r.get('/unit-types', requireAnyPerm(['warehouse.view', 'settings.manage']), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const rows = await db
+        .select()
+        .from(schema.unitTypes)
+        .where(eq(schema.unitTypes.holdingId, u.holdingId as string))
+        .orderBy(schema.unitTypes.orderIndex);
+      res.json(rows.filter((t: { status: string }) => t.status !== 'archived'));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.post('/unit-types', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const code = str(body.code);
+      const nameRu = str(body.nameRu ?? body.name);
+      if (!code) throw new ValidationError('code обязателен');
+      if (!nameRu) throw new ValidationError('nameRu обязателен');
+      const [{ max }] = await db
+        .select({ max: sql<number>`coalesce(max(${schema.unitTypes.orderIndex}), -1)` })
+        .from(schema.unitTypes)
+        .where(eq(schema.unitTypes.holdingId, u.holdingId as string));
+      const [row] = await db
+        .insert(schema.unitTypes)
+        .values({
+          holdingId: u.holdingId,
+          code,
+          nameRu,
+          nameUz: str(body.nameUz) || null,
+          nameTr: str(body.nameTr) || null,
+          orderIndex: Number(max) + 1,
+        })
+        .returning();
+      await writeAudit(db, {
+        holdingId: u.holdingId as string,
+        userId: u.id,
+        action: 'unit_type.created',
+        module: 'admin',
+        entityType: 'unit_type',
+        entityId: row.id,
+        newValue: { code, nameRu },
+      });
+      res.status(201).json(row);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Declared before /unit-types/:id so "reorder" isn't read as an id.
+  r.put('/unit-types/reorder', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const raw = (req.body ?? {}) as unknown;
+      const order = Array.isArray(raw) ? raw : Array.isArray((raw as { order?: unknown }).order) ? (raw as { order: unknown[] }).order : [];
+      const items = (order as unknown[]).map((x) => {
+        const o = (x ?? {}) as Record<string, unknown>;
+        return { id: str(o.id), orderIndex: Number(o.order_index ?? o.orderIndex) };
+      });
+      if (items.some((it) => !it.id || !Number.isFinite(it.orderIndex))) {
+        throw new ValidationError('Каждый элемент должен иметь id и order_index');
+      }
+      const rows: { id: string }[] = await db
+        .select({ id: schema.unitTypes.id })
+        .from(schema.unitTypes)
+        .where(eq(schema.unitTypes.holdingId, u.holdingId as string));
+      const valid = new Set(rows.map((r) => r.id));
+      if (items.some((it) => !valid.has(it.id))) throw new ValidationError('Единица измерения не принадлежит этой организации');
+      await db.transaction(async (tx: Db) => {
+        for (const it of items) {
+          await tx.update(schema.unitTypes).set({ orderIndex: Math.round(it.orderIndex) }).where(eq(schema.unitTypes.id, it.id));
+        }
+      });
+      res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.put('/unit-types/:id', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const id = req.params.id as string;
+      const row = await loadHoldingRow(db, schema.unitTypes, id, u.holdingId as string);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const patch: Record<string, unknown> = {};
+      if (body.code !== undefined) {
+        const code = str(body.code);
+        if (!code) throw new ValidationError('code не может быть пустым');
+        patch.code = code;
+      }
+      if (body.nameRu !== undefined || body.name !== undefined) {
+        const nameRu = str(body.nameRu ?? body.name);
+        if (!nameRu) throw new ValidationError('nameRu не может быть пустым');
+        patch.nameRu = nameRu;
+      }
+      if (body.nameUz !== undefined) patch.nameUz = str(body.nameUz) || null;
+      if (body.nameTr !== undefined) patch.nameTr = str(body.nameTr) || null;
+      if (Object.keys(patch).length === 0) {
+        res.json(row);
+        return;
+      }
+      const [updated] = await db.update(schema.unitTypes).set(patch).where(eq(schema.unitTypes.id, id)).returning();
+      res.json(updated);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.delete('/unit-types/:id', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const id = req.params.id as string;
+      const row = await loadHoldingRow(db, schema.unitTypes, id, u.holdingId as string);
+      await db.update(schema.unitTypes).set({ status: 'archived' }).where(eq(schema.unitTypes.id, id));
+      await writeAudit(db, {
+        holdingId: u.holdingId as string,
+        userId: u.id,
+        action: 'unit_type.deleted',
+        module: 'admin',
+        entityType: 'unit_type',
+        entityId: id,
+        oldValue: { code: (row as unknown as { code: string }).code },
+      });
+      res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  const UNIT_TYPE_IMPORT_ALIASES = {
+    code: ['Код', 'Code'],
+    nameRu: ['RU', 'Название RU', 'Название (RU)', 'Наименование', 'Name'],
+    nameUz: ['UZ', 'Название UZ', 'Название (UZ)'],
+    nameTr: ['TR', 'Название TR', 'Название (TR)'],
+  };
+
+  r.post('/unit-types/import', requirePerm('settings.manage'), importUpload.single('file'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      if (!req.file) throw new ValidationError('Файл не передан');
+      const rows = await parseImportSheet(req.file.buffer, UNIT_TYPE_IMPORT_ALIASES);
+      const existing = await db.select().from(schema.unitTypes).where(eq(schema.unitTypes.holdingId, u.holdingId as string));
+      const byCode = new Map(existing.map((t: { code: string }) => [t.code.trim().toLowerCase(), t]));
+      const [{ max }] = await db
+        .select({ max: sql<number>`coalesce(max(${schema.unitTypes.orderIndex}), -1)` })
+        .from(schema.unitTypes)
+        .where(eq(schema.unitTypes.holdingId, u.holdingId as string));
+      let nextOrder = Number(max) + 1;
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      await db.transaction(async (tx: Db) => {
+        for (const row of rows) {
+          const code = str(row.code);
+          const nameRu = str(row.nameRu);
+          if (!code || !nameRu) { skipped++; continue; }
+          const match = byCode.get(code.toLowerCase());
+          const patch: Record<string, unknown> = { nameRu };
+          if (row.nameUz) patch.nameUz = str(row.nameUz);
+          if (row.nameTr) patch.nameTr = str(row.nameTr);
+          if (match) {
+            await tx.update(schema.unitTypes).set(patch).where(eq(schema.unitTypes.id, (match as { id: string }).id));
+            updated++;
+          } else {
+            await tx.insert(schema.unitTypes).values({ holdingId: u.holdingId, code, orderIndex: nextOrder++, ...patch });
+            created++;
+          }
+        }
+      });
+      res.json({ created, updated, skipped, total: rows.length });
     } catch (e) {
       next(e);
     }

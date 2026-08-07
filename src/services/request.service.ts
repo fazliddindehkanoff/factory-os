@@ -4,7 +4,7 @@
  * is year-scoped and NaN-safe (fixing the legacy generator), and the workflow +
  * first step are chosen by the data-driven engine, not hardcoded.
  */
-import { and, eq, like } from 'drizzle-orm';
+import { and, eq, inArray, like } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { initialPlacement } from './lifecycle.service.js';
 import { statusForStep } from '../workflow/step-kinds.js';
@@ -19,6 +19,8 @@ export interface CreateRequestItem {
   unitPrice: number;
   unit?: string | null;
   description?: string | null;
+  paymentType?: string | null;
+  ndsIncluded?: boolean;
 }
 
 export interface CreateRequestInput {
@@ -135,6 +137,14 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
   // field). With the standard form, a request without a single named position —
   // or with нулевым количеством — is a validation hole, not a use-case.
   const items = (input.items ?? []).filter((it) => it.name?.trim());
+  const materialIds = [...new Set(items.map((it) => it.materialId).filter(Boolean))] as string[];
+  if (materialIds.length) {
+    const catalogRows = await db
+      .select({ id: schema.materials.id })
+      .from(schema.materials)
+      .where(and(eq(schema.materials.holdingId, input.holdingId), inArray(schema.materials.id, materialIds)));
+    if (catalogRows.length !== materialIds.length) throw new ValidationError('Материал не найден в номенклатуре организации');
+  }
   for (const it of items) {
     if (!Number.isFinite(it.quantity) || it.quantity <= 0) throw new ValidationError('Количество должно быть больше нуля');
     if (it.quantity > MAX_ITEM_QUANTITY) throw new ValidationError('Количество слишком велико (максимум 1 млрд)');
@@ -228,6 +238,8 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
         unit: it.unit ?? null,
         estimatedPrice: Math.round(it.unitPrice),
         totalAmount: Math.round(it.quantity * it.unitPrice),
+        paymentType: it.paymentType ?? null,
+        ndsIncluded: !!it.ndsIncluded,
         sortOrder: index,
       });
     }

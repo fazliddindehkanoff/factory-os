@@ -6,6 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 export type Lang = 'ru' | 'uz' | 'en' | 'tr';
 
 const STORAGE_KEY = 'factoryos.lang';
+export const LANGUAGE_RELOAD_EVENT = 'factoryos:language-before-reload';
 
 export const LANG_LABELS: Record<Lang, string> = {
   ru: 'Рус',
@@ -16,6 +17,18 @@ export const LANG_LABELS: Record<Lang, string> = {
 
 /** Языки, доступные в переключателе (лист H): Uzb / Рус / Türkçe. */
 export const SWITCHER_LANGS: Lang[] = ['uz', 'ru', 'tr'];
+
+/**
+ * Picks an entity's name in the current UI language (otdels, unit types, etc. —
+ * anything with a RU `name` plus optional `nameUz`/`nameTr`). Falls back to the
+ * RU name whenever the localized field is blank, so translations can be filled
+ * in gradually without ever showing an empty label.
+ */
+export function localizedName(entity: { name: string; nameUz?: string | null; nameTr?: string | null }, lang: Lang): string {
+  if (lang === 'uz' && entity.nameUz) return entity.nameUz;
+  if (lang === 'tr' && entity.nameTr) return entity.nameTr;
+  return entity.name;
+}
 
 const dict = {
   ru: {
@@ -250,6 +263,9 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   'Созданные мной': { uz: 'Men yaratganlar', en: 'Created by me', tr: 'Oluşturduklarım' },
   'Последние события': { uz: 'Oxirgi voqealar', en: 'Recent events', tr: 'Son olaylar' },
   'Ждут моего решения': { uz: 'Qarorimni kutmoqda', en: 'Awaiting my decision', tr: 'Kararımı bekleyenler' },
+  'Нет заявок, ожидающих вашего решения.': { uz: 'Qaroringizni kutayotgan arizalar yo‘q.', en: 'No requests are awaiting your decision.', tr: 'Kararınızı bekleyen talep yok.' },
+  'Очередь снабжения': { uz: 'Ta’minot navbati', en: 'Procurement queue', tr: 'Satın alma kuyruğu' },
+  'Нет заявок в закупке.': { uz: 'Xarid jarayonida arizalar yo‘q.', en: 'No requests are in procurement.', tr: 'Satın alma sürecinde talep yok.' },
   'Тема': { uz: 'Mavzu', en: 'Theme', tr: 'Tema' },
   'Тема оформления': { uz: 'Ko‘rinish mavzusi', en: 'Appearance theme', tr: 'Görünüm teması' },
   'Тёмная': { uz: 'Qorong‘i', en: 'Dark', tr: 'Koyu' },
@@ -414,6 +430,8 @@ const literalDict: Record<string, { uz: string; en: string; tr?: string }> = {
   'Прав нет.': { uz: 'Huquqlar yo‘q.', en: 'No permissions.', tr: 'Yetki yok.' },
   'Создание заявки': { uz: 'Ariza yaratish', en: 'Request creation', tr: 'Talep oluşturma' },
   'Руководитель отдела': { uz: 'Bo‘lim boshlig‘i', en: 'Department head', tr: 'Bölüm müdürü' },
+  'Руководитель снабжения': { uz: 'Ta’minot rahbari', en: 'Procurement head', tr: 'Satın alma yöneticisi' },
+  'Дирекция': { uz: 'Direksiya', en: 'Management', tr: 'Yönetim' },
   'Главный инженер': { uz: 'Bosh muhandis', en: 'Chief engineer', tr: 'Baş mühendis' },
   'Руководитель снабжения — принятие заявки': { uz: 'Ta’minot rahbari — arizani qabul qilish', en: 'Procurement head — request intake', tr: 'Satın alma yöneticisi — talep kabulü' },
   'Снабженец — процесс поиска': { uz: 'Ta’minotchi — qidiruv jarayoni', en: 'Procurement specialist — search process', tr: 'Satın alma uzmanı — arama süreci' },
@@ -497,6 +515,8 @@ function translateDynamic(trimmed: string, lang: Exclude<Lang, 'ru'>): string | 
   if (m) return pick(`${m[1]} kishi`, `${m[1]} people`, `${m[1]} kişi`);
   m = /^(\d+) отд\.$/.exec(trimmed);
   if (m) return pick(`${m[1]} bo‘lim`, `${m[1]} departments`, `${m[1]} bölüm`);
+  m = /^(\d+) непрочитанных$/.exec(trimmed);
+  if (m) return pick(`${m[1]} ta o‘qilmagan`, `${m[1]} unread`, `${m[1]} okunmamış`);
   m = /^(.+) прав$/.exec(trimmed);
   if (m) return pick(`${m[1]} huquq`, `${m[1]} permissions`, `${m[1]} yetki`);
   return null;
@@ -515,22 +535,30 @@ const I18nContext = createContext<I18nValue | null>(null);
 const originals = new WeakMap<Node | Element, string>();
 const hasCyrillic = (value: string): boolean => /[А-Яа-яЁё]/.test(value);
 
-function initialLang(): Lang {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === 'uz' || stored === 'ru' || stored === 'en' || stored === 'tr') return stored;
-  const browser = navigator.language.toLowerCase();
+export function resolveInitialLang(stored: string | null, browserLanguage: string): Lang {
+  // English was removed from the visible switcher. Keeping a legacy `en`
+  // selection produced a misleading state: the UI stayed English while the
+  // closed <select> displayed its first option, “Uzb”. Migrate unsupported
+  // values to Russian, the existing product fallback, so label and content agree.
+  if (stored === 'uz' || stored === 'ru' || stored === 'tr') return stored;
+  const browser = browserLanguage.toLowerCase();
   if (browser.startsWith('uz')) return 'uz';
   if (browser.startsWith('tr')) return 'tr';
-  if (browser.startsWith('en')) return 'en';
   return 'ru';
 }
 
+function initialLang(): Lang {
+  return resolveInitialLang(localStorage.getItem(STORAGE_KEY), navigator.language);
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>(initialLang);
+  const [lang] = useState<Lang>(initialLang);
   const setLang = useCallback((next: Lang) => {
+    if (next === lang) return;
+    window.dispatchEvent(new CustomEvent(LANGUAGE_RELOAD_EVENT, { detail: { lang: next } }));
     localStorage.setItem(STORAGE_KEY, next);
-    setLangState(next);
-  }, []);
+    window.location.reload();
+  }, [lang]);
   const tl = useCallback((text: string): string => {
     if (lang === 'ru') return text;
     const trimmed = text.trim();

@@ -24,12 +24,13 @@ describe('seedTest', () => {
     expect(second.holding.id).toBe(first.holding.id);
     const users = await db.select().from(schema.users);
     expect(users.length).toBe(TEST_USERS.length);
+    expect(users.map((u) => u.phone).sort()).toEqual(TEST_USERS.map((u) => u.phone).sort());
 
     const steps = await db
       .select()
       .from(schema.workflowSteps)
       .where(eq(schema.workflowSteps.workflowId, first.workflow.id));
-    expect(steps.length).toBe(9);
+    expect(steps.length).toBe(7);
 
     const requests = await db.select().from(schema.requests);
     expect(requests.length).toBe(3);
@@ -53,17 +54,20 @@ describe('seedTest', () => {
     // №16б: перед шагом закупки согласование = «Передать снабженцу».
     const id = requests.fresh.id;
     await act('nach_sklad_01', id, 'assign_procurement', { assigneeId: users['snab_01'].id });
-    await act('snab_01', id, 'add_quotation', { amount: 100000, supplierName: 'ООО Тест-Снаб' });
+    await act('snab_01', id, 'add_quotation', { amount: 100000, supplierName: 'ООО Тест-Снаб №1' });
+    await act('nach_snab_01', id, 'return_research', { comment: 'Нужно второе конкурентное предложение' });
+    await act('snab_01', id, 'add_quotation', { amount: 90000, supplierName: 'ООО Тест-Снаб №2' });
+    const quotes = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, id));
+    expect(quotes).toHaveLength(2);
+    await act('nach_snab_01', id, 'select_supplier', { quotationId: quotes[1].id });
     await act('nach_snab_01', id, 'approve_price');
     await act('zamdir_01', id, 'approve');
     await act('gendir_01', id, 'approve');
     await act('founder_01', id, 'approve');
     await act('snab_01', id, 'mark_arrived');
-    await act('sklad_01', id, 'receive_full');
-    await act('sklad_01', id, 'close');
 
     const [done] = await db.select().from(schema.requests).where(eq(schema.requests.id, id));
-    expect(done.status).toBe('closed');
+    expect(done.status).toBe('approved');
   });
 
   it('hides other-step actions from a user (кому какие кнопки доступны)', async () => {

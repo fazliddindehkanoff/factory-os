@@ -15,6 +15,15 @@ export const startMessage = (name?: string): string =>
 export const helpMessage = (): string =>
   'Factory OS — заявки и согласования.\n/start — открыть приложение.';
 
+export const askPhoneMessage = (): string =>
+  '📱 Чтобы открыть Factory OS, поделитесь своим номером телефона — нажмите кнопку ниже.\n\nНомер должен совпадать с тем, что указал ваш администратор.';
+
+export const phoneLinkedMessage = (name?: string): string =>
+  `✅ ${name ? name + ', номер' : 'Номер'} подтверждён. Открываю доступ...`;
+
+export const phoneNotFoundMessage = (): string =>
+  '❌ Этот номер не найден в системе. Обратитесь к администратору, чтобы вас добавили, и повторите /start.';
+
 export const approvedStageMessage = (requestNumber: string): string =>
   `✅ Ваша заявка ${requestNumber} согласована на текущем этапе и ушла дальше по цепочке.`;
 

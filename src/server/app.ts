@@ -39,7 +39,14 @@ export function createApp(deps: RouterDeps) {
 
   // Rate limiting (skippable in tests via deps.rateLimit === false)
   if (deps.rateLimit !== false) {
-    app.use('/api/auth', authLimiter);
+    app.use('/api/auth', (req: Request, res: Response, next: NextFunction) => {
+      // The development-only role switcher must be able to open every seeded
+      // account during one QA run. Production cannot enable devAuth (env startup
+      // validation rejects it), while all real authentication routes keep the
+      // strict 10/minute protection in every environment.
+      if (deps.devAuth && req.path === '/dev') { next(); return; }
+      authLimiter(req, res, next);
+    });
     app.use('/api', apiLimiter);
   }
 

@@ -52,17 +52,8 @@ export function legacyAuth(deps: LegacyAuthDeps) {
           res.status(401).json({ error: 'Invalid initData' });
           return;
         }
-        let u = await userByTelegramId(db, tg.id);
-        if (!u) {
-          [u] = await db
-            .insert(schema.users)
-            .values({
-              telegramId: tg.id,
-              fullName: [tg.firstName, tg.lastName].filter(Boolean).join(' ') || tg.username || 'User',
-              status: 'pending',
-            })
-            .returning();
-        }
+        // Fail-closed: same contract as /api/auth/telegram — no silent self-registration.
+        const u = await userByTelegramId(db, tg.id);
         if (!isActiveUser(u)) {
           res.status(401).json({ error: 'Unauthorized' });
           return;

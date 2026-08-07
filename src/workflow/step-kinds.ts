@@ -245,6 +245,7 @@ export const TERMINAL_CLOSED = 'closed';
 export const TERMINAL_REJECTED = 'rejected';
 export const TERMINAL_CANCELLED = 'cancelled';
 export const TERMINAL_ARCHIVED = 'archived';
+export const TERMINAL_DELETED = 'deleted';
 
 /**
  * Every status in which a request is finished / no longer in-flight. Single
@@ -258,6 +259,7 @@ export const TERMINAL_STATUSES: readonly string[] = [
   TERMINAL_REJECTED,
   TERMINAL_CANCELLED,
   TERMINAL_ARCHIVED,
+  TERMINAL_DELETED,
 ];
 
 /** True if `status` is a finished/terminal request state. */

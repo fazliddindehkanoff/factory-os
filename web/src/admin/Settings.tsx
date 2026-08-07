@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { Err, Field, Label, PrimaryBtn, Select, Skeleton } from './ui';
+import { Materials } from './Materials';
 
 const KEYS: { key: string; label: string; placeholder: string; type?: 'select'; options?: { value: string; label: string }[] }[] = [
   { key: 'factory_name', label: 'Название организации', placeholder: 'напр. Zibrock Factory' },
@@ -136,6 +137,11 @@ export function Settings() {
       >
         {saving ? '...' : saved ? 'Сохранено' : 'Сохранить настройки'}
       </PrimaryBtn>
+
+      <section className="space-y-3">
+        <h2 className="text-base font-bold text-fg">Номенклатура</h2>
+        <Materials />
+      </section>
     </div>
   );
 }

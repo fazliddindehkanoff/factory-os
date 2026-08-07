@@ -38,7 +38,7 @@ describe('constructor / admin API', () => {
     const token = await login(app, '999');
 
     const perms = await request(app).get('/api/admin/permissions').set('Authorization', `Bearer ${token}`).expect(200);
-    expect(perms.body.length).toBe(27); // +requests.view_own scoped request visibility
+    expect(perms.body.length).toBe(28); // +materials.manage (namenklatura edit rights, decoupled from settings.manage)
 
     const roles = await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(200);
     expect(roles.body.some((r: any) => r.code === 'owner')).toBe(true);
@@ -55,6 +55,11 @@ describe('constructor / admin API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ codes: ['requests.view', 'procurement.view'] })
       .expect(200);
+    await request(app)
+      .put(`/api/admin/roles/${newRoleId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Старший закупщик' })
+      .expect(200);
 
     // A fresh user assigned the new role.
     const [target] = await db
@@ -70,9 +75,42 @@ describe('constructor / admin API', () => {
     const users = await request(app).get('/api/admin/users').set('Authorization', `Bearer ${token}`).expect(200);
     const row = users.body.find((x: any) => x.id === target.id);
     expect(row.roles.some((rr: any) => rr.roleCode === 'buyer')).toBe(true);
+
+    const disposable = await request(app)
+      .post('/api/admin/roles')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: 'temp_role', name: 'Временная роль' })
+      .expect(201);
+    await request(app)
+      .delete(`/api/admin/roles/${disposable.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
   });
 
-  it('blocks privilege escalation: cannot grant a permission you do not hold', async () => {
+  it('creates a phone-only user with no username/password — bot-only staff need neither', async () => {
+    const { app } = await make();
+    const token = await login(app, '999');
+    const created = await request(app)
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fullName: 'Phone Only', phone: '+998 90 111 22 33' })
+      .expect(201);
+    // Username auto-derives from the normalized phone so the bot's contact-share
+    // flow (matching on `phone`) and any future dashboard login both resolve to
+    // the same account, with no password set (can't log into the dashboard).
+    expect(created.body.username).toBe('998901112233');
+    expect(created.body.phone).toBe('998901112233');
+    expect(created.body.passwordHash).toBeUndefined();
+
+    // No identity at all (no phone/username/telegramId) is still rejected.
+    await request(app)
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fullName: 'Nobody' })
+      .expect(400);
+  });
+
+  it('lets roles.manage users read roles but only owner can mutate role definitions', async () => {
     const { app, db, holding } = await make();
 
     // A limited admin: only roles.manage (via a custom role), NOT finance.mark_paid.
@@ -92,16 +130,30 @@ describe('constructor / admin API', () => {
     await db.insert(schema.userRoles).values({ userId: limited.id, roleId: limitedRole.id, holdingId: holding.id });
 
     const token = await login(app, 'lim1');
-    // Make a target role and try to grant finance.mark_paid (which the actor lacks).
-    const created = await request(app)
+    await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(200);
+    await request(app)
       .post('/api/admin/roles')
       .set('Authorization', `Bearer ${token}`)
       .send({ code: 'x', name: 'X' })
-      .expect(201);
+      .expect(403);
+
+    const [targetRole] = await db
+      .insert(schema.roles)
+      .values({ holdingId: holding.id, code: 'x', name: 'X', isSystem: false })
+      .returning();
     await request(app)
-      .put(`/api/admin/roles/${created.body.id}/permissions`)
+      .put(`/api/admin/roles/${targetRole.id}/permissions`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ codes: ['finance.mark_paid'] })
+      .send({ codes: ['requests.view'] })
+      .expect(403);
+    await request(app)
+      .put(`/api/admin/roles/${targetRole.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Y' })
+      .expect(403);
+    await request(app)
+      .delete(`/api/admin/roles/${targetRole.id}`)
+      .set('Authorization', `Bearer ${token}`)
       .expect(403);
 
     // And cannot assign the powerful system owner role either.
@@ -117,12 +169,26 @@ describe('constructor / admin API', () => {
   });
 
   it('config reflects tenant settings, and editing settings via admin updates it', async () => {
-    const { app } = await make(); // setupTenant sets factory_name='Zelal' and a nine-step workflow
+    const { app, db, holding } = await make(); // setupTenant sets factory_name='Zelal' and a nine-step workflow
     const token = await login(app, '999');
+    const [dept] = await db
+      .insert(schema.departments)
+      .values({ holdingId: holding.id, name: 'Production', nameUz: 'Ishlab chiqarish', nameTr: 'Uretim' })
+      .returning();
+    const [member] = await db
+      .insert(schema.users)
+      .values({ holdingId: holding.id, fullName: 'Department User', telegramId: 'dept-user', status: 'active' })
+      .returning();
+    await db.insert(schema.userDepartments).values({ userId: member.id, departmentId: dept.id });
 
     const cfg = await request(app).get('/api/config').set('Authorization', `Bearer ${token}`).expect(200);
     expect(cfg.body.factoryName).toBe('Zelal');
     expect(cfg.body.stages.length).toBe(10);
+    const cfgUser = cfg.body.users.find((u: any) => u.id === member.id);
+    expect(cfgUser.departmentId).toBe(dept.id);
+    expect(cfgUser.departments).toEqual([
+      { id: dept.id, name: 'Production', nameUz: 'Ishlab chiqarish', nameTr: 'Uretim' },
+    ]);
 
     await request(app)
       .put('/api/admin/settings')
@@ -143,6 +209,63 @@ describe('constructor / admin API', () => {
     await db.insert(schema.userRoles).values({ userId: plain.id, roleId: await roleId(db, 'requester'), holdingId: holding.id });
     const token = await login(app, 'p1');
     await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(403);
+  });
+
+  it('lets only the owner soft-delete requests and hides them from normal request APIs', async () => {
+    const { app, db } = await make();
+    const ownerToken = await login(app, '999');
+    const requesterToken = await login(app, 'demo_requester');
+    const created = await request(app)
+      .post('/api/requests')
+      .set('Authorization', `Bearer ${requesterToken}`)
+      .send({ title: 'Soft delete me', items: [{ name: 'Product', quantity: 1, unitPrice: 0 }] })
+      .expect(201);
+
+    await request(app).get('/api/admin/requests').set('Authorization', `Bearer ${requesterToken}`).expect(403);
+    const before = await request(app).get('/api/admin/requests').set('Authorization', `Bearer ${ownerToken}`).expect(200);
+    expect(before.body.some((row: any) => row.id === created.body.id)).toBe(true);
+
+    await request(app)
+      .delete(`/api/admin/requests/${created.body.id}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    const [stored] = await db.select().from(schema.requests).where(eq(schema.requests.id, created.body.id));
+    expect(stored.status).toBe('deleted');
+    expect(stored.currentStepId).toBeNull();
+    const history = await db.select().from(schema.requestStatusHistory).where(eq(schema.requestStatusHistory.requestId, created.body.id));
+    expect(history.some((row: any) => row.newStatus === 'deleted')).toBe(true);
+
+    const list = await request(app).get('/api/requests').set('Authorization', `Bearer ${requesterToken}`).expect(200);
+    expect(list.body.items.some((row: any) => row.id === created.body.id)).toBe(false);
+    await request(app).get(`/api/requests/${created.body.id}`).set('Authorization', `Bearer ${requesterToken}`).expect(404);
+  });
+
+  it('searches request nomenclature by localized product title and preserves the material link', async () => {
+    const { app, db, holding } = await make();
+    const token = await login(app, 'demo_requester');
+    const [material] = await db.insert(schema.materials).values({
+      holdingId: holding.id,
+      sku: 'MAT-42',
+      name: 'Хлопковая пряжа',
+      nameUz: 'Paxta ipi',
+      nameTr: 'Pamuk ipliği',
+      defaultUnit: 'кг',
+    }).returning();
+
+    const found = await request(app)
+      .get('/api/materials?search=Paxta')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(found.body).toEqual([expect.objectContaining({ id: material.id, sku: 'MAT-42' })]);
+
+    const created = await request(app)
+      .post('/api/requests')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Paxta ipi', items: [{ materialId: material.id, name: 'Paxta ipi', quantity: 2, unitPrice: 0, unit: 'кг' }] })
+      .expect(201);
+    const [item] = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, created.body.id));
+    expect(item.materialId).toBe(material.id);
   });
 });
 
@@ -358,6 +481,62 @@ describe('admin: people (Block B)', () => {
       .expect(200);
     expect(after.body.length).toBe(0);
   });
+
+  it('refuses to revoke the last owner assignment in a holding — even the owner acting on themselves', async () => {
+    const { app, db } = await make();
+    const token = await login(app, '999');
+    const [owner] = await db.select().from(schema.users).where(eq(schema.users.telegramId, '999'));
+    // make() seeds a demo_owner account too (seedDemoUsers: true) — revoke its
+    // owner assignment so '999' is genuinely the sole owner for this test.
+    const [demoOwner] = await db.select().from(schema.users).where(eq(schema.users.telegramId, 'demo_owner'));
+    await db.update(schema.userRoles).set({ status: 'revoked' }).where(eq(schema.userRoles.userId, demoOwner.id));
+    const ownerRoles = await request(app)
+      .get(`/api/admin/users/${owner.id}/roles`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const assignmentId = ownerRoles.body.find((x: any) => x.roleCode === 'owner').assignmentId;
+    const res = await request(app)
+      .delete(`/api/admin/users/${owner.id}/assignments/${assignmentId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+    expect(res.body.error).toMatch(/последнего учредителя/);
+    // Still active — the holding didn't lose its only owner.
+    const stillOwner = await request(app)
+      .get(`/api/admin/users/${owner.id}/roles`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(stillOwner.body.some((x: any) => x.roleCode === 'owner')).toBe(true);
+  });
+
+  it('refuses to archive a user holding the last owner assignment', async () => {
+    const { app, db, holding } = await make();
+    const [owner] = await db.select().from(schema.users).where(eq(schema.users.telegramId, '999'));
+    // make() seeds a demo_owner account too (seedDemoUsers: true) — revoke its
+    // owner assignment so '999' is genuinely the sole owner for this test.
+    const [demoOwner] = await db.select().from(schema.users).where(eq(schema.users.telegramId, 'demo_owner'));
+    await db.update(schema.userRoles).set({ status: 'revoked' }).where(eq(schema.userRoles.userId, demoOwner.id));
+
+    // A second actor with equivalent (all-permission) rights via a custom role,
+    // so they can outrank the owner without literally holding the 'owner' role.
+    const [second] = await db
+      .insert(schema.users)
+      .values({ holdingId: holding.id, fullName: 'Second', telegramId: 'owner2', status: 'active' })
+      .returning();
+    const [allPermsRole] = await db
+      .insert(schema.roles)
+      .values({ holdingId: holding.id, code: 'god_mode', name: 'Всё', isSystem: false })
+      .returning();
+    const allPerms = await db.select({ id: schema.permissions.id }).from(schema.permissions);
+    await db.insert(schema.rolePermissions).values(allPerms.map((p: any) => ({ roleId: allPermsRole.id, permissionId: p.id })));
+    await db.insert(schema.userRoles).values({ userId: second.id, roleId: allPermsRole.id, holdingId: holding.id });
+
+    const secondToken = await login(app, 'owner2');
+    const res = await request(app)
+      .delete(`/api/admin/users/${owner.id}`)
+      .set('Authorization', `Bearer ${secondToken}`)
+      .expect(400);
+    expect(res.body.error).toMatch(/последнего учредителя/);
+  });
 });
 
 describe('admin: roles (Block C)', () => {
@@ -403,14 +582,39 @@ describe('admin: roles (Block C)', () => {
     await request(app).delete(`/api/admin/roles/${created.body.id}`).set('Authorization', `Bearer ${token}`).expect(200);
   });
 
-  it('refuses to edit permissions of a system role', async () => {
-    const { app, db } = await make();
+  it('lets owner customize permissions of a built-in role for this holding only', async () => {
+    const { app, db, holding } = await make();
     const token = await login(app, '999');
-    await request(app)
-      .put(`/api/admin/roles/${await roleId(db, 'owner')}/permissions`)
+    const systemOwnerId = await roleId(db, 'owner');
+    const globalBefore = await db
+      .select({ code: schema.permissions.code })
+      .from(schema.rolePermissions)
+      .innerJoin(schema.permissions, eq(schema.permissions.id, schema.rolePermissions.permissionId))
+      .where(eq(schema.rolePermissions.roleId, systemOwnerId));
+    const changed = await request(app)
+      .put(`/api/admin/roles/${systemOwnerId}/permissions`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ codes: ['requests.view'] })
-      .expect(403);
+      .send({ codes: ['roles.manage', 'requests.view'] })
+      .expect(200);
+
+    expect(changed.body.roleId).not.toBe(systemOwnerId);
+    const listed = await request(app).get('/api/admin/roles').set('Authorization', `Bearer ${token}`).expect(200);
+    const ownerRole = listed.body.find((role: any) => role.code === 'owner');
+    expect(ownerRole).toMatchObject({ id: changed.body.roleId, isSystem: true });
+    expect(ownerRole.permissions.sort()).toEqual(['requests.view', 'roles.manage']);
+
+    const globalAfter = await db
+      .select({ code: schema.permissions.code })
+      .from(schema.rolePermissions)
+      .innerJoin(schema.permissions, eq(schema.permissions.id, schema.rolePermissions.permissionId))
+      .where(eq(schema.rolePermissions.roleId, systemOwnerId));
+    expect(globalAfter.map((row: { code: string }) => row.code).sort()).toEqual(globalBefore.map((row: { code: string }) => row.code).sort());
+    const tenantOwnerAssignments = await db
+      .select({ roleId: schema.userRoles.roleId })
+      .from(schema.userRoles)
+      .innerJoin(schema.users, eq(schema.users.id, schema.userRoles.userId))
+      .where(and(eq(schema.users.holdingId, holding.id), eq(schema.userRoles.status, 'active')));
+    expect(tenantOwnerAssignments.some((assignment: { roleId: string }) => assignment.roleId === changed.body.roleId)).toBe(true);
   });
 });
 

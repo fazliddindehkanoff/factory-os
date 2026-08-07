@@ -33,6 +33,12 @@ async function makeApp(devAuth = false) {
   return { app: createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth, rateLimit: false }), db };
 }
 
+// Auth is fail-closed: /api/auth/telegram only succeeds for an already-provisioned
+// telegramId (an admin invite, or — in production — the bot's phone-share flow).
+async function provisionTelegramUser(db: any, id: number, fullName = 'T'): Promise<void> {
+  await db.insert(schema.users).values({ telegramId: String(id), fullName, status: 'pending' });
+}
+
 async function systemRoleId(db: any, code: string): Promise<string> {
   const [r] = await db
     .select()
@@ -49,12 +55,13 @@ describe('HTTP API', () => {
 
   it('logs in via initData and serves /me with a Bearer token', async () => {
     const { app, db } = await makeApp();
+    await provisionTelegramUser(db, 42);
     const login = await request(app)
       .post('/api/auth/telegram')
       .send({ initData: initData(42) })
       .expect(200);
     expect(login.body.token).toBeTruthy();
-    // Self-registered users start 'pending'; approve to active so they can use the API.
+    // Provisioned users start 'pending'; approve to active so they can use the API.
     await db.update(schema.users).set({ status: 'active' }).where(eq(schema.users.id, login.body.user.id));
 
     const me = await request(app)
@@ -68,6 +75,11 @@ describe('HTTP API', () => {
   it('rejects invalid initData at login', async () => {
     const { app } = await makeApp();
     await request(app).post('/api/auth/telegram').send({ initData: 'garbage' }).expect(401);
+  });
+
+  it('rejects initData for a telegram id no admin has provisioned (fail-closed)', async () => {
+    const { app } = await makeApp();
+    await request(app).post('/api/auth/telegram').send({ initData: initData(999) }).expect(403);
   });
 
   it('dev login is 404 when disabled and issues a token when enabled', async () => {
@@ -100,6 +112,7 @@ describe('HTTP API', () => {
     });
 
     // Login, then assign the user to the holding with the requester role.
+    await provisionTelegramUser(db, 7);
     const login = await request(app)
       .post('/api/auth/telegram')
       .send({ initData: initData(7) })
@@ -141,6 +154,7 @@ describe('HTTP API', () => {
   it('forbids creating a request without the requests.create permission', async () => {
     const { app, db } = await makeApp();
     const [h] = await db.insert(schema.holdings).values({ name: 'H' }).returning();
+    await provisionTelegramUser(db, 9);
     const login = await request(app)
       .post('/api/auth/telegram')
       .send({ initData: initData(9) })

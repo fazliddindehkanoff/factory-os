@@ -23,7 +23,7 @@ await seedTest(db);
 await pool.end();
 
 console.log('✅ Test QA data seeded — Holding «Тестовый завод»');
-console.log(`   Вход в мини-аппе: /?user=<логин>  (PIN у всех: ${TEST_PIN})`);
+console.log(`   Вход в web app: /?phone=<телефон>  (PIN у всех: ${TEST_PIN})`);
 for (const u of TEST_USERS) {
-  console.log(`     ${u.username.padEnd(14)} → ${u.name} [${u.roles.join(', ')}]`);
+  console.log(`     +${u.phone} · ${u.username.padEnd(14)} → ${u.name} [${u.roles.join(', ')}]`);
 }

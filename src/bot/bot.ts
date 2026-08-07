@@ -4,11 +4,20 @@
  * button opens the Mini App for everyone. Outbound notifications are fire-and-forget.
  * Only constructed when BOT_TOKEN is set (see server bootstrap).
  */
-import { Bot, InlineKeyboard, type Context } from 'grammy';
-import { startMessage, helpMessage } from './messages.js';
+import { Bot, InlineKeyboard, Keyboard, type Context } from 'grammy';
+import { startMessage, helpMessage, askPhoneMessage, phoneLinkedMessage, phoneNotFoundMessage } from './messages.js';
 
 /** Resolve a user's effective permission codes from their Telegram id (empty if unknown). */
 export type PermResolver = (telegramId: string) => Promise<string[]>;
+
+/** True if this Telegram id is already linked to a provisioned (holding-assigned) user. */
+export type HasAccount = (telegramId: string) => Promise<boolean>;
+
+/**
+ * Looks up a user by normalized phone and links their Telegram id onto that row.
+ * Never creates a new user — only an admin-provisioned phone can be linked.
+ */
+export type LinkByPhone = (phone: string, telegramId: string) => Promise<{ linked: boolean; fullName?: string }>;
 
 // Role-aware command entries, each gated by a permission. `perm: null` → always shown.
 // The set a given user sees is their personal Telegram "/" menu.
@@ -23,9 +32,16 @@ const MENU: { command: string; description: string; perm: string | null }[] = [
   { command: 'help', description: 'Помощь', perm: null },
 ];
 
-export function createBot(token: string, appUrl: string, resolvePerms?: PermResolver) {
+export function createBot(
+  token: string,
+  appUrl: string,
+  resolvePerms?: PermResolver,
+  hasAccount?: HasAccount,
+  linkByPhone?: LinkByPhone,
+) {
   const bot = new Bot(token);
   const openKb = (label = '🏭 Открыть Factory OS') => new InlineKeyboard().webApp(label, appUrl);
+  const phoneKb = () => new Keyboard().requestContact('📱 Поделиться номером').resized().oneTime();
 
   // The chat "Menu" button opens the Mini App for everyone.
   bot.api
@@ -44,6 +60,14 @@ export function createBot(token: string, appUrl: string, resolvePerms?: PermReso
     resolvePerms && ctx.from ? resolvePerms(String(ctx.from.id)).catch(() => []) : [];
 
   bot.command('start', async (ctx) => {
+    // Unknown Telegram id → must prove identity via phone before anything else.
+    // hasAccount is optional so this stays a no-op (today's behavior) if the caller
+    // doesn't wire it up (e.g. in a lightweight test bot).
+    const linked = hasAccount && ctx.from ? await hasAccount(String(ctx.from.id)).catch(() => false) : true;
+    if (!linked) {
+      await ctx.reply(askPhoneMessage(), { reply_markup: phoneKb() });
+      return;
+    }
     const perms = await permsOf(ctx);
     // Install this user's personal command menu (scoped to their chat).
     if (ctx.chat) {
@@ -53,6 +77,27 @@ export function createBot(token: string, appUrl: string, resolvePerms?: PermReso
         .catch((e: unknown) => console.error('[bot] per-chat setMyCommands', (e as Error)?.message));
     }
     await ctx.reply(startMessage(ctx.from?.first_name), { reply_markup: openKb() });
+  });
+
+  // Contact-share reply to the phone-request keyboard shown above.
+  bot.on('message:contact', async (ctx) => {
+    const contact = ctx.message.contact;
+    if (!linkByPhone || !ctx.from) return;
+    // The shared contact must belong to the same Telegram account issuing /start —
+    // otherwise anyone could share someone else's saved contact to hijack their account.
+    if (contact.user_id !== ctx.from.id) {
+      await ctx.reply(phoneNotFoundMessage(), { reply_markup: { remove_keyboard: true } });
+      return;
+    }
+    const result = await linkByPhone(contact.phone_number, String(ctx.from.id)).catch(
+      (): { linked: boolean; fullName?: string } => ({ linked: false }),
+    );
+    if (!result.linked) {
+      await ctx.reply(phoneNotFoundMessage(), { reply_markup: { remove_keyboard: true } });
+      return;
+    }
+    await ctx.reply(phoneLinkedMessage(result.fullName), { reply_markup: { remove_keyboard: true } });
+    await ctx.reply(startMessage(ctx.from.first_name), { reply_markup: openKb() });
   });
 
   bot.command('app', async (ctx) => {

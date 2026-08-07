@@ -1,9 +1,10 @@
 /** REST routes. Auth on every /api route except login; RBAC checked per action. */
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { and, desc, eq, inArray, or, ilike, like, gte, lte, count, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, ilike, like, gte, lte, count, isNull, ne, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { verifyInitData } from '../auth/telegram.js';
 import { issueSession } from '../auth/session.js';
+import { normalizePhone } from '../auth/phone.js';
 import { requireAuth, type AuthedRequest } from './auth.middleware.js';
 import { hasPermissionInHolding, getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility, getMoneyVisibility } from './request-visibility.js';
@@ -36,6 +37,23 @@ type Db = any;
  *  Единый список для PUT /requests/:id и флага canEdit в деталях. */
 const EDITABLE_STATUSES = ['draft', 'pending_approval', 'needs_revision'];
 
+/** Resolved department name(s), all three languages — the viewer's client picks
+ *  which to show (see `currentLang()`/`localizedName()` client-side), since the
+ *  server has no visibility into the viewer's language preference (it's stored
+ *  in localStorage only, never sent with the request). Never bake a single
+ *  language in server-side or switching the UI language can't update it. */
+function deptNameFields(dep: { name: string; nameUz: string | null; nameTr: string | null } | undefined, fallback: string | null): {
+  departmentNameResolved: string | null;
+  departmentNameUz: string | null;
+  departmentNameTr: string | null;
+} {
+  return {
+    departmentNameResolved: dep?.name ?? fallback,
+    departmentNameUz: dep?.nameUz ?? null,
+    departmentNameTr: dep?.nameTr ?? null,
+  };
+}
+
 function canEditRequestRow(
   reqRow: { status: string; requesterId: string | null },
   userId: string,
@@ -57,6 +75,7 @@ async function userCanSeeRequest(
   userId: string,
   reqRow: { id: string; requesterId: string; workflowId: string | null; responsibleUserId?: string | null; companyId?: string | null; factoryId?: string | null; departmentId?: string | null },
 ): Promise<boolean> {
+  if ((reqRow as { status?: string }).status === 'deleted') return false;
   const vis = await getRequestVisibility(db, userId);
   return vis.canSee(reqRow);
 }
@@ -277,14 +296,13 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(401).json({ error: 'Invalid initData' });
         return;
       }
-      let [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgUser.id));
+      // Fail-closed: an admin must have already provisioned this person (by phone,
+      // via the bot's /start contact-share flow, or directly) before they can open
+      // the Mini App — no more silent self-registration on first open.
+      const [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgUser.id));
       if (!u) {
-        const fullName =
-          [tgUser.firstName, tgUser.lastName].filter(Boolean).join(' ') || tgUser.username || 'User';
-        [u] = await db
-          .insert(schema.users)
-          .values({ telegramId: tgUser.id, fullName, status: 'pending' })
-          .returning();
+        res.status(403).json({ error: 'Not registered. Share your phone number with the bot first.' });
+        return;
       }
       const token = issueSession(u.id, sessionSecret, 7 * 24 * 3600);
       res.json({ token, user: { id: u.id, fullName: u.fullName, holdingId: u.holdingId } });
@@ -301,16 +319,31 @@ export function buildRouter(deps: RouterDeps): Router {
         res.status(404).json({ error: 'Not found' });
         return;
       }
-      const telegramId = String((req.body ?? {}).telegramId ?? '').trim();
-      if (!telegramId) {
-        res.status(400).json({ error: 'telegramId required' });
+      const body = req.body ?? {};
+      const identifier = String(body.login ?? body.phone ?? body.telegramId ?? '').trim();
+      if (!identifier) {
+        res.status(400).json({ error: 'login required' });
         return;
       }
-      let [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, telegramId));
+      // Prefer the historical telegramId/dev-login lookup, then resolve the same
+      // existing account by normalized phone. This lets test URLs contain either
+      // `sklad_01`, `+998 90 ...`, or a digits-only phone without duplicating users.
+      let [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, identifier));
       if (!u) {
+        const phone = normalizePhone(identifier);
+        if (phone) [u] = await db.select().from(schema.users).where(eq(schema.users.phone, phone));
+      }
+      if (!u) {
+        // Keep the legacy test helper contract: callers explicitly posting a
+        // telegramId may create an ad-hoc dev user. New web/query-param login is
+        // lookup-only, so a typo cannot silently create a roleless account.
+        if (body.telegramId === undefined || body.login !== undefined || body.phone !== undefined) {
+          res.status(404).json({ error: 'Test user not found' });
+          return;
+        }
         [u] = await db
           .insert(schema.users)
-          .values({ telegramId, fullName: 'Dev User', status: 'active' })
+          .values({ telegramId: identifier, fullName: 'Dev User', status: 'active' })
           .returning();
       }
       const token = issueSession(u.id, sessionSecret, 7 * 24 * 3600);
@@ -332,7 +365,7 @@ export function buildRouter(deps: RouterDeps): Router {
       // Системные тест-логины + логины кастомных ролей холдинга (<code>_01 из
       // seed:test-logins) — иначе assistant_01 и прочих нет в DEV-панели (№1).
       const rows = await db
-        .select({ id: schema.users.id, username: schema.users.telegramId, fullName: schema.users.fullName })
+        .select({ id: schema.users.id, username: schema.users.telegramId, phone: schema.users.phone, fullName: schema.users.fullName })
         .from(schema.users)
         .where(or(inArray(schema.users.telegramId, TEST_USERNAMES), like(schema.users.telegramId, '%\\_01')));
       const ids = rows.map((u: { id: string }) => u.id);
@@ -351,13 +384,16 @@ export function buildRouter(deps: RouterDeps): Router {
       // logins (assistant_01 и т.п.) follow after, alphabetically.
       const byUsername = new Map(rows.map((u: any) => [u.username, u]));
       const users = TEST_USERNAMES.flatMap((username) => {
-        const u = byUsername.get(username) as { id: string; username: string; fullName: string } | undefined;
-        return u ? [{ username: u.username, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }] : [];
+        const u = byUsername.get(username) as { id: string; username: string; phone: string | null; fullName: string } | undefined;
+        return u ? [{ username: u.username, phone: u.phone, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }] : [];
       });
-      const extras = (rows as { id: string; username: string; fullName: string }[])
-        .filter((u) => !TEST_USERNAMES.includes(u.username))
+      const extras = (rows as { id: string; username: string; phone: string | null; fullName: string }[])
+        // Dev auth can create ad-hoc users. Do not advertise roleless/orphan
+        // accounts in the role switcher just because their id ends in `_01`;
+        // custom-role QA accounts are useful only after a role is assigned.
+        .filter((u) => !TEST_USERNAMES.includes(u.username) && (rolesByUser.get(u.id)?.length ?? 0) > 0)
         .sort((a, b) => a.username.localeCompare(b.username))
-        .map((u) => ({ username: u.username, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }));
+        .map((u) => ({ username: u.username, phone: u.phone, fullName: u.fullName, roles: rolesByUser.get(u.id) ?? [] }));
       res.json({ users: [...users, ...extras], pin: TEST_PIN });
     } catch (e) {
       next(e);
@@ -372,13 +408,15 @@ export function buildRouter(deps: RouterDeps): Router {
       const [full] = await db.select().from(schema.users).where(eq(schema.users.id, u.id));
       // Fetch the user's active role name(s) for display
       let roleName: string | null = null;
+      let roleCodes: string[] = [];
       if (u.holdingId) {
         const roleRows = await db
-          .select({ name: schema.roles.name })
+          .select({ code: schema.roles.code, name: schema.roles.name })
           .from(schema.userRoles)
           .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
           .where(and(eq(schema.userRoles.userId, u.id), eq(schema.userRoles.status, 'active')));
         if (roleRows.length) roleName = roleRows.map((r0: { name: string }) => r0.name).join(', ');
+        roleCodes = roleRows.map((r0: { code: string }) => r0.code);
       }
       const user = {
         ...u,
@@ -386,6 +424,7 @@ export function buildRouter(deps: RouterDeps): Router {
         email: full?.email ?? null,
         position: full?.position ?? null,
         roleName,
+        roleCodes,
       };
       res.json({ user, permissions });
     } catch (e) {
@@ -401,8 +440,13 @@ export function buildRouter(deps: RouterDeps): Router {
       let settingsMap: Record<string, string> = {};
       let stages: { id: string; label: string; order: number }[] = [];
       let warehouses: { id: string; name: string }[] = [];
-      let departments: { id: string; name: string }[] = [];
-      let users: { id: string; fullName: string; departmentId: string | null }[] = [];
+      let departments: { id: string; name: string; nameUz: string | null; nameTr: string | null }[] = [];
+      let users: {
+        id: string;
+        fullName: string;
+        departmentId: string | null;
+        departments: { id: string; name: string; nameUz: string | null; nameTr: string | null }[];
+      }[] = [];
       if (u.holdingId) {
         const settingsRows = await db
           .select()
@@ -437,7 +481,31 @@ export function buildRouter(deps: RouterDeps): Router {
           await db.select().from(schema.departments).where(eq(schema.departments.holdingId, u.holdingId))
         )
           .filter((d: { status: string | null }) => d.status !== 'inactive')
-          .map((d: { id: string; name: string }) => ({ id: d.id, name: d.name }));
+          .map((d: { id: string; name: string; nameUz: string | null; nameTr: string | null }) => ({
+            id: d.id,
+            name: d.name,
+            nameUz: d.nameUz,
+            nameTr: d.nameTr,
+          }));
+        // Restrict to the user's assigned otdels once an admin has assigned any —
+        // an unconfigured user (no assignments yet) still sees the full list.
+        const explicitAssignedDepts = await db
+          .select({ departmentId: schema.userDepartments.departmentId })
+          .from(schema.userDepartments)
+          .where(eq(schema.userDepartments.userId, u.id));
+        const scopedAssignedDepts = await db
+          .select({ departmentId: schema.userRoles.departmentId })
+          .from(schema.userRoles)
+          .where(and(eq(schema.userRoles.userId, u.id), eq(schema.userRoles.status, 'active')));
+        const assignedIds = new Set(
+          [
+            ...explicitAssignedDepts.map((d: { departmentId: string }) => d.departmentId),
+            ...scopedAssignedDepts.map((d: { departmentId: string | null }) => d.departmentId).filter(Boolean),
+          ] as string[],
+        );
+        if (assignedIds.size > 0) {
+          departments = departments.filter((d: { id: string }) => assignedIds.has(d.id));
+        }
         // Users for department-head selection — needed only by the create-request
         // form, so don't hand the full employee directory to roles that can't
         // create requests (L8).
@@ -446,7 +514,44 @@ export function buildRouter(deps: RouterDeps): Router {
             .select({ id: schema.users.id, fullName: schema.users.fullName })
             .from(schema.users)
             .where(and(eq(schema.users.holdingId, u.holdingId), eq(schema.users.status, 'active')));
-          users = userRows.map((u0: { id: string; fullName: string }) => ({ id: u0.id, fullName: u0.fullName, departmentId: null }));
+          const userIds = userRows.map((u0: { id: string }) => u0.id);
+          const explicitDeptRows = userIds.length
+            ? await db
+                .select({
+                  userId: schema.userDepartments.userId,
+                  id: schema.departments.id,
+                  name: schema.departments.name,
+                  nameUz: schema.departments.nameUz,
+                  nameTr: schema.departments.nameTr,
+                })
+                .from(schema.userDepartments)
+                .innerJoin(schema.departments, eq(schema.departments.id, schema.userDepartments.departmentId))
+                .where(inArray(schema.userDepartments.userId, userIds))
+            : [];
+          const scopedDeptRows = userIds.length
+            ? await db
+                .select({
+                  userId: schema.userRoles.userId,
+                  id: schema.departments.id,
+                  name: schema.departments.name,
+                  nameUz: schema.departments.nameUz,
+                  nameTr: schema.departments.nameTr,
+                })
+                .from(schema.userRoles)
+                .innerJoin(schema.departments, eq(schema.departments.id, schema.userRoles.departmentId))
+                .where(and(inArray(schema.userRoles.userId, userIds), eq(schema.userRoles.status, 'active')))
+            : [];
+          const deptsByUser = new Map<string, { id: string; name: string; nameUz: string | null; nameTr: string | null }[]>();
+          for (const d of [...explicitDeptRows, ...scopedDeptRows] as { userId: string; id: string; name: string; nameUz: string | null; nameTr: string | null }[]) {
+            const existing = deptsByUser.get(d.userId) ?? [];
+            if (!existing.some((x) => x.id === d.id)) {
+              deptsByUser.set(d.userId, [...existing, { id: d.id, name: d.name, nameUz: d.nameUz, nameTr: d.nameTr }]);
+            }
+          }
+          users = userRows.map((u0: { id: string; fullName: string }) => {
+            const userDepts = deptsByUser.get(u0.id) ?? [];
+            return { id: u0.id, fullName: u0.fullName, departmentId: userDepts[0]?.id ?? null, departments: userDepts };
+          });
         }
       }
       res.json({
@@ -534,6 +639,68 @@ export function buildRouter(deps: RouterDeps): Router {
     }
   });
 
+  // Unit types for the create-request wizard's "Ед. изм." field — read-only, any
+  // authenticated tenant member (managed from /api/admin/unit-types by an admin).
+  r.get('/unit-types', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId) {
+        res.json([]);
+        return;
+      }
+      const rows = await db
+        .select()
+        .from(schema.unitTypes)
+        .where(and(eq(schema.unitTypes.holdingId, u.holdingId), eq(schema.unitTypes.status, 'active')))
+        .orderBy(schema.unitTypes.orderIndex);
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Active nomenclature for request-item autocomplete. Request creators may
+  // search by either SKU or any localized product title; catalog management
+  // remains behind the separate admin permissions.
+  r.get('/materials', auth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const u = (req as AuthedRequest).user!;
+      if (!u.holdingId || !(await hasPermissionInHolding(db, u.id, 'requests.create', u.holdingId))) {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+      const search = String(req.query.search ?? '').trim();
+      const where = search
+        ? and(
+            eq(schema.materials.holdingId, u.holdingId),
+            eq(schema.materials.status, 'active'),
+            or(
+              ilike(schema.materials.sku, `%${search}%`),
+              ilike(schema.materials.name, `%${search}%`),
+              ilike(schema.materials.nameUz, `%${search}%`),
+              ilike(schema.materials.nameTr, `%${search}%`),
+            ),
+          )
+        : and(eq(schema.materials.holdingId, u.holdingId), eq(schema.materials.status, 'active'));
+      const rows = await db
+        .select({
+          id: schema.materials.id,
+          sku: schema.materials.sku,
+          name: schema.materials.name,
+          nameUz: schema.materials.nameUz,
+          nameTr: schema.materials.nameTr,
+          defaultUnit: schema.materials.defaultUnit,
+        })
+        .from(schema.materials)
+        .where(where)
+        .orderBy(schema.materials.name)
+        .limit(5000);
+      res.json(rows);
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.get('/requests', auth, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const u = (req as AuthedRequest).user!;
@@ -562,7 +729,10 @@ export function buildRouter(deps: RouterDeps): Router {
 
       // P1-7: all filtering happens in the DB, not on the current page, so search
       // finds matching requests anywhere in the holding and totals are accurate.
-      const conds: (SQL | undefined)[] = [eq(schema.requests.holdingId, u.holdingId)];
+      const conds: (SQL | undefined)[] = [
+        eq(schema.requests.holdingId, u.holdingId),
+        ne(schema.requests.status, 'deleted'),
+      ];
       if (vis.scope) conds.push(vis.scope);
 
       const search = String(q.search ?? '').trim();
@@ -603,17 +773,16 @@ export function buildRouter(deps: RouterDeps): Router {
       // Лист Excel №5: карточки списка показывают «Отдел снабжения» — резолвим
       // имя отдела по departmentId (заявка адресуется отделу по id, имя не хранится).
       const listDeptIds = [...new Set(rows.map((r: any) => r.departmentId).filter(Boolean))] as string[];
-      const listDeptName = new Map<string, string>();
+      const listDept = new Map<string, { name: string; nameUz: string | null; nameTr: string | null }>();
       if (listDeptIds.length) {
         const deps = await db
-          .select({ id: schema.departments.id, name: schema.departments.name })
+          .select({ id: schema.departments.id, name: schema.departments.name, nameUz: schema.departments.nameUz, nameTr: schema.departments.nameTr })
           .from(schema.departments)
           .where(inArray(schema.departments.id, listDeptIds));
-        for (const d of deps as { id: string; name: string }[]) listDeptName.set(d.id, d.name);
+        for (const d of deps as { id: string; name: string; nameUz: string | null; nameTr: string | null }[]) listDept.set(d.id, d);
       }
       const items = rows.map((r: any) => {
-        const departmentNameResolved = r.departmentId ? listDeptName.get(r.departmentId) ?? r.departmentName ?? null : r.departmentName ?? null;
-        const base = { ...r, departmentNameResolved };
+        const base = { ...r, ...deptNameFields(r.departmentId ? listDept.get(r.departmentId) : undefined, r.departmentName ?? null) };
         return listMoney.canSee(r) ? base : { ...base, estimatedAmount: null };
       });
       res.json({ items, hasMore, offset, limit, total });
@@ -634,7 +803,10 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       const q = req.query;
       const vis = await getRequestVisibility(db, u.id);
-      const conds: (SQL | undefined)[] = [eq(schema.requests.holdingId, u.holdingId)];
+      const conds: (SQL | undefined)[] = [
+        eq(schema.requests.holdingId, u.holdingId),
+        ne(schema.requests.status, 'deleted'),
+      ];
       if (vis.scope) conds.push(vis.scope);
       const status = String(q.status ?? '').trim();
       if (status) conds.push(eq(schema.requests.status, status));
@@ -837,7 +1009,7 @@ export function buildRouter(deps: RouterDeps): Router {
         .select()
         .from(schema.requests)
         .where(eq(schema.requests.id, (req.params.id as string)));
-      if (!reqRow) {
+      if (!reqRow || reqRow.status === 'deleted') {
         res.status(404).json({ error: 'Not found' });
         return;
       }
@@ -1109,7 +1281,10 @@ export function buildRouter(deps: RouterDeps): Router {
         ? await db.select({ name: schema.factories.name }).from(schema.factories).where(eq(schema.factories.id, reqRow.factoryId))
         : [];
       const [depRow] = reqRow.departmentId
-        ? await db.select({ name: schema.departments.name }).from(schema.departments).where(eq(schema.departments.id, reqRow.departmentId))
+        ? await db
+            .select({ name: schema.departments.name, nameUz: schema.departments.nameUz, nameTr: schema.departments.nameTr })
+            .from(schema.departments)
+            .where(eq(schema.departments.id, reqRow.departmentId))
         : [];
 
       // Progress starts with the REQUESTER (who created it), then the approval steps.
@@ -1199,7 +1374,7 @@ export function buildRouter(deps: RouterDeps): Router {
         requesterName: requesterRow?.name ?? null,
         responsibleName: respRow?.name ?? null,
         factoryName: facRow?.name ?? null,
-        departmentNameResolved: depRow?.name ?? reqRow.departmentName ?? null,
+        ...deptNameFields(depRow, reqRow.departmentName ?? null),
         statusLabel: await statusLabelFor(db, reqRow),
         items: itemsOut,
         approvals,
@@ -2146,17 +2321,17 @@ export function buildRouter(deps: RouterDeps): Router {
         .orderBy(schema.requests.createdAt);
       // Лист Excel №5: карточка очереди показывает «Отдел снабжения» — резолвим имя.
       const pqDeptIds = [...new Set(rows.map((r: any) => r.departmentId).filter(Boolean))] as string[];
-      const pqDeptName = new Map<string, string>();
+      const pqDept = new Map<string, { name: string; nameUz: string | null; nameTr: string | null }>();
       if (pqDeptIds.length) {
         const deps = await db
-          .select({ id: schema.departments.id, name: schema.departments.name })
+          .select({ id: schema.departments.id, name: schema.departments.name, nameUz: schema.departments.nameUz, nameTr: schema.departments.nameTr })
           .from(schema.departments)
           .where(inArray(schema.departments.id, pqDeptIds));
-        for (const d of deps as { id: string; name: string }[]) pqDeptName.set(d.id, d.name);
+        for (const d of deps as { id: string; name: string; nameUz: string | null; nameTr: string | null }[]) pqDept.set(d.id, d);
       }
       res.json(rows.map((r: any) => ({
         ...r,
-        departmentNameResolved: r.departmentId ? pqDeptName.get(r.departmentId) ?? r.departmentName ?? null : r.departmentName ?? null,
+        ...deptNameFields(r.departmentId ? pqDept.get(r.departmentId) : undefined, r.departmentName ?? null),
       })));
     } catch (e) {
       next(e);

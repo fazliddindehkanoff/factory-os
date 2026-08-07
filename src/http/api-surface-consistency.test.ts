@@ -21,6 +21,20 @@ const ENDPOINTS_WITHOUT_CLIENT: string[] = [
   // /snab-dashboard client, not by the Telegram React client in web/src/api.ts.
   'POST /admin/users',
   'PUT /admin/users/{}',
+  // Unit-types management (namenklatura settings) is consumed by the
+  // self-contained /snab-dashboard client, same as the account endpoints above.
+  'GET /admin/unit-types',
+  'POST /admin/unit-types',
+  'PUT /admin/unit-types/reorder',
+  'PUT /admin/unit-types/{}',
+  'DELETE /admin/unit-types/{}',
+  // Flat lookup lists + Excel bulk-import, both consumed only by /snab-dashboard's
+  // otdel/branch/warehouse settings pages and namenklatura/unit-types import buttons.
+  'GET /admin/factories',
+  'GET /admin/departments',
+  'GET /admin/warehouses',
+  'POST /admin/materials/import',
+  'POST /admin/unit-types/import',
 ];
 
 /** Обёртки api.*, осознанно не вызываемые из компонентов (причина обязательна). */

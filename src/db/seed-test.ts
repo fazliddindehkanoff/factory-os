@@ -5,7 +5,7 @@
  * the role on a single Telegram account:
  *
  *   sklad_01 создаёт → nach_sklad_01 подтверждает → snab_01 (предложение + одобрение) →
- *   zamdir_01 → gendir_01 → founder_01 → прибытие → приёмка → sklad_01 закрывает.
+ *   zamdir_01 → gendir_01 → founder_01 → прибытие (финальный шаг).
  *
  * Each user logs in through dev auth (telegramId = username below), i.e. the
  * mini app URL `/?user=sklad_01` — one browser window per user. PIN everywhere
@@ -28,32 +28,35 @@ export const TEST_HOLDING_NAME = 'Тестовый завод';
 export interface TestUserSpec {
   /** Логин dev-входа (хранится как users.telegramId). */
   username: string;
+  /** Детерминированный телефон для входа через web app в тест-режиме. */
+  phone: string;
   name: string;
   /** Коды системных ролей (holding-scoped назначение). */
   roles: string[];
+  department: 'Склад' | 'Снабжение' | 'Дирекция';
 }
 
 /** Тестовые пользователи — по одному на КАЖДУЮ системную роль (см. system-roles.ts).
  * Первые семь — маршрут заявки из ТЗ, остальные — вспомогательные/наблюдающие роли. */
 export const TEST_USERS: TestUserSpec[] = [
-  { username: 'zayavitel_01', name: 'Заявитель (сотрудник отдела)', roles: ['requester'] },
-  { username: 'sklad_01', name: 'Склад (кладовщик)', roles: ['requester', 'warehouse_worker'] },
-  { username: 'nach_sklad_01', name: 'Начальник склада', roles: ['warehouse'] },
-  { username: 'snab_01', name: 'Снабженец', roles: ['procurement_manager'] },
-  { username: 'zamdir_01', name: 'Главный инженер', roles: ['deputy_director'] },
-  { username: 'gendir_01', name: 'Ген. директор', roles: ['director'] },
-  { username: 'founder_01', name: 'Учредитель', roles: ['owner'] },
-  { username: 'admin_01', name: 'Администратор', roles: ['admin'] },
-  { username: 'nach_snab_01', name: 'Руководитель снабжения', roles: ['procurement_head'] },
-  { username: 'snab_otdel_01', name: 'Снабжение (отдел)', roles: ['procurement'] },
-  { username: 'fin_01', name: 'Финансист', roles: ['finance'] },
-  { username: 'nach_fin_01', name: 'Руководитель финансов', roles: ['finance_head'] },
-  { username: 'fin_manager_01', name: 'Финансовый менеджер', roles: ['finance_manager'] },
-  { username: 'buhgalter_01', name: 'Бухгалтер', roles: ['accountant'] },
-  { username: 'nach_otdela_01', name: 'Руководитель отдела', roles: ['dept_head'] },
-  { username: 'vnedrenie_01', name: 'Руководитель внедрения', roles: ['operations_lead'] },
-  { username: 'auditor_01', name: 'Аудитор', roles: ['auditor'] },
-  { username: 'nabludatel_01', name: 'Наблюдатель', roles: ['observer'] },
+  { username: 'zayavitel_01', phone: '998900000001', name: 'Заявитель (сотрудник отдела)', roles: ['requester'], department: 'Дирекция' },
+  { username: 'sklad_01', phone: '998900000002', name: 'Склад (кладовщик)', roles: ['requester', 'warehouse_worker'], department: 'Склад' },
+  { username: 'nach_sklad_01', phone: '998900000003', name: 'Начальник склада', roles: ['warehouse'], department: 'Склад' },
+  { username: 'snab_01', phone: '998900000004', name: 'Снабженец', roles: ['procurement_manager'], department: 'Снабжение' },
+  { username: 'zamdir_01', phone: '998900000005', name: 'Главный инженер', roles: ['deputy_director'], department: 'Дирекция' },
+  { username: 'gendir_01', phone: '998900000006', name: 'Ген. директор', roles: ['director'], department: 'Дирекция' },
+  { username: 'founder_01', phone: '998900000007', name: 'Учредитель', roles: ['owner'], department: 'Дирекция' },
+  { username: 'admin_01', phone: '998900000008', name: 'Администратор', roles: ['admin'], department: 'Дирекция' },
+  { username: 'nach_snab_01', phone: '998900000009', name: 'Руководитель снабжения', roles: ['procurement_head'], department: 'Снабжение' },
+  { username: 'snab_otdel_01', phone: '998900000010', name: 'Снабжение (отдел)', roles: ['procurement'], department: 'Снабжение' },
+  { username: 'fin_01', phone: '998900000011', name: 'Финансист', roles: ['finance'], department: 'Дирекция' },
+  { username: 'nach_fin_01', phone: '998900000012', name: 'Руководитель финансов', roles: ['finance_head'], department: 'Дирекция' },
+  { username: 'fin_manager_01', phone: '998900000013', name: 'Финансовый менеджер', roles: ['finance_manager'], department: 'Дирекция' },
+  { username: 'buhgalter_01', phone: '998900000014', name: 'Бухгалтер', roles: ['accountant'], department: 'Дирекция' },
+  { username: 'nach_otdela_01', phone: '998900000015', name: 'Руководитель отдела', roles: ['dept_head'], department: 'Дирекция' },
+  { username: 'vnedrenie_01', phone: '998900000016', name: 'Руководитель внедрения', roles: ['operations_lead'], department: 'Дирекция' },
+  { username: 'auditor_01', phone: '998900000017', name: 'Аудитор', roles: ['auditor'], department: 'Дирекция' },
+  { username: 'nabludatel_01', phone: '998900000018', name: 'Наблюдатель', roles: ['observer'], department: 'Дирекция' },
 ];
 
 export const TEST_USERNAMES = TEST_USERS.map((u) => u.username);
@@ -62,13 +65,11 @@ export const TEST_USERNAMES = TEST_USERS.map((u) => u.username);
 const STEP_SPECS = [
   { order: 1, name: 'Подтверждение начальника склада', kind: 'approval', role: 'warehouse' },
   { order: 2, name: 'Снабжение — предложение', kind: 'procurement', role: 'procurement_manager' },
-  { order: 3, name: 'Снабжение — менеджер', kind: 'price_approval', role: 'procurement_head' },
+  { order: 3, name: 'Снабжение — менеджер', kind: 'price_approval', role: 'procurement_head', onRejectStepOrder: 2 },
   { order: 4, name: 'Главный инженер', kind: 'approval', role: 'deputy_director' },
   { order: 5, name: 'Одобрение ген. директора', kind: 'approval', role: 'director' },
   { order: 6, name: 'Утверждение учредителя', kind: 'approval', role: 'owner' },
-  { order: 7, name: 'Прибытие товара на склад', kind: 'delivery', role: 'warehouse_worker' },
-  { order: 8, name: 'Приёмка товара', kind: 'receiving', role: 'warehouse_worker' },
-  { order: 9, name: 'Подтверждение получения', kind: 'close', role: 'requester' },
+  { order: 7, name: 'Прибытие товара на склад', kind: 'delivery', role: 'procurement_manager' },
 ];
 
 async function roleId(db: Db, code: string): Promise<string | undefined> {
@@ -104,17 +105,20 @@ export async function seedTest(db: Db) {
     and(eq(schema.factories.holdingId, holding.id), eq(schema.factories.name, 'Тестовый завод №1')),
     { holdingId: holding.id, companyId: company.id, name: 'Тестовый завод №1' },
   );
+  const departments: Record<string, any> = {};
   for (const d of [
-    { name: 'Склад', type: 'warehouse' },
-    { name: 'Снабжение', type: 'procurement' },
-    { name: 'Дирекция', type: 'management' },
+    { name: 'Склад', nameUz: 'Ombor', nameTr: 'Depo', type: 'warehouse' },
+    { name: 'Снабжение', nameUz: "Ta'minot", nameTr: 'Tedarik', type: 'procurement' },
+    { name: 'Дирекция', nameUz: 'Direksiya', nameTr: 'Yönetim', type: 'management' },
   ]) {
-    await findOrInsert(
+    const department = await findOrInsert(
       db,
       schema.departments,
       and(eq(schema.departments.holdingId, holding.id), eq(schema.departments.name, d.name)),
-      { holdingId: holding.id, factoryId: factory.id, name: d.name, type: d.type },
+      { holdingId: holding.id, factoryId: factory.id, ...d },
     );
+    await db.update(schema.departments).set({ nameUz: d.nameUz, nameTr: d.nameTr }).where(eq(schema.departments.id, department.id));
+    departments[d.name] = department;
   }
   const warehouse = await findOrInsert(
     db,
@@ -136,11 +140,18 @@ export async function seedTest(db: Db) {
         .values({
           holdingId: holding.id,
           telegramId: s.username,
+          phone: s.phone,
           fullName: s.name,
           position: s.name,
           status: 'active',
           pinHash: hashPin(TEST_PIN),
         })
+        .returning();
+    } else {
+      [u] = await db
+        .update(schema.users)
+        .set({ holdingId: holding.id, phone: s.phone, fullName: s.name, position: s.name, status: 'active', pinHash: hashPin(TEST_PIN) })
+        .where(eq(schema.users.id, u.id))
         .returning();
     }
     for (const code of s.roles) {
@@ -154,6 +165,12 @@ export async function seedTest(db: Db) {
         await db.insert(schema.userRoles).values({ userId: u.id, roleId: rid, holdingId: holding.id });
       }
     }
+    const department = departments[s.department];
+    const [existingDepartment] = await db
+      .select()
+      .from(schema.userDepartments)
+      .where(and(eq(schema.userDepartments.userId, u.id), eq(schema.userDepartments.departmentId, department.id)));
+    if (!existingDepartment) await db.insert(schema.userDepartments).values({ userId: u.id, departmentId: department.id });
     users[s.username] = u;
   }
 
@@ -207,6 +224,7 @@ export async function seedTest(db: Db) {
         stepName: s.name,
         stepKind: s.kind,
         approverRoleId: await roleId(db, s.role),
+        onRejectStepOrder: s.onRejectStepOrder ?? null,
       });
     }
   }

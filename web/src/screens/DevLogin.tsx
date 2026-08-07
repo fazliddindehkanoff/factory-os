@@ -22,12 +22,12 @@ export function DevLogin({ error, onLoggedIn }: { error: string | null; onLogged
       <div className="w-full max-w-xs">
         <div className="mb-1 text-center text-2xl font-bold tracking-tight text-fg">Factory OS</div>
         <p className="mb-5 text-center text-xs leading-relaxed text-fg3">
-          Откройте внутри Telegram для обычного входа. Локально — dev-вход по Telegram ID.
+          Telegram ichida odatiy kirish. Test muhitida — telefon yoki test login orqali kirish.
         </p>
         <input
           value={tgId}
           onChange={(e) => setTgId(e.target.value)}
-          placeholder="Ваш Telegram ID"
+          placeholder="Telefon yoki test login"
           className="mb-2.5 w-full rounded-xl border border-line bg-card px-3.5 py-3 text-center font-mono text-sm text-fg outline-none placeholder:text-fg3 focus:border-accent"
         />
         <button

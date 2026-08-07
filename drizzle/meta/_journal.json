@@ -295,6 +295,41 @@
       "when": 1784705400000,
       "tag": "0041_request_view_own_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1785701446068,
+      "tag": "0042_namenklatura_i18n_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1785729313484,
+      "tag": "0043_otdel_branch_user_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1785751275235,
+      "tag": "0044_must_change_password",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1785755197769,
+      "tag": "0045_warehouse_i18n_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1785918314000,
+      "tag": "0046_soft_delete_existing_requests",
+      "breakpoints": true
     }
   ]
 }

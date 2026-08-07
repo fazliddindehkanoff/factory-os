@@ -32,6 +32,7 @@ export const PERMISSIONS: PermissionDef[] = [
   { code: 'warehouse.check_stock', name: 'Проверка наличия', module: 'warehouse' },
   { code: 'warehouse.receive', name: 'Приёмка', module: 'warehouse' },
   { code: 'warehouse.issue', name: 'Выдача со склада', module: 'warehouse' },
+  { code: 'materials.manage', name: 'Управление номенклатурой', module: 'warehouse' },
   // procurement ('procurement.manage' removed — M5, nothing checks it)
   { code: 'procurement.view', name: 'Просмотр закупок', module: 'procurement' },
   { code: 'procurement.quote', name: 'Ввод КП', module: 'procurement' },

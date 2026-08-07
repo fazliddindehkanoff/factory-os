@@ -94,11 +94,30 @@ export const departments = pgTable(
     companyId: uuid('company_id').references(() => companies.id),
     factoryId: uuid('factory_id').references(() => factories.id),
     name: text('name').notNull(),
+    // Otdel name translations; RU stays on `name` above for backward compatibility.
+    nameUz: text('name_uz'),
+    nameTr: text('name_tr'),
     type: text('type'),
     status: entityStatus('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ holdingIdx: index('departments_holding_idx').on(t.holdingId) }),
+);
+
+// Otdel (department) <-> branch (factory) multi-assignment: one department can
+// span several branches, and this is managed independently of the legacy single
+// `departments.factoryId` column (kept for the existing Structure.tsx tree view).
+export const departmentFactories = pgTable(
+  'department_factories',
+  {
+    departmentId: uuid('department_id')
+      .notNull()
+      .references(() => departments.id, { onDelete: 'cascade' }),
+    factoryId: uuid('factory_id')
+      .notNull()
+      .references(() => factories.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.departmentId, t.factoryId] }) }),
 );
 
 export const warehouses = pgTable(
@@ -111,6 +130,8 @@ export const warehouses = pgTable(
     companyId: uuid('company_id').references(() => companies.id),
     factoryId: uuid('factory_id').references(() => factories.id),
     name: text('name').notNull(),
+    nameUz: text('name_uz'),
+    nameTr: text('name_tr'),
     type: text('type'),
     status: entityStatus('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -128,8 +149,15 @@ export const users = pgTable(
     // The same person may authenticate through Telegram, the web dashboard, or both.
     username: text('username'),
     passwordHash: text('password_hash'),
+    // Set whenever an admin assigns/resets a dashboard password on someone's
+    // behalf (e.g. the phone-as-starting-password convenience) — cleared once
+    // the user sets their own password via the self-service endpoint.
+    mustChangePassword: boolean('must_change_password').notNull().default(false),
     fullName: text('full_name').notNull(),
-    phone: text('phone'),
+    // Normalized (digits-only, e.g. "998901234567") at every write site — see
+    // src/utils/phone.ts. Admin-provisioned users are looked up by this from the
+    // bot's /start contact-share flow, so it must stay unique and normalized.
+    phone: text('phone').unique(),
     email: text('email'),
     position: text('position'),
     pinHash: text('pin_hash'),
@@ -138,6 +166,21 @@ export const users = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ holdingIdx: index('users_holding_idx').on(t.holdingId) }),
+);
+
+// A user can belong to several otdels; the create-request department picker is
+// restricted to these. Independent of userRoles' scoped assignments (RBAC).
+export const userDepartments = pgTable(
+  'user_departments',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    departmentId: uuid('department_id')
+      .notNull()
+      .references(() => departments.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.userId, t.departmentId] }) }),
 );
 
 // ── RBAC: roles, permissions, mappings, scoped assignments ───────────────────
@@ -326,10 +369,34 @@ export const materials = pgTable(
     normalizedName: text('normalized_name'),
     sku: text('sku'),
     defaultUnit: text('default_unit'),
+    category: text('category'),
+    // Product title translations (name/RU above is the default; TR is the "original"
+    // language of the source nomenclature import, UZ is filled in by admins over time).
+    nameUz: text('name_uz'),
+    nameTr: text('name_tr'),
     status: entityStatus('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ holdingIdx: index('materials_holding_idx').on(t.holdingId) }),
+);
+
+// ── Unit types (managed, orderable list — replaces free-text units in the UI) ─
+export const unitTypes = pgTable(
+  'unit_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    holdingId: uuid('holding_id')
+      .notNull()
+      .references(() => holdings.id),
+    code: text('code').notNull(),
+    nameRu: text('name_ru').notNull(),
+    nameUz: text('name_uz'),
+    nameTr: text('name_tr'),
+    orderIndex: integer('order_index').notNull().default(0),
+    status: entityStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ holdingIdx: index('unit_types_holding_idx').on(t.holdingId) }),
 );
 
 // ── Workflow engine (data-driven routing — the single source of truth) ────────

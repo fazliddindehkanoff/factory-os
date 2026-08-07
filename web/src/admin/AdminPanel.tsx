@@ -7,26 +7,26 @@ import { Roles } from './Roles';
 import { WorkflowPage } from './Workflow';
 import { FormBuilder } from './FormBuilder';
 import { Settings } from './Settings';
-import { Materials } from './Materials';
 import { AuditLog } from './AuditLog';
+import { RequestsAdmin } from './Requests';
 
-type Tab = 'dashboard' | 'structure' | 'people' | 'roles' | 'workflow' | 'form' | 'materials' | 'audit' | 'settings';
+type Tab = 'dashboard' | 'requests' | 'structure' | 'people' | 'roles' | 'workflow' | 'form' | 'audit' | 'settings';
 
 const TABS: { key: Tab; label: string; perm: string | null }[] = [
   { key: 'dashboard', label: 'Обзор', perm: null },
+  { key: 'requests', label: 'Заявки', perm: null },
   { key: 'structure', label: 'Структура', perm: 'settings.manage' },
   { key: 'people', label: 'Люди', perm: 'users.manage' },
   { key: 'roles', label: 'Права', perm: 'roles.manage' },
   { key: 'workflow', label: 'Workflow', perm: 'workflows.manage' },
   { key: 'form', label: 'Форма', perm: 'settings.manage' },
-  { key: 'materials', label: 'Материалы', perm: 'settings.manage' },
   { key: 'audit', label: 'Аудит', perm: 'audit.view' },
   { key: 'settings', label: 'Настройки', perm: 'settings.manage' },
 ];
 
-export function AdminPanel({ permissions, onExit }: { permissions: string[]; onExit: () => void }) {
+export function AdminPanel({ permissions, isOwner, onExit }: { permissions: string[]; isOwner: boolean; onExit: () => void }) {
   const can = (p: string | null) => p === null || permissions.includes(p);
-  const visible = TABS.filter((t) => can(t.perm));
+  const visible = TABS.filter((t) => can(t.perm) && (t.key !== 'requests' || isOwner));
   const [tab, setTab] = useState<Tab>(visible[0]?.key ?? 'dashboard');
 
   return (
@@ -50,12 +50,12 @@ export function AdminPanel({ permissions, onExit }: { permissions: string[]; onE
       </div>
 
       {tab === 'dashboard' && <Dashboard />}
+      {tab === 'requests' && isOwner && <RequestsAdmin />}
       {tab === 'structure' && <Structure />}
       {tab === 'people' && <People />}
-      {tab === 'roles' && <Roles />}
+      {tab === 'roles' && <Roles canManage={isOwner} />}
       {tab === 'workflow' && <WorkflowPage />}
       {tab === 'form' && <FormBuilder />}
-      {tab === 'materials' && <Materials />}
       {tab === 'audit' && <AuditLog />}
       {tab === 'settings' && <Settings />}
     </div>

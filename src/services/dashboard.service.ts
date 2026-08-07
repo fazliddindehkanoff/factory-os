@@ -5,7 +5,7 @@
  *
  * Optimized: uses SQL-level filtering instead of loading all requests into memory.
  */
-import { and, count, desc, eq, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNotNull, ne, notInArray, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
 import { getRequestVisibility } from '../http/request-visibility.js';
@@ -119,7 +119,8 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
   const vis = await getRequestVisibility(db, userId);
   // Every count reflects what the user can SEE (top roles → whole holding), so the
   // KPIs match the lists they open. `baseWhere` is that visible-scope filter.
-  const baseWhere = vis.scope ? and(eq(schema.requests.holdingId, holdingId), vis.scope) : eq(schema.requests.holdingId, holdingId);
+  const visibleHolding = and(eq(schema.requests.holdingId, holdingId), ne(schema.requests.status, 'deleted'));
+  const baseWhere = vis.scope ? and(visibleHolding, vis.scope) : visibleHolding;
   const activityWhere = baseWhere;
 
   // Run count queries and activity in parallel — each touches only the rows it needs.
@@ -144,7 +145,7 @@ export async function getDashboard(db: Db, userId: string, holdingId: string | n
         and(
           eq(schema.requests.holdingId, holdingId),
           eq(schema.requests.requesterId, userId),
-          notInArray(schema.requests.status, ['draft']),
+          notInArray(schema.requests.status, ['draft', 'deleted']),
         ),
       ),
     // Лист Excel №14: свои заявки, возвращённые на доработку (needs_revision) —

@@ -66,10 +66,13 @@ async function call(path: string, opts: RequestInit = {}, retried = false): Prom
 
 export interface RequestItemInput {
   name: string;
+  materialId?: string | null;
   quantity: number;
   unitPrice: number;
   unit?: string;
   description?: string;
+  paymentType?: string;
+  ndsIncluded?: boolean;
 }
 
 export interface CreateRequestData {
@@ -87,14 +90,16 @@ export interface CreateRequestData {
 export const api = {
   loginTelegram: (initData: string) =>
     call('/auth/telegram', { method: 'POST', body: JSON.stringify({ initData }) }),
-  loginDev: (telegramId: string) =>
-    call('/auth/dev', { method: 'POST', body: JSON.stringify({ telegramId }) }),
+  loginDev: (login: string) =>
+    call('/auth/dev', { method: 'POST', body: JSON.stringify({ login }) }),
   // Dev/test only — 404 in production (stealth), callers must swallow the error.
-  devUsers: (): Promise<{ users: { username: string; fullName: string; roles: string[] }[]; pin: string }> =>
+  devUsers: (): Promise<{ users: { username: string; phone: string | null; fullName: string; roles: string[] }[]; pin: string }> =>
     call('/dev/users'),
   me: () => call('/me'),
   config: () => call('/config'),
   form: (screen: string) => call('/form/' + screen),
+  unitTypes: () => call('/unit-types'),
+  materials: (search?: string) => call('/materials' + (search ? `?search=${encodeURIComponent(search)}` : '')),
   dashboard: () => call('/dashboard'),
   notificationsUnreadCount: () => call('/me/notifications/unread-count'),
   notifications: (unreadOnly?: boolean) => call('/me/notifications' + (unreadOnly ? '?unread=1' : '')),
@@ -194,6 +199,9 @@ export const api = {
   // ── Admin / constructor API (everything is holding-scoped server-side) ──
   admin: {
     overview: () => call('/admin/overview'),
+    requests: () => call('/admin/requests'),
+    deleteRequest: (id: string) => call('/admin/requests/' + id, { method: 'DELETE' }),
+    deleteAllRequests: () => call('/admin/requests/delete-all', { method: 'POST' }),
 
     // Structure
     structure: () => call('/admin/structure'),
@@ -202,10 +210,10 @@ export const api = {
     renameFactory: (id: string, name: string) =>
       call('/admin/factories/' + id, { method: 'PUT', body: JSON.stringify({ name }) }),
     deleteFactory: (id: string) => call('/admin/factories/' + id, { method: 'DELETE' }),
-    createDepartment: (name: string, factoryId: string | null) =>
-      call('/admin/departments', { method: 'POST', body: JSON.stringify({ name, factory_id: factoryId }) }),
-    renameDepartment: (id: string, name: string) =>
-      call('/admin/departments/' + id, { method: 'PUT', body: JSON.stringify({ name }) }),
+    createDepartment: (name: string, factoryId: string | null, nameUz?: string, nameTr?: string) =>
+      call('/admin/departments', { method: 'POST', body: JSON.stringify({ name, factory_id: factoryId, nameUz, nameTr }) }),
+    renameDepartment: (id: string, name: string, nameUz?: string, nameTr?: string) =>
+      call('/admin/departments/' + id, { method: 'PUT', body: JSON.stringify({ name, nameUz, nameTr }) }),
     deleteDepartment: (id: string) => call('/admin/departments/' + id, { method: 'DELETE' }),
     departmentUsers: (id: string) => call(`/admin/departments/${id}/users`),
     createWarehouse: (name: string, factoryId: string | null) =>

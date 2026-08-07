@@ -19,6 +19,7 @@
     "seed:test": "tsx src/db/seed-test-cli.ts",
     "seed:test-logins": "tsx src/db/seed-test-logins-cli.ts",
     "seed:demo-workflows": "tsx src/db/seed-demo-workflows-cli.ts",
+    "seed:namenklatura": "tsx src/db/seed-namenklatura-cli.ts",
     "tenant:setup": "tsx src/db/tenant-setup-cli.ts",
     "smoke:golden": "tsx src/smoke/golden.ts"
   },
@@ -28,15 +29,18 @@
     "@tabler/icons": "^3.46.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "grammy": "^1.44.0",
     "helmet": "^8.2.0",
+    "multer": "^2.2.0",
     "pg": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
     "@types/node": "^26.0.0",
     "@types/pg": "^8.20.0",
     "@types/supertest": "^7.2.0",

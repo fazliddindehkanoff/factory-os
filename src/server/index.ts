@@ -7,6 +7,7 @@ import { createBot, makeNotifier, type Notifier } from '../bot/bot.js';
 import { eq } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
+import { normalizePhone } from '../auth/phone.js';
 import { runEscalations } from '../services/escalation.service.js';
 import { runDigests } from '../services/digest.service.js';
 
@@ -23,10 +24,25 @@ let notify: Notifier | undefined;
 let bot: ReturnType<typeof createBot> | undefined;
 if (env.BOT_TOKEN) {
   const appUrl = env.APP_URL ?? `http://localhost:${env.PORT}`;
-  bot = createBot(env.BOT_TOKEN, appUrl, async (tgId) => {
-    const [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgId));
-    return u?.holdingId ? getUserPermissionCodes(db, u.id) : [];
-  });
+  bot = createBot(
+    env.BOT_TOKEN,
+    appUrl,
+    async (tgId) => {
+      const [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgId));
+      return u?.holdingId ? getUserPermissionCodes(db, u.id) : [];
+    },
+    async (tgId) => {
+      const [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgId));
+      return !!u?.holdingId;
+    },
+    async (rawPhone, tgId) => {
+      const phone = normalizePhone(rawPhone);
+      const [u] = await db.select().from(schema.users).where(eq(schema.users.phone, phone));
+      if (!u) return { linked: false };
+      await db.update(schema.users).set({ telegramId: tgId, status: 'active', updatedAt: new Date() }).where(eq(schema.users.id, u.id));
+      return { linked: true, fullName: u.fullName };
+    },
+  );
   notify = makeNotifier(bot);
   bot.start({ onStart: (info) => console.log(`🤖 Bot @${info.username} started`) }).catch((e) =>
     console.error('Bot error:', (e as Error).message),

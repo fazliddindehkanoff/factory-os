@@ -9,7 +9,7 @@ import { ProcurementScreen } from './screens/Procurement';
 import { Icon, TINT_BG, TINT_FG } from './icons';
 import { applyTheme, getTheme, type Theme } from './theme';
 import { DASHBOARD_ACTIONS } from './dashboard.config';
-import { LANG_LABELS, SWITCHER_LANGS, useI18n, type I18nKey, type Lang } from './i18n';
+import { LANG_LABELS, SWITCHER_LANGS, LANGUAGE_RELOAD_EVENT, useI18n, localizedName, type I18nKey, type Lang } from './i18n';
 // Single source of truth for status labels/progress (covers every workflow-driven
 // status incl. finance_payment/delivery/receiving/issue) — see screens/shared.tsx.
 import { statusMeta } from './screens/shared';
@@ -41,7 +41,7 @@ const ACTION_LABEL_KEYS: Record<string, I18nKey> = {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Me {
-  user: { id: string; fullName: string; holdingId: string | null; roleName?: string | null };
+  user: { id: string; fullName: string; holdingId: string | null; roleName?: string | null; roleCodes?: string[] };
   permissions: string[];
 }
 interface RequestRow {
@@ -157,6 +157,22 @@ type Screen =
   | { name: 'menu' }
   | { name: 'admin' };
 
+const SCREEN_DRAFT_KEY = 'factoryos.langSwitch.screen';
+const CREATE_DRAFT_KEY = 'factoryos.langSwitch.createDraft';
+
+function initialScreen(): Screen {
+  try {
+    const raw = sessionStorage.getItem(SCREEN_DRAFT_KEY);
+    if (!raw) return { name: 'home' };
+    sessionStorage.removeItem(SCREEN_DRAFT_KEY);
+    const saved = JSON.parse(raw) as Screen;
+    if (saved && typeof saved === 'object' && 'name' in saved) return saved;
+  } catch {
+    /* ignore malformed one-shot screen drafts */
+  }
+  return { name: 'home' };
+}
+
 interface DashboardData {
   myActive: number;
   myCreated: number;
@@ -187,7 +203,7 @@ export default function App() {
   const [config, setConfig] = useState<TenantConfig | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
-  const [screen, setScreen] = useState<Screen>({ name: 'home' });
+  const [screen, setScreen] = useState<Screen>(() => initialScreen());
   const [theme, setTheme] = useState<Theme>(getTheme());
   const [unread, setUnread] = useState<number>(0);
   // Test mode: the seeded test users for the DEV role-switcher. Stays null in
@@ -200,6 +216,12 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    const saveScreen = () => sessionStorage.setItem(SCREEN_DRAFT_KEY, JSON.stringify(screen));
+    window.addEventListener(LANGUAGE_RELOAD_EVENT, saveScreen);
+    return () => window.removeEventListener(LANGUAGE_RELOAD_EVENT, saveScreen);
+  }, [screen]);
 
   // Header bell badge — unread notification count (best-effort; failure keeps 0).
   const refreshUnread = useCallback(() => {
@@ -229,11 +251,13 @@ export default function App() {
         const tg = getTelegram();
         tg?.ready?.();
         tg?.expand?.();
-        // Test mode (docs/TEST_MODE.md): `?user=sklad_01` pins THIS WINDOW to a test
+        // Test mode (docs/TEST_MODE.md): `?phone=+998...` (or legacy
+        // `?user=sklad_01`) pins THIS WINDOW to a test
         // user — the token lives in sessionStorage, so several windows can run
         // different roles side by side. Dev auth is stealth-404 in production, so a
         // stray ?user= there simply falls through to the normal login paths.
-        const urlUser = new URLSearchParams(window.location.search).get('user')?.trim();
+        const query = new URLSearchParams(window.location.search);
+        const urlUser = (query.get('phone') ?? query.get('user'))?.trim();
         if (urlUser && urlUser !== getTestUser()) {
           const r = await api.loginDev(urlUser);
           setToken(r.token, { perWindow: true });
@@ -370,7 +394,7 @@ export default function App() {
             onOpen={(id) => setScreen({ name: 'detail', id, from: 'list' })}
           />
         )}
-        {screen.name === 'create' && <CreateRequest onDone={() => setScreen({ name: 'list' })} onCreated={(id) => setScreen({ name: 'detail', id, from: 'list' })} />}
+        {screen.name === 'create' && <CreateRequest me={me} onDone={() => setScreen({ name: 'list' })} onCreated={(id) => setScreen({ name: 'detail', id, from: 'list' })} />}
         {screen.name === 'detail' && (
           <RequestDetailView id={screen.id} me={me} tick={tick} onBack={() => setScreen({ name: screen.from ?? 'list' } as Screen)} />
         )}
@@ -387,7 +411,7 @@ export default function App() {
         )}
         {screen.name === 'menu' && <Menu me={me} theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onLogout={() => { clearToken(); setMe(null); }} onProfileUpdated={loadMe} />}
         {screen.name === 'admin' && (
-          <AdminPanel permissions={me.permissions} onExit={() => setScreen({ name: 'home' })} />
+          <AdminPanel permissions={me.permissions} isOwner={!!me.user.roleCodes?.includes('owner')} onExit={() => setScreen({ name: 'home' })} />
         )}
       </main>
 
@@ -1369,8 +1393,18 @@ interface FormField {
 }
 
 type DraftRequestItem = {
+  materialId?: string | null;
   values: Record<string, string | boolean>;
   files: Record<string, { name: string; size: number; data: string }[]>;
+};
+
+type CatalogMaterial = {
+  id: string;
+  sku: string | null;
+  name: string;
+  nameUz: string | null;
+  nameTr: string | null;
+  defaultUnit: string | null;
 };
 
 const emptyRequestItem = (): DraftRequestItem => ({ values: {}, files: {} });
@@ -1406,11 +1440,33 @@ const parseDescRows = (desc?: string): { label: string; value: string }[] =>
         });
 
 /** Create wizard rendered entirely from the admin-configured schema (/api/form/request_create). */
-function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (id: string) => void }) {
+type DeptOption = { id: string; name: string; nameUz: string | null; nameTr: string | null };
+type ConfigUser = { id: string; fullName: string; departmentId?: string | null; departments?: DeptOption[] };
+
+const userDepartmentLabel = (user: ConfigUser, lang: Lang): string => {
+  const names = (user.departments ?? []).map((d) => localizedName(d, lang)).filter(Boolean);
+  return names.length ? names.join(', ') : '';
+};
+
+const userOptionLabel = (user: ConfigUser, lang: Lang): string => {
+  const dept = userDepartmentLabel(user, lang);
+  return dept ? `${user.fullName} · ${dept}` : user.fullName;
+};
+
+const matchConfigUser = (users: ConfigUser[], value: unknown): ConfigUser | undefined => {
+  const text = String(value ?? '').trim();
+  if (!text) return undefined;
+  return users.find((u) => u.fullName === text || u.id === text);
+};
+
+function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; onCreated: (id: string) => void }) {
+  const { lang } = useI18n();
   const [fields, setFields] = useState<FormField[] | null>(null);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
-  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
-  const [configUsers, setConfigUsers] = useState<{ id: string; fullName: string }[]>([]);
+  const [departments, setDepartments] = useState<DeptOption[]>([]);
+  const [unitTypes, setUnitTypes] = useState<DeptOption[]>([]);
+  const [materials, setMaterials] = useState<CatalogMaterial[]>([]);
+  const [configUsers, setConfigUsers] = useState<ConfigUser[]>([]);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [idx, setIdx] = useState(0);
   const [showErrors, setShowErrors] = useState(false);
@@ -1418,26 +1474,42 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
   const [saving, setSaving] = useState(false);
   const [requestItems, setRequestItems] = useState<DraftRequestItem[]>([emptyRequestItem()]);
   const submitLock = useRef(false);
+  const autoDepartmentRef = useRef<string>('');
 
   useEffect(() => {
     api
       .form('request_create')
       .then(async (f: { fields?: FormField[] }) => {
         let whs: { id: string; name: string }[] = [];
-        let depts: { id: string; name: string }[] = [];
-        let usrs: { id: string; fullName: string }[] = [];
+        let depts: DeptOption[] = [];
+        let usrs: ConfigUser[] = [];
+        let units: DeptOption[] = [];
+        let mats: CatalogMaterial[] = [];
         try {
-          const c = (await api.config()) as { warehouses?: { id: string; name: string }[]; departments?: { id: string; name: string }[]; users?: { id: string; fullName: string }[] };
+          const c = (await api.config()) as { warehouses?: { id: string; name: string }[]; departments?: DeptOption[]; users?: ConfigUser[] };
           whs = c.warehouses ?? [];
           depts = c.departments ?? [];
           usrs = c.users ?? [];
         } catch {
           /* config is optional */
         }
+        try {
+          const ut = (await api.unitTypes()) as { id: string; nameRu: string; nameUz: string | null; nameTr: string | null }[];
+          units = ut.map((u) => ({ id: u.id, name: u.nameRu, nameUz: u.nameUz, nameTr: u.nameTr }));
+        } catch {
+          /* unit types are optional */
+        }
+        try {
+          mats = (await api.materials()) as CatalogMaterial[];
+        } catch {
+          /* nomenclature autocomplete is optional */
+        }
         const fs = Array.isArray(f.fields) ? f.fields : [];
         setFields(fs);
         setWarehouses(whs);
         setDepartments(depts);
+        setUnitTypes(units);
+        setMaterials(mats);
         setConfigUsers(usrs);
         const init: Record<string, string | boolean> = {};
         for (const fld of fs) {
@@ -1447,24 +1519,63 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
             init[fld.key] = fld.required && opts[0] ? opts[0].value : '';
           } else init[fld.key] = '';
         }
-        setValues(init);
+        let draft: { values?: Record<string, string | boolean>; requestItems?: DraftRequestItem[]; idx?: number } | null = null;
+        try { draft = JSON.parse(sessionStorage.getItem(CREATE_DRAFT_KEY) || 'null'); } catch { draft = null; }
+        if (draft) sessionStorage.removeItem(CREATE_DRAFT_KEY);
+        const initialValues = draft?.values && typeof draft.values === 'object' ? { ...init, ...draft.values } : init;
+        const currentUser = usrs.find((user) => user.id === me.user.id);
+        const requesterDepartmentId = currentUser?.departments?.[0]?.id ?? currentUser?.departmentId ?? '';
+        const defaultDepartmentId = requesterDepartmentId || (depts.length === 1 ? depts[0].id : '');
+        if (!initialValues.department && defaultDepartmentId) {
+          initialValues.department = defaultDepartmentId;
+          autoDepartmentRef.current = defaultDepartmentId;
+        }
+        setValues(initialValues);
+        if (Array.isArray(draft?.requestItems) && draft.requestItems.length > 0) setRequestItems(draft.requestItems);
+        const draftIdx = draft?.idx;
+        if (Number.isInteger(draftIdx)) setIdx(Math.max(0, Math.min(Number(draftIdx), fs.length)));
       })
       .catch((e) => setError((e as Error).message));
-  }, []);
+  }, [me.user.id]);
+
+  useEffect(() => {
+    const saveDraft = () => {
+      sessionStorage.setItem(CREATE_DRAFT_KEY, JSON.stringify({ values, requestItems, idx }));
+    };
+    window.addEventListener(LANGUAGE_RELOAD_EVENT, saveDraft);
+    return () => window.removeEventListener(LANGUAGE_RELOAD_EVENT, saveDraft);
+  }, [values, requestItems, idx]);
 
   const optionsFor = (f: FormField): { value: string; label: string; meta?: string }[] =>
     f.key === 'cf_department'
-      ? departments.map((d) => ({ value: d.name, label: d.name }))
+      ? departments.map((d) => ({ value: d.name, label: localizedName(d, lang) }))
       : f.key === 'department'
-        ? departments.map((d) => ({ value: d.id, label: d.name }))
+        ? departments.map((d) => ({ value: d.id, label: localizedName(d, lang) }))
       : f.key === 'cf_dept_head'
-        ? configUsers.map((u) => ({ value: u.fullName, label: u.fullName }))
+        ? configUsers.map((u) => ({ value: u.fullName, label: userOptionLabel(u, lang) }))
         : f.key === 'warehouse'
       ? warehouses.map((w) => ({ value: w.name, label: w.name }))
+      : f.key === 'unit'
+        ? unitTypes.map((u) => ({ value: u.name, label: localizedName(u, lang) }))
       : Array.isArray(f.options)
-        ? f.options
+        ? f.options.map((o) => {
+            const user = matchConfigUser(configUsers, o.value) ?? matchConfigUser(configUsers, o.label);
+            return user ? { ...o, label: userOptionLabel(user, lang) } : o;
+          })
         : [];
-  const set = (key: string, v: string | boolean) => setValues((p) => ({ ...p, [key]: v }));
+  const set = (key: string, v: string | boolean) => setValues((p) => {
+    const next = { ...p, [key]: v };
+    if (typeof v === 'string') {
+      const picked = matchConfigUser(configUsers, v);
+      const deptId = picked?.departments?.[0]?.id ?? picked?.departmentId ?? '';
+      if (deptId && (!p.department || p.department === autoDepartmentRef.current)) {
+        next.department = deptId;
+        autoDepartmentRef.current = deptId;
+      }
+    }
+    if (key === 'department' && v !== autoDepartmentRef.current) autoDepartmentRef.current = '';
+    return next;
+  });
 
   const steps = fields ? [...new Set(fields.map((f) => f.step))].sort((a, b) => a - b) : [];
   const total = steps.length + 1; // field steps + review
@@ -1511,6 +1622,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
         const name = String(it.values.itemName ?? '').trim();
         return {
           name,
+          materialId: it.materialId ?? null,
           quantity: Number(it.values.quantity) || 0,
           unit: String(it.values.unit ?? '').trim() || undefined,
           unitPrice: 0,
@@ -1522,6 +1634,34 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
     setRequestItems((prev) =>
       prev.map((it, i) => (i === index ? { ...it, values: { ...it.values, [key]: value } } : it)),
     );
+  };
+  const normalizedCatalogValue = (value: unknown) => String(value ?? '').trim().toLocaleLowerCase();
+  const materialTitle = (material: CatalogMaterial) => localizedName(material, lang);
+  const findMaterial = (key: string, value: string): CatalogMaterial | undefined => {
+    const needle = normalizedCatalogValue(value);
+    if (!needle) return undefined;
+    return materials.find((material) => {
+      if (key === 'itemCode') return normalizedCatalogValue(material.sku) === needle;
+      return [material.name, material.nameUz, material.nameTr].some((title) => normalizedCatalogValue(title) === needle);
+    });
+  };
+  const updateProductLookupValue = (index: number, key: string, value: string) => {
+    const material = findMaterial(key, value);
+    setRequestItems((prev) => prev.map((item, i) => {
+      if (i !== index) return item;
+      if (!material) return { ...item, materialId: null, values: { ...item.values, [key]: value } };
+      return {
+        ...item,
+        materialId: material.id,
+        values: {
+          ...item.values,
+          [key]: value,
+          itemName: materialTitle(material),
+          itemCode: material.sku ?? '',
+          ...(material.defaultUnit ? { unit: material.defaultUnit } : {}),
+        },
+      };
+    }));
   };
   const addRequestItemAfter = (index: number) => {
     setRequestItems((prev) => {
@@ -1542,7 +1682,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
 
   const productFieldFilled = (f: FormField, item: DraftRequestItem): boolean => {
     const v = item.values[f.key];
-    if (f.type === 'select' && optionsFor(f).length === 0) return true;
+    if ((f.type === 'select' || f.key === 'unit') && optionsFor(f).length === 0) return true;
     if (f.type === 'checkbox') return v === true;
     if (f.type === 'number') return Number(v) > 0;
     if (f.type === 'file') return (item.files[f.key] ?? []).length > 0;
@@ -1792,7 +1932,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
       return (
         <div>
           <label style={fieldLabel}>{f.label}{optional}</label>
-          <textarea value={String(values[f.key] ?? '')} onChange={(e) => set(f.key, e.target.value)} placeholder={f.placeholder ?? ''} rows={3} style={{ ...input, resize: 'none', lineHeight: 1.45 }} />
+          <textarea value={String(values[f.key] ?? '')} onChange={(e) => set(f.key, e.target.value)} placeholder={f.placeholder ?? ''} rows={3} style={{ ...input, minHeight: 92, resize: 'vertical', lineHeight: 1.45 }} />
         </div>
       );
     }
@@ -1851,9 +1991,10 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
       const renderProductField = (pf: FormField, item: DraftRequestItem, itemIndex: number) => {
         const v = item.values[pf.key];
         const basePlaceholder = pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
+        const isManagedSelect = pf.key === 'unit' || pf.type === 'select';
         // FIXES 2026-07-17: без префикса «Выберите:» — в плейсхолдере остаётся только название поля.
-        const placeholder = pf.type === 'select' ? pf.label : basePlaceholder;
-        if (pf.type === 'select') {
+        const placeholder = isManagedSelect ? pf.label : basePlaceholder;
+        if (isManagedSelect) {
           const opts = optionsFor(pf);
           return (
             <div style={{ position: 'relative' }}>
@@ -1882,7 +2023,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
               onChange={(e) => updateRequestItemValue(itemIndex, pf.key, e.target.value)}
               placeholder={placeholder}
               rows={3}
-              style={{ ...input, resize: 'none', lineHeight: 1.45 }}
+              style={{ ...input, minHeight: 92, resize: 'vertical', lineHeight: 1.45 }}
             />
           );
         }
@@ -1939,6 +2080,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
                 value={String(v ?? '')}
                 onChange={(e) => updateRequestItemValue(itemIndex, pf.key, e.target.value)}
                 onClick={openDatePicker}
+                onFocus={openDatePicker}
                 type="date"
                 min={new Date().toISOString().slice(0, 10)}
                 style={{ ...input, color: hasValue ? 'var(--fg)' : 'transparent' }}
@@ -1952,15 +2094,33 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
           );
         }
         return (
-          <input
-            aria-label={pf.label}
-            value={String(v ?? '')}
-            onChange={(e) => updateRequestItemValue(itemIndex, pf.key, pf.type === 'number' ? e.target.value.replace(/[^\d]/g, '') : e.target.value)}
-            type="text"
-            inputMode={pf.type === 'number' ? 'numeric' : undefined}
-            placeholder={placeholder}
-            style={{ ...input, fontFamily: pf.type === 'number' ? "'IBM Plex Mono', monospace" : input.fontFamily, color: String(v ?? '') ? 'var(--fg)' : 'var(--fg3)' }}
-          />
+          <>
+            <input
+              aria-label={pf.label}
+              value={String(v ?? '')}
+              onChange={(e) => {
+                const value = pf.type === 'number' ? e.target.value.replace(/[^\d]/g, '') : e.target.value;
+                if (pf.key === 'itemName' || pf.key === 'itemCode') updateProductLookupValue(itemIndex, pf.key, value);
+                else updateRequestItemValue(itemIndex, pf.key, value);
+              }}
+              list={pf.key === 'itemName' ? `request-material-title-list-${itemIndex}` : pf.key === 'itemCode' ? `request-material-code-list-${itemIndex}` : undefined}
+              autoComplete={pf.key === 'itemName' || pf.key === 'itemCode' ? 'off' : undefined}
+              type="text"
+              inputMode={pf.type === 'number' ? 'numeric' : undefined}
+              placeholder={placeholder}
+              style={{ ...input, fontFamily: pf.type === 'number' ? "'IBM Plex Mono', monospace" : input.fontFamily, color: String(v ?? '') ? 'var(--fg)' : 'var(--fg3)' }}
+            />
+            {pf.key === 'itemName' && (
+              <datalist id={`request-material-title-list-${itemIndex}`}>
+                {materials.map((material) => <option key={material.id} value={materialTitle(material)}>{material.sku ?? ''}</option>)}
+              </datalist>
+            )}
+            {pf.key === 'itemCode' && (
+              <datalist id={`request-material-code-list-${itemIndex}`}>
+                {materials.filter((material) => material.sku).map((material) => <option key={material.id} value={material.sku ?? ''}>{materialTitle(material)}</option>)}
+              </datalist>
+            )}
+          </>
         );
       };
       const renderProductFields = (item: DraftRequestItem, itemIndex: number) => {
@@ -2068,6 +2228,7 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
           value={String(values[f.key] ?? '')}
           onChange={(e) => set(f.key, e.target.value)}
           onClick={openDatePicker}
+          onFocus={openDatePicker}
           type={f.type === 'date' ? 'date' : 'text'}
           // №5: прошлые даты выбрать нельзя — минимум сегодня (сервер дублирует проверку).
           min={f.type === 'date' ? new Date().toISOString().slice(0, 10) : undefined}
@@ -2110,7 +2271,20 @@ function CreateRequest({ onDone, onCreated }: { onDone: () => void; onCreated: (
       {!onReview && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {stepFields(steps[idx]).map((f) => (
-            <div key={f.key}>{renderField(f)}</div>
+            <div key={f.key} style={{ display: 'contents' }}>
+              <div>{renderField(f)}</div>
+              {idx === 0 && f.key === 'requestType' && (
+                <div>
+                  <label style={fieldLabel}>Заявитель</label>
+                  <input
+                    aria-label="Заявитель"
+                    value={userOptionLabel(configUsers.find((user) => user.id === me.user.id) ?? { id: me.user.id, fullName: me.user.fullName }, lang)}
+                    readOnly
+                    style={{ ...input, color: 'var(--fg2)', cursor: 'default' }}
+                  />
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -2672,7 +2846,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
                 <div key={it.id} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '12px 0', borderTop: '1px solid var(--line)' }}>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     {/* 1) Наименование товара — заголовок позиции. */}
-                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)' }}>{it.name}</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg)', overflowWrap: 'anywhere', lineHeight: 1.35 }}>{it.name}</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
                       {/* Detail rows intentionally match the creation preview. */}
                       <div style={{ display: 'flex', gap: 6, fontSize: 13, lineHeight: 1.4 }}>
@@ -2929,6 +3103,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
  *  «на доработке»: поправить поля перед «Отправить повторно». Кнопка появляется
  *  только по canEdit из ответа сервера; состав полей = принимаемым PUT /requests/:id. */
 function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClose: () => void; onSaved: () => void }) {
+  const { lang } = useI18n();
   const cf0 = req.customFields && typeof req.customFields === 'object' ? (req.customFields as Record<string, unknown>) : {};
   // Лист Excel №1: полная правка — тип, отдел и настраиваемые поля (объект, место закупа).
   const [requestType, setRequestType] = useState(req.requestType ?? '');
@@ -2955,24 +3130,33 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
   const [customFieldDefs, setCustomFieldDefs] = useState<FormField[]>([]);
   const [productFieldDefs, setProductFieldDefs] = useState<FormField[]>([]);
   const [typeOptions, setTypeOptions] = useState<{ value: string; label: string }[]>([]);
-  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
+  const [departments, setDepartments] = useState<DeptOption[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
-  const [configUsers, setConfigUsers] = useState<{ id: string; fullName: string }[]>([]);
+  const [unitTypes, setUnitTypes] = useState<DeptOption[]>([]);
+  const [configUsers, setConfigUsers] = useState<ConfigUser[]>([]);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const autoDepartmentRef = useRef<string>('');
 
   useEffect(() => {
     api.form('request_create').then(async (f: { fields?: FormField[] }) => {
       let whs: { id: string; name: string }[] = [];
-      let depts: { id: string; name: string }[] = [];
-      let usrs: { id: string; fullName: string }[] = [];
+      let depts: DeptOption[] = [];
+      let usrs: ConfigUser[] = [];
+      let units: DeptOption[] = [];
       try {
-        const c = (await api.config()) as { warehouses?: { id: string; name: string }[]; departments?: { id: string; name: string }[]; users?: { id: string; fullName: string }[] };
+        const c = (await api.config()) as { warehouses?: { id: string; name: string }[]; departments?: DeptOption[]; users?: ConfigUser[] };
         whs = c.warehouses ?? [];
         depts = c.departments ?? [];
         usrs = c.users ?? [];
       } catch {
         /* config is optional */
+      }
+      try {
+        const ut = (await api.unitTypes()) as { id: string; nameRu: string; nameUz: string | null; nameTr: string | null }[];
+        units = ut.map((u) => ({ id: u.id, name: u.nameRu, nameUz: u.nameUz, nameTr: u.nameTr }));
+      } catch {
+        /* unit types are optional */
       }
       const fs = Array.isArray(f.fields) ? f.fields : [];
       const PRODUCT_LEVEL = new Set(['warehouse', 'purpose', 'priority', 'neededDate', 'note', 'attachment']);
@@ -2982,14 +3166,20 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
       setProductFieldDefs(pfs);
       setWarehouses(whs);
       setDepartments(depts);
+      setUnitTypes(units);
       setConfigUsers(usrs);
       const optionsForLoaded = (field: FormField) =>
         field.key === 'warehouse'
           ? whs.map((w) => ({ value: w.name, label: w.name }))
           : field.key === 'cf_dept_head'
-            ? usrs.map((u) => ({ value: u.fullName, label: u.fullName }))
+            ? usrs.map((u) => ({ value: u.fullName, label: userOptionLabel(u, lang) }))
+            : field.key === 'unit'
+              ? units.map((u) => ({ value: u.name, label: u.name }))
             : Array.isArray(field.options)
-              ? field.options
+              ? field.options.map((o) => {
+                  const user = matchConfigUser(usrs, o.value) ?? matchConfigUser(usrs, o.label);
+                  return user ? { ...o, label: userOptionLabel(user, lang) } : o;
+                })
               : [];
       setItemEdits(baseEditItems.map((item, itemIndex) => {
         const source = req.items[itemIndex];
@@ -3030,18 +3220,32 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
   const labelStyle: CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--fg2)', marginBottom: 6 };
   const optionsForEdit = (f: FormField): { value: string; label: string; meta?: string }[] =>
     f.key === 'cf_department'
-      ? departments.map((d) => ({ value: d.name, label: d.name }))
+      ? departments.map((d) => ({ value: d.name, label: localizedName(d, lang) }))
       : f.key === 'department'
-        ? departments.map((d) => ({ value: d.id, label: d.name }))
+        ? departments.map((d) => ({ value: d.id, label: localizedName(d, lang) }))
         : f.key === 'cf_dept_head'
-          ? configUsers.map((u) => ({ value: u.fullName, label: u.fullName }))
+          ? configUsers.map((u) => ({ value: u.fullName, label: userOptionLabel(u, lang) }))
           : f.key === 'warehouse'
             ? warehouses.map((w) => ({ value: w.name, label: w.name }))
+            : f.key === 'unit'
+              ? unitTypes.map((u) => ({ value: u.name, label: localizedName(u, lang) }))
             : Array.isArray(f.options)
-              ? f.options
+              ? f.options.map((o) => {
+                  const user = matchConfigUser(configUsers, o.value) ?? matchConfigUser(configUsers, o.label);
+                  return user ? { ...o, label: userOptionLabel(user, lang) } : o;
+                })
               : [];
   const setItemEdit = (index: number, key: string, value: string | boolean) => {
     setItemEdits((prev) => prev.map((it, i) => (i === index ? { ...it, values: { ...it.values, [key]: value } } : it)));
+  };
+  const setCustomValue = (key: string, value: string) => {
+    setCustomValues((p) => ({ ...p, [key]: value }));
+    const picked = matchConfigUser(configUsers, value);
+    const deptId = picked?.departments?.[0]?.id ?? picked?.departmentId ?? '';
+    if (deptId && (!departmentId || departmentId === autoDepartmentRef.current)) {
+      setDepartmentId(deptId);
+      autoDepartmentRef.current = deptId;
+    }
   };
   const addItemEdit = (index: number) => {
     setItemEdits((prev) => {
@@ -3091,8 +3295,9 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
       .filter((it) => it.name);
   const renderEditProductField = (pf: FormField, item: EditDraftItem, itemIndex: number) => {
     const v = item.values[pf.key];
-    const placeholder = pf.type === 'select' ? pf.label : pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
-    if (pf.type === 'select') {
+    const isManagedSelect = pf.key === 'unit' || pf.type === 'select';
+    const placeholder = isManagedSelect ? pf.label : pf.key === 'neededDate' ? 'Ожидаемая дата получения' : pf.placeholder ?? pf.label;
+    if (isManagedSelect) {
       const opts = optionsForEdit(pf);
       return (
         <div style={{ position: 'relative' }}>
@@ -3105,13 +3310,13 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
       );
     }
     if (pf.type === 'textarea') {
-      return <textarea aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, e.target.value)} placeholder={placeholder} rows={3} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.45 }} />;
+      return <textarea aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, e.target.value)} placeholder={placeholder} rows={3} style={{ ...inputStyle, minHeight: 92, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.45 }} />;
     }
     if (pf.type === 'date') {
       const hasValue = String(v ?? '').trim().length > 0;
       return (
         <div style={{ position: 'relative' }}>
-          <input aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, e.target.value)} onClick={openDatePicker} type="date" min={new Date().toISOString().slice(0, 10)} style={{ ...inputStyle, color: hasValue ? 'var(--fg)' : 'transparent' }} />
+          <input aria-label={pf.label} value={String(v ?? '')} onChange={(e) => setItemEdit(itemIndex, pf.key, e.target.value)} onClick={openDatePicker} onFocus={openDatePicker} type="date" min={new Date().toISOString().slice(0, 10)} style={{ ...inputStyle, color: hasValue ? 'var(--fg)' : 'transparent' }} />
           {!hasValue && <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--fg3)', fontSize: 14, background: 'var(--card)', paddingRight: 8 }}>{placeholder}</span>}
         </div>
       );
@@ -3164,7 +3369,7 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
       : [
           { key: 'itemName', label: 'Наименование', type: 'text', system: true, required: true, placeholder: 'Название продукта', options: [], step: 1 },
           { key: 'quantity', label: 'Количество', type: 'number', system: true, required: true, placeholder: '0', options: [], step: 1 },
-          { key: 'unit', label: 'Ед. изм.', type: 'text', system: true, required: false, placeholder: 'шт, кг...', options: [], step: 1 },
+          { key: 'unit', label: 'Ед. изм.', type: 'select', system: true, required: false, placeholder: 'Ед. изм.', options: [], step: 1 },
           { key: 'note', label: 'Примечание', type: 'textarea', system: true, required: false, placeholder: 'Назначение, склад, срочность, примечания...', options: [], step: 1 },
         ] as FormField[];
     const rendered: ReactNode[] = [];
@@ -3239,16 +3444,16 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
         {departments.length > 0 && (
           <div style={{ marginBottom: 12 }}>
             <div style={labelStyle}>Отдел</div>
-            <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} style={inputStyle}>
+            <select value={departmentId} onChange={(e) => { autoDepartmentRef.current = ''; setDepartmentId(e.target.value); }} style={inputStyle}>
               <option value="">— не выбран —</option>
-              {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              {departments.map((d) => <option key={d.id} value={d.id}>{localizedName(d, lang)}</option>)}
             </select>
           </div>
         )}
         {customFieldDefs.map((f) => (
           <div key={f.key} style={{ marginBottom: 12 }}>
             <div style={labelStyle}>{f.key === 'origin' ? 'Место закупа' : f.label}</div>
-            <select value={customValues[f.key] ?? ''} onChange={(e) => setCustomValues((p) => ({ ...p, [f.key]: e.target.value }))} style={inputStyle}>
+            <select value={customValues[f.key] ?? ''} onChange={(e) => setCustomValue(f.key, e.target.value)} style={inputStyle}>
               <option value="">— не выбрано —</option>
               {f.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
@@ -3396,7 +3601,7 @@ function ActionModal({
                   <div key={item.id} style={{ border: '1px solid var(--border)', borderRadius: 11, background: 'var(--card)', padding: 10 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div>
+                        <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--fg)', overflowWrap: 'anywhere', lineHeight: 1.3 }}>{item.name}</div>
                         <div style={{ fontSize: 12, color: 'var(--fg3)', marginTop: 2 }}>{Number(item.quantity)}{item.unit ? ` ${item.unit}` : ''}</div>
                       </div>
                       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700, color: 'var(--fg)', flex: 'none' }}>{total.toLocaleString('ru-RU')}</div>
@@ -3431,18 +3636,20 @@ function ActionModal({
                         style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
                       />
                     )}
-                    <select
-                      value={itemPaymentTypes[item.id] ?? ''}
-                      onChange={(e) => setItemPaymentTypes((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                      style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
-                    >
-                      <option value="" disabled>{t('proc.selectPaymentType')}</option>
-                      {(paymentTypes.length ? paymentTypes : ['Перечисление', 'Наличные']).map((p) => <option key={p} value={p}>{p}</option>)}
-                    </select>
-                    <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 8, padding: '9px 11px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg)', cursor: 'pointer' }}>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg)' }}>{t('proc.nds')}</span>
-                      <input type="checkbox" checked={!!itemNds[item.id]} onChange={(e) => setItemNds((prev) => ({ ...prev, [item.id]: e.target.checked }))} />
-                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 118px', gap: 8, marginTop: 8 }}>
+                      <select
+                        value={itemPaymentTypes[item.id] ?? ''}
+                        onChange={(e) => setItemPaymentTypes((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                        style={{ ...inputStyle, padding: '10px 12px' }}
+                      >
+                        <option value="" disabled>{t('proc.selectPaymentType')}</option>
+                        {(paymentTypes.length ? paymentTypes : ['Перечисление', 'Наличные']).map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 42, padding: '8px 10px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg)', cursor: 'pointer' }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg)' }}>НДС</span>
+                        <input type="checkbox" checked={!!itemNds[item.id]} onChange={(e) => setItemNds((prev) => ({ ...prev, [item.id]: e.target.checked }))} />
+                      </label>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -3548,13 +3755,16 @@ function ActionModal({
 // ── Small UI bits ────────────────────────────────────────────────────────────
 interface DevUser {
   username: string;
+  phone: string | null;
   fullName: string;
   roles: string[];
 }
 
-/** Test-mode switch: pin THIS WINDOW to a test user via `?user=` (boot re-logins). */
-function switchTestUser(username: string): void {
-  window.location.href = '/?user=' + encodeURIComponent(username);
+/** Test-mode switch: pin THIS WINDOW to a test user via `?phone=` (boot re-logins). */
+function switchTestUser(user: DevUser): void {
+  const params = new URLSearchParams();
+  params.set(user.phone ? 'phone' : 'user', user.phone ?? user.username);
+  window.location.href = '/?' + params.toString();
 }
 
 /**
@@ -3580,12 +3790,12 @@ function DevSwitcher({ users, pin, current }: { users: DevUser[]; pin: string; c
           {users.map((u) => (
             <button
               key={u.username}
-              onClick={() => switchTestUser(u.username)}
-              disabled={u.username === current}
-              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginBottom: 4, borderRadius: 10, border: 'none', cursor: u.username === current ? 'default' : 'pointer', background: u.username === current ? '#7c3aed' : 'rgba(127,127,127,.14)', color: u.username === current ? '#fff' : 'inherit' }}
+              onClick={() => switchTestUser(u)}
+              disabled={u.username === current || u.phone === current}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', marginBottom: 4, borderRadius: 10, border: 'none', cursor: u.username === current || u.phone === current ? 'default' : 'pointer', background: u.username === current || u.phone === current ? '#7c3aed' : 'rgba(127,127,127,.14)', color: u.username === current || u.phone === current ? '#fff' : 'inherit' }}
             >
               <div style={{ fontSize: 13, fontWeight: 700 }}>{u.fullName}</div>
-              <div style={{ fontSize: 11, opacity: 0.72 }}>{u.username} · {u.roles.join(', ')}</div>
+              <div style={{ fontSize: 11, opacity: 0.72 }}>{u.phone ? `+${u.phone} · ` : ''}{u.username} · {u.roles.join(', ')}</div>
             </button>
           ))}
         </div>
@@ -3618,7 +3828,7 @@ function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | nul
       <div className="w-full max-w-xs">
         <div className="mb-1 text-center text-2xl font-bold tracking-tight text-fg">⚙️ Factory OS</div>
         <p className="mb-5 text-center text-xs leading-relaxed text-fg3">
-          Откройте внутри Telegram для обычного входа. Локально — dev-вход по Telegram ID.
+          Telegram ichida odatiy kirish. Test muhitida — telefon yoki test login orqali kirish.
         </p>
         {testUsers && testUsers.length > 0 && (
           <div className="mb-4">
@@ -3626,11 +3836,11 @@ function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | nul
             {testUsers.map((u) => (
               <button
                 key={u.username}
-                onClick={() => switchTestUser(u.username)}
+                onClick={() => switchTestUser(u)}
                 className="mb-1 w-full rounded-xl border border-line bg-card px-3.5 py-2 text-left active:scale-[.98]"
               >
                 <div className="text-[13px] font-semibold text-fg">{u.fullName}</div>
-                <div className="text-[11px] text-fg3">{u.username} · {u.roles.join(', ')}</div>
+                <div className="text-[11px] text-fg3">{u.phone ? `+${u.phone} · ` : ''}{u.username} · {u.roles.join(', ')}</div>
               </button>
             ))}
           </div>
@@ -3638,7 +3848,7 @@ function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | nul
         <input
           value={tgId}
           onChange={(e) => setTgId(e.target.value)}
-          placeholder="Ваш Telegram ID"
+          placeholder="Telefon yoki test login"
           className="mb-2.5 w-full rounded-xl border border-line bg-card px-3.5 py-3 text-center font-mono text-sm text-fg outline-none placeholder:text-fg3 focus:border-accent"
         />
         <button

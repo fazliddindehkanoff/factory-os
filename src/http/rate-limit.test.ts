@@ -10,23 +10,33 @@ import { createApp } from '../server/app.js';
 const BOT = 'test:token';
 const SECRET = 'test-secret-long-enough';
 
-async function makeApp(rateLimit: boolean) {
+async function makeApp(rateLimit: boolean, devAuth = true) {
   const client = new PGlite();
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
   await seedSystemRolesAndPermissions(db);
-  return createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit });
+  return createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth, rateLimit });
 }
 
 describe('rate limiting', () => {
   it('enforces the auth limiter (10/min) when enabled', async () => {
-    const app = await makeApp(true);
+    const app = await makeApp(true, false);
     let last = 0;
     for (let i = 0; i < 11; i++) {
       const res = await request(app).post('/api/auth/dev').send({ telegramId: 'rl' });
       last = res.status;
     }
     expect(last).toBe(429);
+  }, 20000);
+
+  it('lets the dev role switcher authenticate the full account matrix', async () => {
+    const app = await makeApp(true, true);
+    const statuses: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const res = await request(app).post('/api/auth/dev').send({ telegramId: `matrix-${i}` });
+      statuses.push(res.status);
+    }
+    expect(statuses.every((status) => status === 200)).toBe(true);
   }, 20000);
 
   it('skips the limiter when rateLimit:false', async () => {

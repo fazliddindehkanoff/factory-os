@@ -46,7 +46,7 @@ if (!holding) {
   process.exit(1);
 }
 
-async function ensureUser(username: string, fullName: string) {
+async function ensureUser(username: string, fullName: string, phone?: string) {
   let [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, username));
   if (!u) {
     [u] = await db
@@ -54,17 +54,19 @@ async function ensureUser(username: string, fullName: string) {
       .values({
         holdingId: holding.id,
         telegramId: username,
+        phone: phone ?? null,
         fullName,
         position: fullName,
         status: 'active',
         pinHash: hashPin(TEST_PIN),
       })
       .returning();
-  } else if (u.holdingId !== holding.id) {
-    // Пользователь остался от старого сида в другом холдинге — переносим.
+  } else if (u.holdingId !== holding.id || (phone && u.phone !== phone)) {
+    // Пользователь остался от старого сида в другом холдинге или ещё не получил
+    // детерминированный тестовый телефон — синхронизируем профиль.
     [u] = await db
       .update(schema.users)
-      .set({ holdingId: holding.id, fullName, position: fullName, status: 'active', pinHash: hashPin(TEST_PIN) })
+      .set({ holdingId: holding.id, ...(phone ? { phone } : {}), fullName, position: fullName, status: 'active', pinHash: hashPin(TEST_PIN) })
       .where(eq(schema.users.id, u.id))
       .returning();
   }
@@ -85,7 +87,7 @@ console.log(`Холдинг: «${holding.name}» (${holding.id})`);
 console.log(`PIN у всех тестовых логинов: ${TEST_PIN}`);
 
 for (const spec of TEST_USERS) {
-  const u = await ensureUser(spec.username, spec.name);
+  const u = await ensureUser(spec.username, spec.name, spec.phone);
   for (const code of spec.roles) {
     const [r] = await db
       .select()
@@ -94,7 +96,7 @@ for (const spec of TEST_USERS) {
     if (!r) throw new Error(`system role not found: ${code}`);
     await ensureRole(u.id, r.id);
   }
-  console.log(`  ${spec.username.padEnd(16)} → ${spec.name} [${spec.roles.join(', ')}]`);
+  console.log(`  ${spec.username.padEnd(16)} +${spec.phone} → ${spec.name} [${spec.roles.join(', ')}]`);
 }
 
 // Кастомные роли холдинга (созданные админом в конструкторе) — по логину на каждую,
@@ -108,4 +110,4 @@ for (const r of customRoles) {
 }
 
 await pool.end();
-console.log('✅ Тестовые dev-логины прикреплены. Вход: /?user=<логин>');
+console.log('✅ Тестовые dev-логины прикреплены. Вход: /?phone=<телефон>');
