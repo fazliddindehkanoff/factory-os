@@ -110,6 +110,26 @@ describe('constructor / admin API', () => {
       .expect(400);
   });
 
+  it('manages multilingual positions and assigns a warehouse responsible employee', async () => {
+    const { app } = await make();
+    const token = await login(app, '999');
+    const auth = { Authorization: `Bearer ${token}` };
+    const position = await request(app).post('/api/admin/positions').set(auth)
+      .send({ nameRu: 'Кладовщик', nameUz: 'Omborchi', nameTr: 'Depocu' }).expect(201);
+    const employee = await request(app).post('/api/admin/users').set(auth)
+      .send({ fullName: 'Warehouse Responsible', phone: '998901234500', positionId: position.body.id }).expect(201);
+    expect(employee.body.positionId).toBe(position.body.id);
+    expect(employee.body.position).toBe('Кладовщик');
+
+    const warehouse = await request(app).post('/api/admin/warehouses').set(auth)
+      .send({ name: 'Склад тест', nameUz: 'Sinov ombori', nameTr: 'Test deposu', responsibleUserId: employee.body.id }).expect(201);
+    const warehouses = await request(app).get('/api/admin/warehouses').set(auth).expect(200);
+    expect(warehouses.body.find((w: any) => w.id === warehouse.body.id)).toMatchObject({
+      responsibleUserId: employee.body.id,
+      responsibleUserName: 'Warehouse Responsible',
+    });
+  });
+
   it('lets roles.manage users read roles but only owner can mutate role definitions', async () => {
     const { app, db, holding } = await make();
 

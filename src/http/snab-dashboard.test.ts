@@ -67,7 +67,8 @@ describe('snab dashboard authentication', () => {
     expect(res.text).not.toContain('<h1>Новая заявка</h1>');
     expect(res.text).not.toContain('Все поля — на одном экране');
     expect(res.text).not.toContain('id="langToggle" type="button"><i class="ti ti-language"');
-    expect(res.text).toContain('<span id="langLabel">Рус</span>');
+    expect(res.text).toContain('<span id="langLabel">RU</span>');
+    expect(res.text).toContain('data-lang="tr" type="button">TR</button>');
     expect(res.text).toContain('<th style="width:7%;">НДС</th>');
     expect(res.text).toContain('input data-f="name" list="productTitleList"');
     expect(res.text).toContain('textarea data-f="note"');

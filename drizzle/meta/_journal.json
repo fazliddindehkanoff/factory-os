@@ -330,6 +330,13 @@
       "when": 1785918314000,
       "tag": "0046_soft_delete_existing_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1786190400000,
+      "tag": "0047_positions_warehouse_responsible",
+      "breakpoints": true
     }
   ]
 }

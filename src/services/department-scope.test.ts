@@ -109,4 +109,25 @@ describe('скоуп отдела маршрутизирует заявку к �
     expect((await getRequestVisibility(db, headAll)).canSee(row)).toBe(true);
     expect((await availableActions(db, row, headAll)).map((a: { action: string }) => a.action)).toContain('approve');
   });
+
+  it('складской шаг и уведомление получает только ответственный выбранного склада', async () => {
+    const { db, holding } = await make();
+    const requester = await user(db, holding, 'warehouse-req', 'requester');
+    const responsible = await user(db, holding, 'warehouse-owner', 'warehouse');
+    const otherWarehouseUser = await user(db, holding, 'warehouse-other', 'warehouse');
+    const [warehouse] = await db.insert(schema.warehouses).values({ holdingId: holding.id, name: 'Target warehouse' }).returning();
+    await db.insert(schema.warehouseResponsibles).values({ warehouseId: warehouse.id, holdingId: holding.id, userId: responsible });
+    const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'Warehouse route', isActive: true }).returning();
+    const [step] = await db.insert(schema.workflowSteps).values({
+      workflowId: wf.id, stepOrder: 1, stepName: 'Warehouse check', stepKind: 'warehouse_check', approverRoleId: await roleId(db, 'warehouse'),
+    }).returning();
+    const req = await createRequest(db, {
+      holdingId: holding.id, requesterId: requester, warehouseId: warehouse.id,
+      items: [{ name: 'X', quantity: 1, unitPrice: 1 }],
+    });
+    const [row] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.id));
+    expect(await stepActorIds(db, row, step)).toEqual([responsible]);
+    expect((await availableActions(db, row, responsible)).length).toBeGreaterThan(0);
+    expect(await availableActions(db, row, otherWarehouseUser)).toEqual([]);
+  });
 });

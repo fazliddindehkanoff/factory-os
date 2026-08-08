@@ -139,6 +139,24 @@ export const warehouses = pgTable(
   (t) => ({ holdingIdx: index('warehouses_holding_idx').on(t.holdingId) }),
 );
 
+// Multilingual job titles. Users keep the legacy `position` text snapshot below
+// for backward-compatible exports, while new UI/API writes use this stable FK.
+export const positions = pgTable(
+  'positions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    holdingId: uuid('holding_id').notNull().references(() => holdings.id),
+    nameRu: text('name_ru').notNull(),
+    nameUz: text('name_uz').notNull(),
+    nameTr: text('name_tr').notNull(),
+    orderIndex: integer('order_index').notNull().default(0),
+    status: entityStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ holdingIdx: index('positions_holding_idx').on(t.holdingId) }),
+);
+
 // ── Identity ─────────────────────────────────────────────────────────────────
 export const users = pgTable(
   'users',
@@ -160,12 +178,27 @@ export const users = pgTable(
     phone: text('phone').unique(),
     email: text('email'),
     position: text('position'),
+    positionId: uuid('position_id').references(() => positions.id),
     pinHash: text('pin_hash'),
     status: userStatus('status').notNull().default('pending'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ holdingIdx: index('users_holding_idx').on(t.holdingId) }),
+);
+
+// A warehouse has at most one currently responsible employee. A join table is
+// used because warehouses are declared before users in the foundation schema.
+export const warehouseResponsibles = pgTable(
+  'warehouse_responsibles',
+  {
+    warehouseId: uuid('warehouse_id').primaryKey().references(() => warehouses.id, { onDelete: 'cascade' }),
+    holdingId: uuid('holding_id').notNull().references(() => holdings.id),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ holdingIdx: index('warehouse_responsibles_holding_idx').on(t.holdingId), userIdx: index('warehouse_responsibles_user_idx').on(t.userId) }),
 );
 
 // A user can belong to several otdels; the create-request department picker is
@@ -485,6 +518,7 @@ export const requests = pgTable(
     priority: priority('priority').notNull().default('normal'),
     // Free-text department/warehouse as entered in the create wizard (design contract).
     departmentName: text('department_name'),
+    warehouseId: uuid('warehouse_id').references(() => warehouses.id),
     warehouseName: text('warehouse_name'),
     // status is workflow-driven (dynamic), so it is text rather than a fixed enum.
     status: text('status').notNull().default('draft'),

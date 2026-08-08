@@ -18,6 +18,7 @@ export interface StepActorsRequest {
   holdingId: string;
   requesterId: string;
   responsibleUserId?: string | null;
+  warehouseId?: string | null;
   companyId?: string | null;
   factoryId?: string | null;
   departmentId?: string | null;
@@ -34,6 +35,17 @@ export async function stepActorIds(db: Db, reqRow: StepActorsRequest, step: Step
   }
   if (['procurement', 'ordering', 'delivery'].includes(step.stepKind) && reqRow.responsibleUserId) {
     return [reqRow.responsibleUserId];
+  }
+  if (['warehouse_check', 'receiving', 'issue'].includes(step.stepKind) && reqRow.warehouseId) {
+    const [assigned] = await db.select({ userId: schema.warehouseResponsibles.userId })
+      .from(schema.warehouseResponsibles)
+      .innerJoin(schema.users, eq(schema.users.id, schema.warehouseResponsibles.userId))
+      .where(and(
+        eq(schema.warehouseResponsibles.warehouseId, reqRow.warehouseId),
+        eq(schema.warehouseResponsibles.holdingId, reqRow.holdingId),
+        eq(schema.users.status, 'active'),
+      )).limit(1);
+    if (assigned) return [assigned.userId];
   }
   if (!step.approverRoleId) return [];
   const assigns: { userId: string; holdingId: string | null; companyId: string | null; factoryId: string | null; departmentId: string | null }[] = await db

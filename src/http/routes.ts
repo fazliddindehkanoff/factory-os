@@ -906,6 +906,7 @@ export function buildRouter(deps: RouterDeps): Router {
         departmentId: body.departmentId ?? null,
         requestType: body.requestType,
         priority: PRIORITIES.includes(body.priority) ? body.priority : undefined,
+        warehouseId: body.warehouseId ?? null,
         warehouseName: body.warehouseName ?? null,
         title: body.title,
         description: body.description,

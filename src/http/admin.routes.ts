@@ -585,7 +585,21 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     try {
       const u = actor(req);
       const rows = await db.select().from(schema.warehouses).where(eq(schema.warehouses.holdingId, u.holdingId as string));
-      res.json(rows.filter((w: { status: string }) => w.status !== 'inactive'));
+      const live = rows.filter((w: { status: string }) => w.status !== 'inactive');
+      const links = live.length
+        ? await db.select().from(schema.warehouseResponsibles)
+            .where(inArray(schema.warehouseResponsibles.warehouseId, live.map((w: { id: string }) => w.id)))
+        : [];
+      const userIds = links.map((l: { userId: string }) => l.userId);
+      const people = userIds.length
+        ? await db.select({ id: schema.users.id, fullName: schema.users.fullName }).from(schema.users).where(inArray(schema.users.id, userIds))
+        : [];
+      const nameById = new Map(people.map((p: { id: string; fullName: string }) => [p.id, p.fullName]));
+      const linkByWarehouse = new Map(links.map((l: { warehouseId: string; userId: string }) => [l.warehouseId, l.userId]));
+      res.json(live.map((w: { id: string }) => {
+        const responsibleUserId = linkByWarehouse.get(w.id) ?? null;
+        return { ...w, responsibleUserId, responsibleUserName: responsibleUserId ? nameById.get(responsibleUserId) ?? null : null };
+      }));
     } catch (e) {
       next(e);
     }
@@ -873,6 +887,15 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     return ids;
   }
 
+  async function validatedPosition(body: Record<string, unknown>, holdingId: string): Promise<{ id: string; nameRu: string } | null | undefined> {
+    if (!('positionId' in body)) return undefined;
+    const id = str(body.positionId);
+    if (!id) return null;
+    const row = await loadHoldingRow(db, schema.positions, id, holdingId) as unknown as { id: string; nameRu: string; status: string };
+    if (row.status !== 'active') throw new ValidationError('Выберите активную должность');
+    return { id: row.id, nameRu: row.nameRu };
+  }
+
   r.post('/users', requirePerm('users.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
@@ -883,7 +906,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       const email = str(body.email) || null;
       const phoneRaw = str(body.phone);
       const phone = phoneRaw ? normalizePhone(phoneRaw) : null;
-      const position = str(body.position) || null;
+      const positionRef = await validatedPosition(body, u.holdingId as string);
+      const position = positionRef === undefined ? str(body.position) || null : positionRef?.nameRu ?? null;
       if (!fullName) throw new ValidationError('Укажите имя пользователя');
       // Most staff only ever use the Telegram bot (phone-verified, see /users/invite's
       // model) and never log into the dashboard — a username/password pair is only
@@ -933,6 +957,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
             email,
             phone,
             position,
+            positionId: positionRef?.id ?? null,
             status: 'active',
           })
           .returning();
@@ -989,8 +1014,13 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         // trust situation as the initial assignment — force a self-chosen one.
         patch.mustChangePassword = true;
       }
-      for (const key of ['email', 'position'] as const) {
-        if (key in body) patch[key] = str(body[key]) || null;
+      if ('email' in body) patch.email = str(body.email) || null;
+      const positionRef = await validatedPosition(body, u.holdingId as string);
+      if (positionRef !== undefined) {
+        patch.positionId = positionRef?.id ?? null;
+        patch.position = positionRef?.nameRu ?? null;
+      } else if ('position' in body) {
+        patch.position = str(body.position) || null;
       }
       if ('phone' in body) {
         const phoneRaw = str(body.phone);
@@ -1047,11 +1077,19 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       const factoryId = str(body.factory_id) || null;
       if (!name) throw new ValidationError('name обязателен');
       if (factoryId) await loadHoldingRow(db, schema.factories, factoryId, u.holdingId as string);
-      const [wh] = await db
-        .insert(schema.warehouses)
-        .values({ holdingId: u.holdingId, factoryId, name, nameUz: str(body.nameUz) || null, nameTr: str(body.nameTr) || null })
-        .returning();
-      res.status(201).json(wh);
+      const responsibleUserId = str(body.responsibleUserId) || null;
+      if (responsibleUserId) {
+        const person = await loadHoldingRow(db, schema.users, responsibleUserId, u.holdingId as string);
+        if (person.status !== 'active') throw new ValidationError('Ответственный сотрудник должен быть активен');
+      }
+      const wh = await db.transaction(async (tx: Db) => {
+        const [row] = await tx.insert(schema.warehouses)
+          .values({ holdingId: u.holdingId, factoryId, name, nameUz: str(body.nameUz) || null, nameTr: str(body.nameTr) || null }).returning();
+        if (responsibleUserId) await tx.insert(schema.warehouseResponsibles)
+          .values({ warehouseId: row.id, holdingId: u.holdingId, userId: responsibleUserId });
+        return row;
+      });
+      res.status(201).json({ ...wh, responsibleUserId });
     } catch (e) {
       next(e);
     }
@@ -1069,17 +1107,26 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         factoryId = str(body.factory_id) || null;
         if (factoryId) await loadHoldingRow(db, schema.factories, factoryId, u.holdingId as string);
       }
-      const [updated] = await db
-        .update(schema.warehouses)
-        .set({
+      const responsibleUserId = 'responsibleUserId' in body ? str(body.responsibleUserId) || null : undefined;
+      if (responsibleUserId) {
+        const person = await loadHoldingRow(db, schema.users, responsibleUserId, u.holdingId as string);
+        if (person.status !== 'active') throw new ValidationError('Ответственный сотрудник должен быть активен');
+      }
+      const updated = await db.transaction(async (tx: Db) => {
+        const [row] = await tx.update(schema.warehouses).set({
           name,
           ...(factoryId !== undefined ? { factoryId } : {}),
           ...(body.nameUz !== undefined ? { nameUz: str(body.nameUz) || null } : {}),
           ...(body.nameTr !== undefined ? { nameTr: str(body.nameTr) || null } : {}),
-        })
-        .where(eq(schema.warehouses.id, req.params.id as string))
-        .returning();
-      res.json(updated);
+        }).where(eq(schema.warehouses.id, req.params.id as string)).returning();
+        if (responsibleUserId !== undefined) {
+          await tx.delete(schema.warehouseResponsibles).where(eq(schema.warehouseResponsibles.warehouseId, row.id));
+          if (responsibleUserId) await tx.insert(schema.warehouseResponsibles)
+            .values({ warehouseId: row.id, holdingId: u.holdingId, userId: responsibleUserId });
+        }
+        return row;
+      });
+      res.json({ ...updated, ...(responsibleUserId !== undefined ? { responsibleUserId } : {}) });
     } catch (e) {
       next(e);
     }
@@ -1112,10 +1159,64 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
   // Block B — People
   // ─────────────────────────────────────────────────────────────────────────
 
+  r.get('/positions', requireAnyPerm(['users.view', 'users.manage', 'settings.manage']), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const rows = await db.select().from(schema.positions)
+        .where(eq(schema.positions.holdingId, u.holdingId as string)).orderBy(schema.positions.orderIndex, schema.positions.nameRu);
+      res.json(rows.filter((p: { status: string }) => p.status !== 'archived'));
+    } catch (e) { next(e); }
+  });
+
+  async function positionNames(body: Record<string, unknown>): Promise<{ nameRu: string; nameUz: string; nameTr: string }> {
+    const names = { nameRu: str(body.nameRu), nameUz: str(body.nameUz), nameTr: str(body.nameTr) };
+    if (!names.nameRu || !names.nameUz || !names.nameTr) throw new ValidationError('Должность должна быть заполнена на RU, UZ и TR');
+    return names;
+  }
+
+  r.post('/positions', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const names = await positionNames((req.body ?? {}) as Record<string, unknown>);
+      const [same] = await db.select({ id: schema.positions.id }).from(schema.positions)
+        .where(and(eq(schema.positions.holdingId, u.holdingId as string), sql`lower(${schema.positions.nameRu}) = lower(${names.nameRu})`, ne(schema.positions.status, 'archived'))).limit(1);
+      if (same) throw new ConflictError('Такая должность уже существует');
+      const [{ max }] = await db.select({ max: sql<number>`coalesce(max(${schema.positions.orderIndex}), -1)` })
+        .from(schema.positions).where(eq(schema.positions.holdingId, u.holdingId as string));
+      const [row] = await db.insert(schema.positions).values({ holdingId: u.holdingId, ...names, orderIndex: Number(max) + 1 }).returning();
+      await writeAudit(db, { holdingId: u.holdingId as string, userId: u.id, action: 'position.created', module: 'admin', entityType: 'position', entityId: row.id, newValue: names });
+      res.status(201).json(row);
+    } catch (e) { next(e); }
+  });
+
+  r.put('/positions/:id', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const id = req.params.id as string;
+      const old = await loadHoldingRow(db, schema.positions, id, u.holdingId as string);
+      const names = await positionNames((req.body ?? {}) as Record<string, unknown>);
+      const [row] = await db.update(schema.positions).set({ ...names, status: 'active', updatedAt: new Date() })
+        .where(eq(schema.positions.id, id)).returning();
+      await db.update(schema.users).set({ position: names.nameRu, updatedAt: new Date() }).where(eq(schema.users.positionId, id));
+      await writeAudit(db, { holdingId: u.holdingId as string, userId: u.id, action: 'position.updated', module: 'admin', entityType: 'position', entityId: id, oldValue: old, newValue: names });
+      res.json(row);
+    } catch (e) { next(e); }
+  });
+
+  r.delete('/positions/:id', requirePerm('settings.manage'), async (req, res, next) => {
+    try {
+      const u = actor(req);
+      const id = req.params.id as string;
+      await loadHoldingRow(db, schema.positions, id, u.holdingId as string);
+      await db.update(schema.positions).set({ status: 'archived', updatedAt: new Date() }).where(eq(schema.positions.id, id));
+      res.json({ ok: true });
+    } catch (e) { next(e); }
+  });
+
   // BUG 1 FIX: GET /users now filters userRoles by holdingId to prevent cross-tenant leak
   // R10: reading the list is allowed to users.view holders (read-only: director);
   // users.manage still qualifies so a manage-only custom role keeps working.
-  r.get('/users', requireAnyPerm(['users.view', 'users.manage']), async (req, res, next) => {
+  r.get('/users', requireAnyPerm(['users.view', 'users.manage', 'settings.manage']), async (req, res, next) => {
     try {
       const u = actor(req);
       const hid = u.holdingId as string;
@@ -1131,6 +1232,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         .where(eq(schema.userRoles.holdingId, hid));
       const roles = await db.select().from(schema.roles);
       const roleById = new Map<string, { code: string }>(roles.map((rr: { id: string; code: string }) => [rr.id, rr]));
+      const positionRows = await db.select().from(schema.positions).where(eq(schema.positions.holdingId, hid));
+      const positionById = new Map(positionRows.map((p: { id: string }) => [p.id, p]));
       const deptLinks = users.length
         ? await db
             .select()
@@ -1141,7 +1244,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       for (const l of deptLinks as { userId: string; departmentId: string }[]) {
         deptIdsByUser.set(l.userId, [...(deptIdsByUser.get(l.userId) ?? []), l.departmentId]);
       }
-      const out = users.map((usr: { id: string; fullName: string; telegramId: string | null; username: string | null; email: string | null; phone: string | null; position: string | null; status: string }) => ({
+      const out = users.map((usr: { id: string; fullName: string; telegramId: string | null; username: string | null; email: string | null; phone: string | null; position: string | null; positionId: string | null; status: string }) => ({
         id: usr.id,
         fullName: usr.fullName,
         telegramId: usr.telegramId,
@@ -1149,6 +1252,8 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
         email: usr.email,
         phone: usr.phone,
         position: usr.position,
+        positionId: usr.positionId,
+        positionRef: usr.positionId ? positionById.get(usr.positionId) ?? null : null,
         status: usr.status,
         departmentIds: deptIdsByUser.get(usr.id) ?? [],
         roles: assigns

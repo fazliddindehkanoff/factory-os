@@ -15,8 +15,8 @@ const TABLER_ASSET_ROOT = fileURLToPath(new URL('../../node_modules/@tabler/icon
 const TABLER_ICON_NAMES = [
   'alert-circle', 'alert-triangle', 'archive', 'arrow-down', 'arrow-up', 'bell', 'building', 'building-factory-2',
   'building-store', 'cash', 'chevron-down', 'columns-3', 'eye', 'file-description', 'file-spreadsheet', 'filter',
-  'grip-vertical', 'language', 'layout-dashboard', 'list-details', 'lock', 'logout', 'menu-2', 'moon', 'pencil',
-  'plus', 'ruler-2', 'search', 'shield-check', 'shield-lock', 'shopping-cart', 'sun', 'trash', 'truck-delivery',
+  'grip-vertical', 'id-badge-2', 'language', 'layout-dashboard', 'list-details', 'lock', 'logout', 'menu-2', 'moon', 'pencil',
+  'plus', 'ruler-2', 'search', 'settings', 'shield-check', 'shield-lock', 'shopping-cart', 'sun', 'trash', 'truck-delivery',
   'user', 'users', 'x',
 ] as const;
 const TABLER_ICON_SET = new Set<string>(TABLER_ICON_NAMES);
@@ -779,6 +779,7 @@ interface CreateBody {
   requestType?: unknown;
   departmentId?: unknown;
   warehouseName?: unknown;
+  warehouseId?: unknown;
   lang?: unknown;
   obyekt?: unknown;
   origin?: unknown;
@@ -841,6 +842,7 @@ async function createFromDashboard(db: Db, holdingId: string, body: CreateBody):
     priority,
     title: items[0].name,
     description: text(body.comment).trim() || undefined,
+    warehouseId: text(body.warehouseId).trim() || null,
     warehouseName: text(body.warehouseName).trim() || null,
     neededDate: neededDate && !Number.isNaN(neededDate.getTime()) ? neededDate : null,
     customFields: Object.keys(customFields).length ? customFields : null,
@@ -1659,6 +1661,8 @@ function pageHtml(): string {
           <span data-i18n="nav.manage">Настройки</span><i class="ti ti-chevron-down" aria-hidden="true"></i>
         </button>
         <div class="settings-group" id="settingsGroup">
+        <button class="side-link hidden" data-view="settings" id="navSettings" type="button" aria-label="Настройки"><span class="side-label"><i class="ti ti-settings" aria-hidden="true"></i><span data-i18n="settings.title">Настройки</span></span></button>
+        <button class="side-link hidden" data-view="positions" id="navPositions" type="button" aria-label="Должности"><span class="side-label"><i class="ti ti-id-badge-2" aria-hidden="true"></i><span data-i18n="nav.positions">Должности</span></span></button>
         <button class="side-link hidden" data-view="namenklatura" id="navNamenklatura" type="button" aria-label="Номенклатура"><span class="side-label"><i class="ti ti-list-details" aria-hidden="true"></i><span data-i18n="nav.namenklatura">Номенклатура</span></span></button>
         <button class="side-link hidden" data-view="people" id="navPeople" type="button" aria-label="Пользователи">
           <span class="side-label"><i class="ti ti-users" aria-hidden="true"></i>
@@ -1718,8 +1722,8 @@ function pageHtml(): string {
               <div class="lang-menu hidden" id="factoryMenu"></div>
             </div>
             <div class="lang-wrap">
-              <button class="topbar-control" id="langToggle" type="button"><span id="langLabel">Рус</span></button>
-              <div class="lang-menu hidden" id="langMenu"><button class="lang-option active" data-lang="ru" type="button">Рус</button><button class="lang-option" data-lang="uz" type="button">Uzb</button><button class="lang-option" data-lang="tr" type="button">Türkçe</button></div>
+              <button class="topbar-control" id="langToggle" type="button"><span id="langLabel">RU</span></button>
+              <div class="lang-menu hidden" id="langMenu"><button class="lang-option active" data-lang="ru" type="button">RU</button><button class="lang-option" data-lang="uz" type="button">UZ</button><button class="lang-option" data-lang="tr" type="button">TR</button></div>
             </div>
             <button class="icon-btn" id="themeToggle" type="button" aria-label="Переключить тему"><i class="ti ti-sun" id="themeIcon" aria-hidden="true"></i></button>
             <button class="icon-btn" id="notifyButton" type="button" aria-label="Уведомления"><i class="ti ti-bell" aria-hidden="true"></i><span class="notify-dot" id="notifyDot"></span></button>
@@ -1882,6 +1886,19 @@ function pageHtml(): string {
           </div>
         </div>
 
+        <!-- ── VIEW: settings hub ── -->
+        <div class="wrap hidden" id="viewSettings">
+          <div class="top"><div><h1 data-i18n="settings.title">Настройки</h1><div class="sub" data-i18n="settings.subtitle">Справочники, структура, доступ и маршруты Factory OS</div></div></div>
+          <div class="roles-grid">
+            <button class="role-card" data-view-jump="positions" type="button"><div class="role-card-head"><strong data-i18n="positions.title">Должности</strong><i class="ti ti-id-badge-2"></i></div><p data-i18n="positions.subtitle">Справочник на трёх языках</p></button>
+            <button class="role-card" data-view-jump="people" type="button"><div class="role-card-head"><strong data-i18n="people.title">Пользователи</strong><i class="ti ti-users"></i></div><p data-i18n="people.subtitle">Учётные записи и доступ</p></button>
+            <button class="role-card" data-view-jump="unitTypes" type="button"><div class="role-card-head"><strong data-i18n="unitTypes.title">Единицы измерения</strong><i class="ti ti-ruler-2"></i></div><p data-i18n="unitTypes.subtitle">Управляемый список единиц</p></button>
+            <button class="role-card" data-view-jump="warehouses" type="button"><div class="role-card-head"><strong data-i18n="warehouses.title">Склады</strong><i class="ti ti-building-store"></i></div><p data-i18n="warehouses.subtitle">Склады и ответственные</p></button>
+            <button class="role-card" data-view-jump="otdels" type="button"><div class="role-card-head"><strong data-i18n="otdels.title">Отделы</strong><i class="ti ti-building-factory-2"></i></div><p data-i18n="otdels.subtitle">Структура отделов</p></button>
+            <button class="role-card" data-view-jump="roles" type="button"><div class="role-card-head"><strong data-i18n="roles.title">Роли и права</strong><i class="ti ti-shield-lock"></i></div><p data-i18n="roles.subtitle">Доступ и workflow</p></button>
+          </div>
+        </div>
+
         <!-- ── VIEW: shared users (dashboard + Telegram identities) ── -->
         <div class="wrap hidden" id="viewPeople">
           <div class="top">
@@ -1900,6 +1917,12 @@ function pageHtml(): string {
             <div class="admin-panel-head"><strong data-i18n="people.panelTitle">Команда и доступ</strong><input class="admin-search" id="peopleSearch" placeholder="Поиск по имени или логину…" data-i18n-ph="people.searchPlaceholder" /></div>
             <div style="overflow-x:auto;"><div class="people-list" id="peopleList"><div class="empty-admin">Загрузка пользователей…</div></div></div>
           </section>
+        </div>
+
+        <!-- ── VIEW: multilingual positions ── -->
+        <div class="wrap hidden" id="viewPositions">
+          <div class="top"><div><h1 data-i18n="positions.title">Должности</h1><div class="sub" data-i18n="positions.subtitle">Единый справочник должностей на RU, UZ и TR для корректного i18n</div></div><button class="btn" id="addPosition" type="button" data-i18n="positions.add">+ Добавить должность</button></div>
+          <section class="admin-panel"><div id="positionsList" class="unit-types-list"><div class="empty-admin">Загрузка…</div></div></section>
         </div>
 
         <!-- ── VIEW: roles + granular permissions ── -->
@@ -2053,7 +2076,7 @@ function pageHtml(): string {
         <input id="accountId" type="hidden" />
         <div class="modal-form-grid">
           <div class="modal-field"><label for="accountName">Имя и фамилия</label><input class="fin" id="accountName" required /></div>
-          <div class="modal-field"><label for="accountPosition">Должность</label><input class="fin" id="accountPosition" /></div>
+          <div class="modal-field"><label for="accountPosition">Должность</label><select class="fin" id="accountPosition"><option value="">Без должности</option></select></div>
           <div class="modal-field"><label for="accountUsername">Логин dashboard (необязательно, по умолчанию — телефон)</label><input class="fin" id="accountUsername" autocomplete="off" /></div>
           <div class="modal-field"><label for="accountPassword">Пароль для dashboard <span id="passwordHint"></span></label><input class="fin" id="accountPassword" type="password" autocomplete="new-password" /></div>
           <div class="modal-field"><label for="accountTelegram">Telegram ID</label><input class="fin" id="accountTelegram" inputmode="numeric" /></div>
@@ -2066,6 +2089,18 @@ function pageHtml(): string {
         </div>
         <div class="err-line" id="accountErr"></div>
         <div class="modal-actions"><button class="btn ghost" id="accountCancel" type="button">Отмена</button><button class="btn" id="accountSave" type="submit">Создать пользователя</button></div>
+      </form>
+    </div>
+    <div id="positionModal" class="modal-backdrop hidden">
+      <form class="modal" id="positionForm">
+        <h2 id="positionTitle">Новая должность</h2><input id="positionId" type="hidden" />
+        <div class="modal-form-grid">
+          <div class="modal-field full"><label for="positionNameRu">Название (RU)</label><input class="fin" id="positionNameRu" required /></div>
+          <div class="modal-field full"><label for="positionNameUz">Название (UZ)</label><input class="fin" id="positionNameUz" required /></div>
+          <div class="modal-field full"><label for="positionNameTr">Название (TR)</label><input class="fin" id="positionNameTr" required /></div>
+        </div>
+        <div class="err-line" id="positionErr"></div>
+        <div class="modal-actions"><button class="btn ghost" id="positionCancel" type="button">Отмена</button><button class="btn" id="positionSave" type="submit">Сохранить</button></div>
       </form>
     </div>
     <div id="roleModal" class="modal-backdrop hidden">
@@ -2178,6 +2213,7 @@ function pageHtml(): string {
           <div class="modal-field full"><label for="warehouseNameUz">Название (UZ)</label><input class="fin" id="warehouseNameUz" /></div>
           <div class="modal-field full"><label for="warehouseNameTr">Название (TR)</label><input class="fin" id="warehouseNameTr" /></div>
           <div class="modal-field full"><label for="warehouseFactory" data-i18n="warehouses.colBranch">Филиал</label><select class="fin" id="warehouseFactory"><option value="">—</option></select></div>
+          <div class="modal-field full"><label for="warehouseResponsible" data-i18n="warehouses.responsible">Ответственный сотрудник</label><select class="fin" id="warehouseResponsible"><option value="">Не назначен</option></select></div>
         </div>
         <div class="err-line" id="warehouseErr"></div>
         <div class="modal-actions"><button class="btn ghost" id="warehouseCancel" type="button" data-i18n="common.cancel">Отмена</button><button class="btn" id="warehouseSave" type="submit" data-i18n="common.save">Сохранить</button></div>
@@ -2268,7 +2304,8 @@ function pageHtml(): string {
       ru: {
         'nav.menu':'Меню','nav.dashboard':'Дашборд','nav.requests':'Заявки','nav.newRequest':'Новая заявка',
         'nav.operations':'Операции','nav.procurement':'Снабжение','nav.namenklatura':'Номенклатура','nav.suppliers':'Поставщики',
-        'nav.manage':'Настройки','nav.people':'Пользователи','nav.roles':'Роли и права','nav.workflow':'Workflow','nav.unitTypes':'Единицы измерения','nav.logout':'Выйти',
+        'nav.manage':'Настройки','settings.title':'Настройки','settings.subtitle':'Справочники, структура, доступ и маршруты Factory OS','nav.positions':'Должности','nav.people':'Пользователи','nav.roles':'Роли и права','nav.workflow':'Workflow','nav.unitTypes':'Единицы измерения','nav.logout':'Выйти',
+        'positions.title':'Должности','positions.subtitle':'Единый справочник должностей на RU, UZ и TR для корректного i18n','positions.add':'+ Добавить должность',
         'branch.all':'Все филиалы',
         'overview.title':'Операционный дашборд','overview.searchPlaceholder':'Поиск заявок, документов, поставщиков...',
         'people.title':'Пользователи','people.subtitle':'Одна учётная запись для dashboard и Telegram Web App',
@@ -2287,7 +2324,7 @@ function pageHtml(): string {
         'unitTypes.add':'+ Добавить единицу','unitTypes.colCode':'Код','unitTypes.colNameRu':'RU','unitTypes.colNameUz':'UZ','unitTypes.colNameTr':'TR',
         'nav.otdels':'Отделы','nav.warehouses':'Склады',
         'otdels.title':'Отделы','otdels.subtitle':'Название на трёх языках и филиалы (branches), к которым привязан отдел','otdels.add':'+ Добавить отдел','otdels.branches':'Филиалы',
-        'warehouses.title':'Склады','warehouses.subtitle':'Склады и их привязка к филиалу','warehouses.add':'+ Добавить склад','warehouses.colName':'Название','warehouses.colBranch':'Филиал',
+        'warehouses.title':'Склады','warehouses.subtitle':'Склады, филиалы и ответственные сотрудники','warehouses.add':'+ Добавить склад','warehouses.colName':'Название','warehouses.colBranch':'Филиал','warehouses.responsible':'Ответственный сотрудник',
         'nav.branches':'Филиалы','branches.title':'Филиалы','branches.subtitle':'Заводы/площадки холдинга — к ним привязываются отделы и склады','branches.add':'+ Добавить филиал','branches.colName':'Название',
         'common.cancel':'Отмена','common.save':'Сохранить','common.loading':'Загрузка…','common.empty':'Ничего не найдено',
         'common.importExcel':'Импорт из Excel',
@@ -2297,7 +2334,8 @@ function pageHtml(): string {
       uz: {
         'nav.menu':'Menyu','nav.dashboard':'Boshqaruv paneli','nav.requests':'Arizalar','nav.newRequest':'Yangi ariza',
         'nav.operations':'Operatsiyalar','nav.procurement':'Ta’minot','nav.namenklatura':'Nomenklatura','nav.suppliers':'Yetkazib beruvchilar',
-        'nav.manage':'Sozlamalar','nav.people':'Foydalanuvchilar','nav.roles':'Rollar va huquqlar','nav.workflow':'Workflow','nav.unitTypes':'O‘lchov birligi','nav.logout':'Chiqish',
+        'nav.manage':'Sozlamalar','settings.title':'Sozlamalar','settings.subtitle':'Factory OS ma’lumotnomalari, tuzilmasi, kirish huquqlari va marshrutlari','nav.positions':'Lavozimlar','nav.people':'Foydalanuvchilar','nav.roles':'Rollar va huquqlar','nav.workflow':'Workflow','nav.unitTypes':'O‘lchov birligi','nav.logout':'Chiqish',
+        'positions.title':'Lavozimlar','positions.subtitle':'To‘g‘ri i18n uchun RU, UZ va TR tillaridagi yagona lavozimlar ro‘yxati','positions.add':'+ Lavozim qo‘shish',
         'branch.all':'Barcha filiallar',
         'overview.title':'Operatsion boshqaruv paneli','overview.searchPlaceholder':'Ariza, hujjat, yetkazib beruvchi qidirish...',
         'people.title':'Foydalanuvchilar','people.subtitle':'Dashboard va Telegram Web App uchun bitta hisob',
@@ -2316,7 +2354,7 @@ function pageHtml(): string {
         'unitTypes.add':'+ Birlik qo‘shish','unitTypes.colCode':'Kod','unitTypes.colNameRu':'RU','unitTypes.colNameUz':'UZ','unitTypes.colNameTr':'TR',
         'nav.otdels':'Bo‘limlar','nav.warehouses':'Omborlar',
         'otdels.title':'Bo‘limlar','otdels.subtitle':'Uch tilda nomi va bo‘lim biriktirilgan filiallar','otdels.add':'+ Bo‘lim qo‘shish','otdels.branches':'Filiallar',
-        'warehouses.title':'Omborlar','warehouses.subtitle':'Omborlar va ularning filialga bog‘lanishi','warehouses.add':'+ Ombor qo‘shish','warehouses.colName':'Nomi','warehouses.colBranch':'Filial',
+        'warehouses.title':'Omborlar','warehouses.subtitle':'Omborlar, filiallar va mas’ul xodimlar','warehouses.add':'+ Ombor qo‘shish','warehouses.colName':'Nomi','warehouses.colBranch':'Filial','warehouses.responsible':'Mas’ul xodim',
         'nav.branches':'Filiallar','branches.title':'Filiallar','branches.subtitle':'Xolding zavodlari — bo‘limlar va omborlar shularga bog‘lanadi','branches.add':'+ Filial qo‘shish','branches.colName':'Nomi',
         'common.cancel':'Bekor qilish','common.save':'Saqlash','common.loading':'Yuklanmoqda…','common.empty':'Hech narsa topilmadi',
         'common.importExcel':'Excel dan import',
@@ -2326,7 +2364,8 @@ function pageHtml(): string {
       tr: {
         'nav.menu':'Menü','nav.dashboard':'Panel','nav.requests':'Talepler','nav.newRequest':'Yeni talep',
         'nav.operations':'İşlemler','nav.procurement':'Tedarik','nav.namenklatura':'Ürün listesi','nav.suppliers':'Tedarikçiler',
-        'nav.manage':'Ayarlar','nav.people':'Kullanıcılar','nav.roles':'Roller ve izinler','nav.workflow':'Workflow','nav.unitTypes':'Birim','nav.logout':'Çıkış',
+        'nav.manage':'Ayarlar','settings.title':'Ayarlar','settings.subtitle':'Factory OS listeleri, yapısı, erişimi ve iş akışları','nav.positions':'Pozisyonlar','nav.people':'Kullanıcılar','nav.roles':'Roller ve izinler','nav.workflow':'Workflow','nav.unitTypes':'Birim','nav.logout':'Çıkış',
+        'positions.title':'Pozisyonlar','positions.subtitle':'Doğru i18n için RU, UZ ve TR dillerinde ortak pozisyon listesi','positions.add':'+ Pozisyon ekle',
         'branch.all':'Tüm şubeler',
         'overview.title':'Operasyon paneli','overview.searchPlaceholder':'Talep, belge, tedarikçi ara...',
         'people.title':'Kullanıcılar','people.subtitle':'Dashboard ve Telegram Web App için tek hesap',
@@ -2345,7 +2384,7 @@ function pageHtml(): string {
         'unitTypes.add':'+ Birim ekle','unitTypes.colCode':'Kod','unitTypes.colNameRu':'RU','unitTypes.colNameUz':'UZ','unitTypes.colNameTr':'TR',
         'nav.otdels':'Departmanlar','nav.warehouses':'Depolar',
         'otdels.title':'Departmanlar','otdels.subtitle':'Uc dilde ad ve departmanin bagli oldugu subeler','otdels.add':'+ Departman ekle','otdels.branches':'Subeler',
-        'warehouses.title':'Depolar','warehouses.subtitle':'Depolar ve sube baglantisi','warehouses.add':'+ Depo ekle','warehouses.colName':'Ad','warehouses.colBranch':'Sube',
+        'warehouses.title':'Depolar','warehouses.subtitle':'Depolar, şubeler ve sorumlu çalışanlar','warehouses.add':'+ Depo ekle','warehouses.colName':'Ad','warehouses.colBranch':'Sube','warehouses.responsible':'Sorumlu çalışan',
         'nav.branches':'Subeler','branches.title':'Subeler','branches.subtitle':'Holdingin fabrikalari — departmanlar ve depolar bunlara baglanir','branches.add':'+ Sube ekle','branches.colName':'Ad',
         'common.cancel':'İptal','common.save':'Kaydet','common.loading':'Yükleniyor…','common.empty':'Sonuç bulunamadı',
         'common.importExcel':'Excel dosyasindan aktar',
@@ -2435,7 +2474,7 @@ function pageHtml(): string {
     }
     function setLang(lang, options = {}) {
       localStorage.setItem('snab.lang', lang);
-      document.getElementById('langLabel').textContent = ({ru:'Рус',uz:'Uzb',tr:'Türkçe'})[lang] || 'Рус';
+      document.getElementById('langLabel').textContent = ({ru:'RU',uz:'UZ',tr:'TR'})[lang] || 'RU';
       document.querySelectorAll('[data-lang]').forEach((item) => item.classList.toggle('active', item.dataset.lang === lang));
       if (options.reload) {
         saveSnabLanguageDraft(lang);
@@ -2566,6 +2605,8 @@ function pageHtml(): string {
       document.querySelector('[data-view="create"]').classList.toggle('hidden', !canCreate);
       document.getElementById('settingsToggle').classList.toggle('hidden', !canPeople && !canRoles && !canWorkflow && !canManageSettings && !canViewMaterials);
       document.getElementById('navPeople').classList.toggle('hidden', !canPeople);
+      document.getElementById('navSettings').classList.toggle('hidden', !canManageSettings);
+      document.getElementById('navPositions').classList.toggle('hidden', !canManageSettings);
       document.getElementById('navRoles').classList.toggle('hidden', !canRoles);
       document.getElementById('navWorkflow').classList.toggle('hidden', !canWorkflow);
       document.getElementById('navUnitTypes').classList.toggle('hidden', !canManageSettings);
@@ -2649,8 +2690,8 @@ function pageHtml(): string {
       document.body.classList.remove('sidebar-open');
       document.getElementById('menuToggle').setAttribute('aria-label', 'Открыть меню');
     }
-    const SETTINGS_VIEWS = new Set(['namenklatura', 'people', 'roles', 'workflow', 'unitTypes', 'otdels', 'warehouses', 'branches']);
-    const VIEW_PATHS = { overview:'overview', procurement:'procurement', requests:'requests', create:'create', people:'people', roles:'roles', workflow:'workflow', namenklatura:'namenklatura', suppliers:'suppliers', unitTypes:'unit-types', otdels:'departments', warehouses:'warehouses', branches:'branches' };
+    const SETTINGS_VIEWS = new Set(['settings', 'namenklatura', 'positions', 'people', 'roles', 'workflow', 'unitTypes', 'otdels', 'warehouses', 'branches']);
+    const VIEW_PATHS = { overview:'overview', procurement:'procurement', requests:'requests', create:'create', settings:'settings', positions:'positions', people:'people', roles:'roles', workflow:'workflow', namenklatura:'namenklatura', suppliers:'suppliers', unitTypes:'unit-types', otdels:'departments', warehouses:'warehouses', branches:'branches' };
     const PATH_VIEWS = Object.fromEntries(Object.entries(VIEW_PATHS).map(([view, path]) => [path, view]));
     function viewFromLocation() {
       const prefix = '/snab-dashboard/';
@@ -2663,12 +2704,12 @@ function pageHtml(): string {
       localStorage.setItem('snab.settingsExpanded', expanded ? '1' : '0');
     }
     function showView(view, options = {}) {
-      const views = { overview:'viewOverview', procurement:'viewProcurement', requests:'viewRequests', create:'viewCreate', people:'viewPeople', roles:'viewRoles', workflow:'viewWorkflow', namenklatura:'viewNamenklatura', suppliers:'viewSuppliers', unitTypes:'viewUnitTypes', otdels:'viewOtdels', warehouses:'viewWarehouses', branches:'viewBranches' };
+      const views = { overview:'viewOverview', procurement:'viewProcurement', requests:'viewRequests', create:'viewCreate', settings:'viewSettings', positions:'viewPositions', people:'viewPeople', roles:'viewRoles', workflow:'viewWorkflow', namenklatura:'viewNamenklatura', suppliers:'viewSuppliers', unitTypes:'viewUnitTypes', otdels:'viewOtdels', warehouses:'viewWarehouses', branches:'viewBranches' };
       if (!views[view]) view = 'overview';
       const nav = document.querySelector('.side-link[data-view="' + view + '"]');
       if (nav && nav.classList.contains('hidden')) view = 'overview';
       for (const [key, id] of Object.entries(views)) document.getElementById(id).classList.toggle('hidden', key !== view);
-      const titleKeys = { people:'people.title', roles:'roles.title', namenklatura:'namenklatura.title', suppliers:'suppliers.title', unitTypes:'unitTypes.title', otdels:'otdels.title', warehouses:'warehouses.title', branches:'branches.title' };
+      const titleKeys = { settings:'settings.title', positions:'positions.title', people:'people.title', roles:'roles.title', namenklatura:'namenklatura.title', suppliers:'suppliers.title', unitTypes:'unitTypes.title', otdels:'otdels.title', warehouses:'warehouses.title', branches:'branches.title' };
       document.getElementById('navTitle').textContent = view === 'overview' ? '' : (titleKeys[view] ? t(titleKeys[view]) : ({ procurement:'Снабжение', requests:'Заявки и согласования', create:'Новая заявка' })[view] || 'Factory OS');
       for (const link of document.querySelectorAll('.side-link[data-view]')) {
         link.classList.toggle('active', link.dataset.view === view);
@@ -2677,6 +2718,7 @@ function pageHtml(): string {
       if (view === 'create') ensureMeta();
       if (view === 'requests') ensureRequests();
       if (view === 'people') ensurePeople();
+      if (view === 'positions') ensurePositions();
       if (view === 'roles') ensureRoleData();
       if (view === 'workflow') ensureWorkflowData();
       if (view === 'procurement') { const table = document.getElementById('table'); autofitUntouched(table); syncGridWidth(table); }
@@ -3567,6 +3609,7 @@ function pageHtml(): string {
 
     /* ── shared users, dashboard accounts, roles and permissions ── */
     let people = [];
+    let positionsItems = [];
     let adminRoles = [];
     let permissionCatalog = [];
     let peopleLoaded = false;
@@ -3580,11 +3623,12 @@ function pageHtml(): string {
     async function ensurePeople(force = false) {
       if (peopleLoaded && !force) return renderPeople();
       try {
-        const tasks = [coreApi('/admin/users')];
+        const tasks = [coreApi('/admin/users'), coreApi('/admin/positions')];
         if (hasPermission('roles.manage')) tasks.push(coreApi('/admin/roles'));
         const data = await Promise.all(tasks);
         people = data[0] || [];
-        if (data[1]) adminRoles = data[1];
+        positionsItems = data[1] || [];
+        if (data[2]) adminRoles = data[2];
         peopleLoaded = true;
         renderPeople();
       } catch (err) {
@@ -3593,7 +3637,7 @@ function pageHtml(): string {
     }
     function renderPeople() {
       const query = document.getElementById('peopleSearch').value.trim().toLowerCase();
-      const filtered = people.filter((u) => !query || [u.fullName,u.username,u.telegramId,u.position].some((v) => String(v || '').toLowerCase().includes(query)));
+      const filtered = people.filter((u) => !query || [u.fullName,u.username,u.telegramId,u.position,u.positionRef?.nameUz,u.positionRef?.nameTr].some((v) => String(v || '').toLowerCase().includes(query)));
       document.getElementById('usersTotal').textContent = people.length;
       document.getElementById('usersWeb').textContent = people.filter((u) => u.username).length;
       document.getElementById('usersTelegram').textContent = people.filter((u) => u.telegramId).length;
@@ -3602,7 +3646,7 @@ function pageHtml(): string {
         const roles = (u.roles || []).map((r) => '<span class="role-chip">' + esc(r.roleCode || 'role') + '</span>').join('') || '<span class="identity-meta">Нет роли</span>';
         const channels = '<div class="identity-meta">' + (u.username ? '@' + esc(u.username) : 'Dashboard —') + '</div><div class="identity-meta">' + (u.telegramId ? 'TG ' + esc(u.telegramId) : 'Telegram —') + '</div>';
         const action = hasPermission('users.manage') ? '<button class="icon-action" type="button" title="Настроить" data-edit-user="' + esc(u.id) + '"><i class="ti ti-pencil" aria-hidden="true"></i></button>' : '';
-        return '<div class="people-row"><div class="identity"><span class="avatar">' + esc(initials(u.fullName)) + '</span><div style="min-width:0"><div class="identity-name">' + esc(u.fullName) + '</div><div class="identity-meta">' + esc(u.position || u.email || 'Без должности') + '</div></div></div><div>' + channels + '</div><div class="role-list">' + roles + '</div><span class="status-dot ' + (u.status === 'active' ? 'active' : '') + '">' + esc(statusLabel(u.status)) + '</span><div>' + action + '</div></div>';
+        return '<div class="people-row"><div class="identity"><span class="avatar">' + esc(initials(u.fullName)) + '</span><div style="min-width:0"><div class="identity-name">' + esc(u.fullName) + '</div><div class="identity-meta">' + esc(localized(u.positionRef, 'nameRu', 'nameUz', 'nameTr') || u.position || u.email || 'Без должности') + '</div></div></div><div>' + channels + '</div><div class="role-list">' + roles + '</div><span class="status-dot ' + (u.status === 'active' ? 'active' : '') + '">' + esc(statusLabel(u.status)) + '</span><div>' + action + '</div></div>';
       }).join('');
       document.getElementById('peopleList').innerHTML = head + (body || '<div class="empty-admin">Пользователи не найдены</div>');
     }
@@ -3621,7 +3665,9 @@ function pageHtml(): string {
       document.getElementById('accountId').value = user ? user.id : '';
       document.getElementById('accountTitle').textContent = editing ? 'Настроить пользователя' : 'Новый пользователь';
       document.getElementById('accountName').value = user ? user.fullName || '' : '';
-      document.getElementById('accountPosition').value = user ? user.position || '' : '';
+      const positionSelect = document.getElementById('accountPosition');
+      positionSelect.innerHTML = '<option value="">Без должности</option>' + positionsItems.filter((p) => p.status === 'active').map((p) => '<option value="' + esc(p.id) + '">' + esc(localized(p, 'nameRu', 'nameUz', 'nameTr')) + '</option>').join('');
+      positionSelect.value = user ? user.positionId || '' : '';
       document.getElementById('accountUsername').value = user ? user.username || '' : '';
       document.getElementById('accountPassword').value = '';
       document.getElementById('accountTelegram').value = user ? user.telegramId || '' : '';
@@ -3673,7 +3719,7 @@ function pageHtml(): string {
       const password = document.getElementById('accountPassword').value;
       const data = {
         fullName:document.getElementById('accountName').value.trim(),
-        position:document.getElementById('accountPosition').value.trim(),
+        positionId:document.getElementById('accountPosition').value || null,
         username:document.getElementById('accountUsername').value.trim(),
         telegramId:document.getElementById('accountTelegram').value.trim(),
         email:document.getElementById('accountEmail').value.trim(),
@@ -3704,6 +3750,47 @@ function pageHtml(): string {
       } catch (err) {
         error.textContent = err instanceof Error ? err.message : 'Не удалось сохранить пользователя';
       } finally { save.disabled = false; }
+    });
+
+    async function ensurePositions(force = false) {
+      if (!force && positionsItems.length) return renderPositions();
+      try { positionsItems = await coreApi('/admin/positions'); renderPositions(); }
+      catch (err) { document.getElementById('positionsList').innerHTML = '<div class="empty-admin">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить должности') + '</div>'; }
+    }
+    function renderPositions() {
+      const head = '<div class="unit-type-row head" style="grid-template-columns:1fr 1fr 1fr 76px"><span>RU</span><span>UZ</span><span>TR</span><span></span></div>';
+      const body = positionsItems.map((p) => '<div class="unit-type-row" style="grid-template-columns:1fr 1fr 1fr 76px"><span>' + esc(p.nameRu) + '</span><span>' + esc(p.nameUz) + '</span><span>' + esc(p.nameTr) + '</span><div class="unit-type-actions"><button class="icon-action" type="button" data-edit-position="' + esc(p.id) + '" title="Изменить"><i class="ti ti-pencil"></i></button><button class="icon-action danger" type="button" data-delete-position="' + esc(p.id) + '" title="Удалить"><i class="ti ti-trash"></i></button></div></div>').join('');
+      document.getElementById('positionsList').innerHTML = head + (body || '<div class="empty-admin">' + t('common.empty') + '</div>');
+    }
+    function openPosition(p) {
+      document.getElementById('positionId').value = p ? p.id : '';
+      document.getElementById('positionTitle').textContent = p ? 'Изменить должность' : 'Новая должность';
+      document.getElementById('positionNameRu').value = p ? p.nameRu : '';
+      document.getElementById('positionNameUz').value = p ? p.nameUz : '';
+      document.getElementById('positionNameTr').value = p ? p.nameTr : '';
+      document.getElementById('positionErr').textContent = '';
+      document.getElementById('positionModal').classList.remove('hidden');
+      document.getElementById('positionNameRu').focus();
+    }
+    function closePosition() { document.getElementById('positionModal').classList.add('hidden'); }
+    document.getElementById('addPosition').addEventListener('click', () => openPosition(null));
+    document.getElementById('positionCancel').addEventListener('click', closePosition);
+    document.getElementById('positionsList').addEventListener('click', async (event) => {
+      const edit = event.target.closest('[data-edit-position]');
+      if (edit) return openPosition(positionsItems.find((p) => p.id === edit.dataset.editPosition));
+      const remove = event.target.closest('[data-delete-position]');
+      if (!remove || !confirm('Удалить эту должность?')) return;
+      try { await coreApi('/admin/positions/' + encodeURIComponent(remove.dataset.deletePosition), 'DELETE'); await ensurePositions(true); peopleLoaded = false; toast('Должность удалена'); }
+      catch (err) { toast(err instanceof Error ? err.message : 'Не удалось удалить'); }
+    });
+    document.getElementById('positionForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const id = document.getElementById('positionId').value;
+      const payload = { nameRu:document.getElementById('positionNameRu').value.trim(), nameUz:document.getElementById('positionNameUz').value.trim(), nameTr:document.getElementById('positionNameTr').value.trim() };
+      const save = document.getElementById('positionSave'); save.disabled = true; document.getElementById('positionErr').textContent = '';
+      try { await coreApi('/admin/positions' + (id ? '/' + encodeURIComponent(id) : ''), id ? 'PUT' : 'POST', payload); closePosition(); await ensurePositions(true); peopleLoaded = false; toast(id ? 'Должность обновлена' : 'Должность добавлена'); }
+      catch (err) { document.getElementById('positionErr').textContent = err instanceof Error ? err.message : 'Не удалось сохранить'; }
+      finally { save.disabled = false; }
     });
 
     const moduleNames = {requests:'Заявки',approvals:'Согласования',warehouse:'Склад',procurement:'Снабжение',suppliers:'Поставщики',finance:'Финансы',admin:'Администрирование',audit:'Аудит',reports:'Отчёты'};
@@ -4513,8 +4600,9 @@ function pageHtml(): string {
     let warehousesItems = [];
     async function ensureWarehouses() {
       try {
-        const [items] = await Promise.all([coreApi('/admin/warehouses'), loadFactories()]);
+        const [items, users] = await Promise.all([coreApi('/admin/warehouses'), coreApi('/admin/users'), loadFactories()]);
         warehousesItems = items;
+        people = users || [];
         renderWarehouses();
       } catch (err) {
         document.getElementById('warehousesList').innerHTML = '<div class="empty-admin">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить склады') + '</div>';
@@ -4522,8 +4610,8 @@ function pageHtml(): string {
     }
     function renderWarehouses() {
       const factoryById = new Map(factoriesItems.map((f) => [f.id, f.name]));
-      const head = '<div class="unit-type-row head" style="grid-template-columns:1fr 1fr 1fr 1fr 76px;"><span>' + t('unitTypes.colNameRu') + '</span><span>' + t('unitTypes.colNameUz') + '</span><span>' + t('unitTypes.colNameTr') + '</span><span>' + t('warehouses.colBranch') + '</span><span></span></div>';
-      const body = warehousesItems.map((w) => '<div class="unit-type-row" style="grid-template-columns:1fr 1fr 1fr 1fr 76px;"><span>' + esc(w.name) + '</span><span>' + esc(w.nameUz || '—') + '</span><span>' + esc(w.nameTr || '—') + '</span><span>' + esc(factoryById.get(w.factoryId) || '—') + '</span><div class="unit-type-actions">' +
+      const head = '<div class="unit-type-row head" style="grid-template-columns:1fr 1fr 1fr 1fr 1fr 76px;"><span>' + t('unitTypes.colNameRu') + '</span><span>' + t('unitTypes.colNameUz') + '</span><span>' + t('unitTypes.colNameTr') + '</span><span>' + t('warehouses.colBranch') + '</span><span>' + t('warehouses.responsible') + '</span><span></span></div>';
+      const body = warehousesItems.map((w) => '<div class="unit-type-row" style="grid-template-columns:1fr 1fr 1fr 1fr 1fr 76px;"><span>' + esc(w.name) + '</span><span>' + esc(w.nameUz || '—') + '</span><span>' + esc(w.nameTr || '—') + '</span><span>' + esc(factoryById.get(w.factoryId) || '—') + '</span><span>' + esc(w.responsibleUserName || '—') + '</span><div class="unit-type-actions">' +
         '<button class="icon-action" type="button" title="Изменить" data-edit-warehouse="' + esc(w.id) + '"><i class="ti ti-pencil" aria-hidden="true"></i></button>' +
         '<button class="icon-action danger" type="button" title="Удалить" data-delete-warehouse="' + esc(w.id) + '"><i class="ti ti-trash" aria-hidden="true"></i></button>' +
         '</div></div>').join('');
@@ -4537,6 +4625,9 @@ function pageHtml(): string {
       document.getElementById('warehouseNameTr').value = w ? w.nameTr || '' : '';
       fillSelect('warehouseFactory', factoriesItems, 'id', 'name', true);
       document.getElementById('warehouseFactory').value = w ? w.factoryId || '' : '';
+      const responsible = document.getElementById('warehouseResponsible');
+      responsible.innerHTML = '<option value="">Не назначен</option>' + people.filter((u) => u.status === 'active').map((u) => '<option value="' + esc(u.id) + '">' + esc(u.fullName) + '</option>').join('');
+      responsible.value = w ? w.responsibleUserId || '' : '';
       document.getElementById('warehouseErr').textContent = '';
       document.getElementById('warehouseModal').classList.remove('hidden');
       document.getElementById('warehouseName').focus();
@@ -4562,6 +4653,7 @@ function pageHtml(): string {
         nameUz: document.getElementById('warehouseNameUz').value.trim(),
         nameTr: document.getElementById('warehouseNameTr').value.trim(),
         factory_id: document.getElementById('warehouseFactory').value || '',
+        responsibleUserId: document.getElementById('warehouseResponsible').value || null,
       };
       const save = document.getElementById('warehouseSave');
       const error = document.getElementById('warehouseErr');
@@ -4939,7 +5031,7 @@ function pageHtml(): string {
       document.getElementById('fNeeded').addEventListener('click', openNativeDatePicker);
       document.getElementById('fNeeded').addEventListener('focus', openNativeDatePicker);
       fillSelect('fObject', meta.objects, 'value', 'label', true);
-      fillSelect('fWarehouse', meta.warehouses.map((w) => ({ v:w.name, l:localized(w,'name','nameUz','nameTr') })), 'v', 'l', true);
+      fillSelect('fWarehouse', meta.warehouses.map((w) => ({ v:w.id, l:localized(w,'name','nameUz','nameTr') })), 'v', 'l', true);
       fillSelect('fPurpose', meta.purposes, 'value', 'label', true);
       const op = document.getElementById('originPills');
       op.innerHTML = meta.origins.map((o) =>
@@ -5074,7 +5166,7 @@ function pageHtml(): string {
           requestType: form.type,
           departmentId: document.getElementById('fDepartment').value,
           lang: currentLang(),
-          warehouseName: form.type.indexOf('material') === 0 ? document.getElementById('fWarehouse').value : '',
+          warehouseId: form.type.indexOf('material') === 0 ? document.getElementById('fWarehouse').value : '',
           obyekt: document.getElementById('fObject').value,
           origin: form.type.indexOf('material') === 0 ? form.origin : '',
           purpose: document.getElementById('fPurpose').value,
@@ -5086,7 +5178,7 @@ function pageHtml(): string {
         const canonicalPayload = {
           requestType:dashboardPayload.requestType,
           departmentId:dashboardPayload.departmentId || null,
-          warehouseName:dashboardPayload.warehouseName || null,
+          warehouseId:dashboardPayload.warehouseId || null,
           priority:dashboardPayload.priority,
           neededDate:dashboardPayload.neededDate || null,
           title:form.items.map((item) => item.name.trim()).filter(Boolean).slice(0,3).join(', ') || 'Новая заявка',

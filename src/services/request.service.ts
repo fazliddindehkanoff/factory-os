@@ -4,7 +4,7 @@
  * is year-scoped and NaN-safe (fixing the legacy generator), and the workflow +
  * first step are chosen by the data-driven engine, not hardcoded.
  */
-import { and, eq, inArray, like } from 'drizzle-orm';
+import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { initialPlacement } from './lifecycle.service.js';
 import { statusForStep } from '../workflow/step-kinds.js';
@@ -34,6 +34,7 @@ export interface CreateRequestInput {
   title?: string;
   description?: string;
   departmentName?: string | null;
+  warehouseId?: string | null;
   warehouseName?: string | null;
   neededDate?: Date | null;
   customFields?: Record<string, unknown> | null;
@@ -179,6 +180,20 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
     const year = new Date().getFullYear();
     const requestNumber = await generateRequestNumber(tx, input.holdingId, year);
     const workflow = await selectWorkflow(tx, input.holdingId, input.requestType);
+    let warehouse: { id: string; name: string } | null = null;
+    if (input.warehouseId) {
+      [warehouse] = await tx.select({ id: schema.warehouses.id, name: schema.warehouses.name }).from(schema.warehouses)
+        .where(and(eq(schema.warehouses.id, input.warehouseId), eq(schema.warehouses.holdingId, input.holdingId), eq(schema.warehouses.status, 'active'))).limit(1);
+    } else if (input.warehouseName?.trim()) {
+      const wanted = input.warehouseName.trim();
+      [warehouse] = await tx.select({ id: schema.warehouses.id, name: schema.warehouses.name }).from(schema.warehouses)
+        .where(and(eq(schema.warehouses.holdingId, input.holdingId), eq(schema.warehouses.status, 'active'), or(
+          sql`lower(trim(${schema.warehouses.name})) = lower(trim(${wanted}))`,
+          sql`lower(trim(coalesce(${schema.warehouses.nameUz}, ''))) = lower(trim(${wanted}))`,
+          sql`lower(trim(coalesce(${schema.warehouses.nameTr}, ''))) = lower(trim(${wanted}))`,
+        ))).limit(1);
+    }
+    if ((input.warehouseId || input.warehouseName?.trim()) && !warehouse) throw new ValidationError('Склад не найден в организации');
 
     // Place the request on the FIRST applicable step of its workflow (data-driven),
     // auto-skipping approval steps whose only approver would be the author (bug #1).
@@ -212,7 +227,8 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
         title: input.title ?? null,
         description: input.description ?? null,
         departmentName: input.departmentName ?? null,
-        warehouseName: input.warehouseName ?? null,
+        warehouseId: warehouse?.id ?? null,
+        warehouseName: warehouse?.name ?? input.warehouseName ?? null,
         neededDate: input.neededDate ?? null,
         status,
         workflowId: workflow?.id ?? null,

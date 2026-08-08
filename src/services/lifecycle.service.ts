@@ -47,6 +47,7 @@ interface RequestRow {
   departmentId: string | null;
   requesterId: string;
   responsibleUserId: string | null;
+  warehouseId: string | null;
   requestType: string;
   status: string;
   workflowId: string | null;
@@ -242,6 +243,13 @@ async function actorMayAct(
     ['procurement.quote', 'procurement.view'].includes(def.perm)
   ) {
     return false;
+  }
+  if (['warehouse_check', 'receiving', 'issue'].includes(step.stepKind) && req.warehouseId) {
+    const [assigned] = await db.select({ userId: schema.warehouseResponsibles.userId })
+      .from(schema.warehouseResponsibles)
+      .where(and(eq(schema.warehouseResponsibles.warehouseId, req.warehouseId), eq(schema.warehouseResponsibles.holdingId, req.holdingId)))
+      .limit(1);
+    if (assigned && assigned.userId !== userId) return false;
   }
   return true;
 }
@@ -627,6 +635,13 @@ export async function markItemStock(
     if (req.requesterId === input.actor.id) throw new ForbiddenError('Нельзя проверять наличие по собственной заявке');
     if (!(await hasPermission(tx, input.actor.id, 'warehouse.check_stock', reqScope(req)))) {
       throw new ForbiddenError('Недостаточно прав для проверки наличия');
+    }
+    if (req.warehouseId) {
+      const [assigned] = await tx.select({ userId: schema.warehouseResponsibles.userId })
+        .from(schema.warehouseResponsibles)
+        .where(and(eq(schema.warehouseResponsibles.warehouseId, req.warehouseId), eq(schema.warehouseResponsibles.holdingId, req.holdingId)))
+        .limit(1);
+      if (assigned && assigned.userId !== input.actor.id) throw new ForbiddenError('Эта заявка направлена ответственному другого склада');
     }
     const [item] = await tx
       .select()

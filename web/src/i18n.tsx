@@ -9,10 +9,10 @@ const STORAGE_KEY = 'factoryos.lang';
 export const LANGUAGE_RELOAD_EVENT = 'factoryos:language-before-reload';
 
 export const LANG_LABELS: Record<Lang, string> = {
-  ru: 'Рус',
-  uz: 'Uzb',
+  ru: 'RU',
+  uz: 'UZ',
   en: 'Eng',
-  tr: 'Türkçe',
+  tr: 'TR',
 };
 
 /** Языки, доступные в переключателе (лист H): Uzb / Рус / Türkçe. */
