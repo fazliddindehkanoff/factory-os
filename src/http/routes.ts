@@ -1579,6 +1579,7 @@ export function buildRouter(deps: RouterDeps): Router {
         amount: body.amount,
         supplierName: body.supplierName,
         supplierId: body.supplierId,
+        supplierPhone: body.supplierPhone,
         ndsIncluded: body.ndsIncluded,
         paymentType: body.paymentType,
         quoteItems: Array.isArray(body.quoteItems) ? body.quoteItems : undefined,
@@ -2206,13 +2207,22 @@ export function buildRouter(deps: RouterDeps): Router {
         return;
       }
       const clean = (v: unknown) => (v == null || String(v).trim() === '' ? null : String(v).trim());
+      const phone = clean(body.phone);
+      const normalizedPhone = phone ? normalizePhone(phone) : null;
+      if (normalizedPhone) {
+        const [samePhone] = await db.select({ id: schema.suppliers.id }).from(schema.suppliers).where(and(
+          eq(schema.suppliers.holdingId, u.holdingId), eq(schema.suppliers.normalizedPhone, normalizedPhone),
+        )).limit(1);
+        if (samePhone) { res.status(409).json({ error: 'Поставщик с таким номером уже существует' }); return; }
+      }
       const [row] = await db
         .insert(schema.suppliers)
         .values({
           holdingId: u.holdingId,
           name,
           inn: clean(body.inn),
-          phone: clean(body.phone),
+          phone: normalizedPhone,
+          normalizedPhone,
           email: clean(body.email),
           contactPerson: clean(body.contactPerson),
           category: clean(body.category),
@@ -2250,8 +2260,19 @@ export function buildRouter(deps: RouterDeps): Router {
       }
       const body = req.body ?? {};
       const patch: Record<string, unknown> = { updatedAt: new Date() };
-      for (const f of ['name', 'inn', 'phone', 'email', 'contactPerson', 'category', 'note'] as const) {
+      for (const f of ['name', 'inn', 'email', 'contactPerson', 'category', 'note'] as const) {
         if (body[f] !== undefined) patch[f] = body[f] == null ? null : String(body[f]).trim();
+      }
+      if (body.phone !== undefined) {
+        const normalizedPhone = body.phone == null || String(body.phone).trim() === '' ? null : normalizePhone(String(body.phone));
+        if (normalizedPhone) {
+          const [samePhone] = await db.select({ id: schema.suppliers.id }).from(schema.suppliers).where(and(
+            eq(schema.suppliers.holdingId, u.holdingId), eq(schema.suppliers.normalizedPhone, normalizedPhone), ne(schema.suppliers.id, id),
+          )).limit(1);
+          if (samePhone) { res.status(409).json({ error: 'Поставщик с таким номером уже существует' }); return; }
+        }
+        patch.phone = normalizedPhone;
+        patch.normalizedPhone = normalizedPhone;
       }
       if (patch.name === '') {
         res.status(400).json({ error: 'Название поставщика не может быть пустым' });

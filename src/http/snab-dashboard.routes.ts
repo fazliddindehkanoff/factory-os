@@ -704,7 +704,7 @@ async function fetchCreateMeta(db: Db, holdingId: string, userId?: string): Prom
     WHERE u.holding_id = ${holdingId} AND u.status = 'active' AND ur.status = 'active' AND d.status = 'active'
   `);
   const whRes = await db.execute(sql`
-    SELECT name, name_uz, name_tr FROM warehouses
+    SELECT id, name, name_uz, name_tr FROM warehouses
     WHERE holding_id = ${holdingId} AND status = 'active'
     ORDER BY name ASC
   `);
@@ -742,7 +742,7 @@ async function fetchCreateMeta(db: Db, holdingId: string, userId?: string): Prom
   // name, so `name` stays the stable value — only the select's visible label
   // is localized client-side.
   const warehouses = (Array.isArray(whRes) ? whRes : whRes.rows ?? [])
-    .map((w: any) => ({ name: text(w.name), nameUz: text(w.name_uz), nameTr: text(w.name_tr) }));
+    .map((w: any) => ({ id: text(w.id), name: text(w.name), nameUz: text(w.name_uz), nameTr: text(w.name_tr) }));
   const units = (Array.isArray(unitRes) ? unitRes : unitRes.rows ?? [])
     .map((u: any) => ({ value: text(u.name_ru), label: text(u.name_ru), name: text(u.name_ru), nameUz: text(u.name_uz), nameTr: text(u.name_tr), code: text(u.code) }))
     .filter((u: { value: string }) => u.value);
@@ -776,6 +776,7 @@ async function fetchCreateMeta(db: Db, holdingId: string, userId?: string): Prom
 
 interface CreateBody {
   requesterId?: unknown;
+  creatorId?: unknown;
   requestType?: unknown;
   departmentId?: unknown;
   warehouseName?: unknown;
@@ -837,6 +838,7 @@ async function createFromDashboard(db: Db, holdingId: string, body: CreateBody):
   const req = await createRequest(db, {
     holdingId,
     requesterId,
+    creatorId: text(body.creatorId).trim() || requesterId,
     departmentId: text(body.departmentId).trim() || null,
     requestType: text(body.requestType).trim() || 'material_request',
     priority,
@@ -3400,7 +3402,9 @@ function pageHtml(): string {
         fields.push(actionField('actionQuotation','Коммерческое предложение','<select class="fin" id="actionQuotation">' + (currentRequest.quotations || []).map((quote) => '<option value="' + esc(quote.id) + '">' + esc((quote.supplierName || 'Поставщик') + ' — ' + money(quote.amount) + ' UZS') + '</option>').join('') + '</select>',true));
       }
       if (action.quote === 'add') {
-        fields.push(actionField('actionSupplier','Поставщик','<input class="fin" id="actionSupplier" required placeholder="Название компании" />'));
+        fields.push(actionField('actionSupplier','Имя поставщика','<input class="fin" id="actionSupplier" required autocomplete="organization" placeholder="Название компании или имя" />'));
+        fields.push(actionField('actionSupplierPhone','Телефон поставщика','<input class="fin" id="actionSupplierPhone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="+998 90 123 45 67" />'));
+        fields.push('<div class="modal-field full"><span class="identity-meta">Если этот номер уже есть в справочнике, будет использован существующий поставщик. Иначе новый поставщик создастся автоматически.</span></div>');
         fields.push('<div class="modal-field full"><label>Условия по каждой позиции</label><div class="quote-item-fields">' + (currentRequest.items || []).map((item) => '<div class="quote-entry-line" data-quote-line="' + esc(item.id) + '"><span class="quote-entry-name">' + esc(item.name || item.itemName || 'Позиция') + ' · ' + esc(item.quantity || 0) + ' ' + esc(item.unit || item.unitName || '') + '</span><div class="quote-entry-controls"><input class="fin" data-quote-price type="number" min="0" required placeholder="Цена, UZS" /><select class="fin" data-quote-payment><option>Перечисление</option><option>Наличные</option></select><label class="quote-entry-nds"><span>НДС</span><input data-quote-nds type="checkbox" /></label></div></div>').join('') + '</div></div>');
       }
       if (['receive_partial','receive_discrepancy'].includes(action.action)) {
@@ -3434,6 +3438,7 @@ function pageHtml(): string {
       if (quotation) body.quotationId = quotation.value;
       if (currentAction.quote === 'add') {
         const supplier = document.getElementById('actionSupplier').value.trim();
+        const supplierPhone = document.getElementById('actionSupplierPhone').value.trim();
         const quoteItems = [...document.querySelectorAll('[data-quote-line]')].map((line) => ({
           itemId:line.dataset.quoteLine,
           unitPrice:Number(line.querySelector('[data-quote-price]').value),
@@ -3442,6 +3447,7 @@ function pageHtml(): string {
           ndsIncluded:line.querySelector('[data-quote-nds]').checked,
         }));
         body.supplierName = supplier;
+        body.supplierPhone = supplierPhone;
         body.paymentType = quoteItems[0]?.paymentType || '';
         body.ndsIncluded = quoteItems.some((item) => item.ndsIncluded);
         body.quoteItems = quoteItems;
@@ -5025,7 +5031,7 @@ function pageHtml(): string {
         return { id:user.id, label:departmentLabel ? user.name + ' · ' + departmentLabel : user.name };
       }), 'id', 'label', false);
       document.getElementById('fRequester').value = session.user.id;
-      document.getElementById('fRequester').disabled = !hasPermission('users.manage');
+      document.getElementById('fRequester').disabled = false;
       syncRequesterDepartment('');
       document.getElementById('fRequester').addEventListener('change', () => syncRequesterDepartment(''));
       document.getElementById('fNeeded').addEventListener('click', openNativeDatePicker);
@@ -5476,11 +5482,7 @@ export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router 
     try {
       const body = req.body as CreateBody;
       const requesterId = text(body.requesterId).trim() || actor.id;
-      if (requesterId !== actor.id && !actor.permissions.includes('users.manage')) {
-        res.status(403).json({ error: 'Создавать заявку от имени другого пользователя может только администратор' });
-        return;
-      }
-      const out = await createFromDashboard(db, actor.holdingId, { ...body, requesterId });
+      const out = await createFromDashboard(db, actor.holdingId, { ...body, requesterId, creatorId: actor.id });
       res.json(out);
     } catch (e) {
       res.status(400).json({ error: (e as Error).message || 'Не удалось создать заявку' });

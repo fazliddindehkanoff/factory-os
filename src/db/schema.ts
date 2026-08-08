@@ -775,6 +775,7 @@ export const suppliers = pgTable(
     name: text('name').notNull(),
     inn: text('inn'),
     phone: text('phone'),
+    normalizedPhone: text('normalized_phone'),
     email: text('email'),
     contactPerson: text('contact_person'),
     category: text('category'),
@@ -784,7 +785,10 @@ export const suppliers = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({ holdingIdx: index('suppliers_holding_idx').on(t.holdingId) }),
+  (t) => ({
+    holdingIdx: index('suppliers_holding_idx').on(t.holdingId),
+    phoneIdx: uniqueIndex('suppliers_holding_normalized_phone_idx').on(t.holdingId, t.normalizedPhone),
+  }),
 );
 
 // ── Attachments (base64 stored in text; capped at the API boundary) ──────────

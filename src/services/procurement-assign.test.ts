@@ -94,6 +94,7 @@ describe('bug #8: assign to a specific procurement person', () => {
       action: 'add_quotation',
       actor: { id: proc, holdingId: holding.id },
       supplierName: 'Supplier',
+      supplierPhone: '+998 90 123 45 67',
       ndsIncluded: true,
       quoteItems: [
         { itemId: items.find((i: any) => i.name === 'A')!.id, unitPrice: 100, supplierName: 'Supplier A', ndsIncluded: true, paymentType: 'Перечисление' },
@@ -105,6 +106,8 @@ describe('bug #8: assign to a specific procurement person', () => {
     expect(q.amount).toBe(350); // 2*100 + 3*50; NDS is metadata, not an auto multiplier
     expect(q.ndsIncluded).toBe(true);
     expect(q.paymentType).toBe('Перечисление');
+    const [supplier] = await db.select().from(schema.suppliers).where(eq(schema.suppliers.normalizedPhone, '998901234567'));
+    expect(q.supplierId).toBe(supplier.id);
     const [afterProposal] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.id));
     expect(afterProposal.status).toBe('price_approval');
     expect(await availableActions(db, afterProposal, proc)).toEqual([]);
@@ -114,14 +117,31 @@ describe('bug #8: assign to a specific procurement person', () => {
     const priced = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
     expect(priced.find((i: any) => i.name === 'A')!.estimatedPrice).toBe(100);
     expect(priced.find((i: any) => i.name === 'A')!.totalAmount).toBe(200);
-    expect(priced.find((i: any) => i.name === 'A')!.supplierName).toBe('Supplier A');
+    expect(priced.find((i: any) => i.name === 'A')!.supplierName).toBe('Supplier');
     expect(priced.find((i: any) => i.name === 'A')!.ndsIncluded).toBe(true);
     expect(priced.find((i: any) => i.name === 'A')!.paymentType).toBe('Перечисление');
     expect(priced.find((i: any) => i.name === 'B')!.estimatedPrice).toBe(50);
     expect(priced.find((i: any) => i.name === 'B')!.totalAmount).toBe(150);
-    expect(priced.find((i: any) => i.name === 'B')!.supplierName).toBe('Supplier B');
+    expect(priced.find((i: any) => i.name === 'B')!.supplierName).toBe('Supplier');
     expect(priced.find((i: any) => i.name === 'B')!.ndsIncluded).toBe(false);
     expect(priced.find((i: any) => i.name === 'B')!.paymentType).toBe('Наличные');
+
+    const createdAgain = await createRequest(db, {
+      holdingId: holding.id, requesterId: requester, factoryId: factory.id,
+      items: [{ name: 'C', quantity: 1, unitPrice: 0 }],
+    });
+    await performAction(db, { requestId: createdAgain.id, action: 'assign_procurement', actor: { id: head, holdingId: holding.id }, pin: '1234', assigneeId: proc });
+    const [itemAgain] = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, createdAgain.id));
+    await performAction(db, {
+      requestId: createdAgain.id, action: 'add_quotation', actor: { id: proc, holdingId: holding.id },
+      supplierName: 'A typo must not duplicate', supplierPhone: '90 123-45-67',
+      quoteItems: [{ itemId: itemAgain.id, unitPrice: 10, paymentType: 'Наличные' }],
+    });
+    const suppliers = await db.select().from(schema.suppliers).where(eq(schema.suppliers.holdingId, holding.id));
+    expect(suppliers).toHaveLength(1);
+    const [quoteAgain] = await db.select().from(schema.quotations).where(eq(schema.quotations.requestId, createdAgain.id));
+    expect(quoteAgain.supplierId).toBe(supplier.id);
+    expect(quoteAgain.supplierName).toBe('Supplier');
   });
 
   it('procurement can add product prices without supplier yet', async () => {

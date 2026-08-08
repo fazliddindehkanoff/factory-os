@@ -333,7 +333,7 @@ describe('snab dashboard authentication', () => {
   });
 
   it('lets an owner create a shared web/Telegram user, assign a role, edit it, and control login', async () => {
-    const { app, client } = await make();
+    const { app, db, client, owner } = await make();
     const ownerLogin = await request(app)
       .post('/snab-dashboard/api/auth/login')
       .send({ username: USERNAME, password: PASSWORD })
@@ -374,6 +374,21 @@ describe('snab dashboard authentication', () => {
       .send({ username: 'requester.web', password: 'requester-password' })
       .expect(200);
     expect(userLogin.body.permissions).toContain('requests.create');
+    const [anotherRequester] = await db.insert(schema.users).values({
+      holdingId: owner.holdingId, fullName: 'Another Active Employee', status: 'active',
+    }).returning();
+    const requesterAuth = { Authorization: `Bearer ${userLogin.body.token}` };
+    const requesterMeta = await request(app).post('/snab-dashboard/api/meta').set(requesterAuth).send({}).expect(200);
+    expect(requesterMeta.body.users.map((user: any) => user.id)).toContain(anotherRequester.id);
+    const onBehalf = await request(app).post('/snab-dashboard/api/requests').set(requesterAuth).send({
+      requesterId: anotherRequester.id,
+      requestType: 'material_request',
+      items: [{ name: 'Created for another employee', qty: 1, price: 0 }],
+    }).expect(200);
+    const [storedRequest] = await db.select().from(schema.requests).where(eq(schema.requests.id, onBehalf.body.id));
+    expect(storedRequest.requesterId).toBe(anotherRequester.id);
+    const [creationAudit] = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.entityId, onBehalf.body.id));
+    expect(creationAudit.userId).toBe(created.body.id);
 
     await request(app)
       .put(`/api/admin/users/${created.body.id}`)

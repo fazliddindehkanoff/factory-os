@@ -26,6 +26,8 @@ export interface CreateRequestItem {
 export interface CreateRequestInput {
   holdingId: string;
   requesterId: string;
+  /** Real actor creating the request when submitted on another user's behalf. */
+  creatorId?: string;
   companyId?: string | null;
   factoryId?: string | null;
   departmentId?: string | null;
@@ -264,7 +266,7 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
       requestId: req.id,
       oldStatus: null,
       newStatus: status,
-      changedBy: input.requesterId,
+      changedBy: input.creatorId ?? input.requesterId,
       source: 'api',
     });
     // Bug #1: record every approval step auto-skipped because the author was the
@@ -282,7 +284,7 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
     await tx.insert(schema.auditLogs).values({
       holdingId: input.holdingId,
       factoryId: input.factoryId ?? null,
-      userId: input.requesterId,
+      userId: input.creatorId ?? input.requesterId,
       action: 'request.created',
       module: 'requests',
       entityType: 'request',

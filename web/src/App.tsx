@@ -2626,7 +2626,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
 
   const run = async (
     action: string,
-    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[]; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
+    vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; supplierPhone?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[]; leadTime?: string; quotationId?: string; assigneeId?: string } = {},
   ) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -3503,7 +3503,7 @@ function ActionModal({
   quotations: QuotationRow[];
   items: DetailItem[];
   onCancel: () => void;
-  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[]; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
+  onConfirm: (vals: { pin?: string; comment?: string; amount?: number; supplierName?: string; supplierId?: string; supplierPhone?: string; ndsIncluded?: boolean; paymentType?: string; quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[]; leadTime?: string; quotationId?: string; assigneeId?: string }) => void;
 }) {
   const { t } = useI18n();
   const [comment, setComment] = useState('');
@@ -3530,9 +3530,8 @@ function ActionModal({
     }
   }, [isAssign, requesterId]);
   const [amount, setAmount] = useState('');
-  const [suppliers, setSuppliers] = useState<{ id: string; name: string }[]>([]);
-  const [itemSupplierIds, setItemSupplierIds] = useState<Record<string, string>>({});
-  const [itemSuppliers, setItemSuppliers] = useState<Record<string, string>>(() => Object.fromEntries(items.map((it) => [it.id, it.supplierName ?? ''])));
+  const [supplierName, setSupplierName] = useState('');
+  const [supplierPhone, setSupplierPhone] = useState('');
   const [paymentTypes, setPaymentTypes] = useState<string[]>([]);
   const [itemPaymentTypes, setItemPaymentTypes] = useState<Record<string, string>>(() => Object.fromEntries(items.map((it) => [it.id, it.paymentType ?? ''])));
   const [itemNds, setItemNds] = useState<Record<string, boolean>>(() => Object.fromEntries(items.map((it) => [it.id, !!it.ndsIncluded])));
@@ -3541,9 +3540,6 @@ function ActionModal({
   const [quotationId, setQuotationId] = useState(quotations.find((q) => q.selected)?.id ?? '');
   const isAdd = action.quote === 'add';
   const isSelect = action.quote === 'select';
-  useEffect(() => {
-    if (isAdd) api.suppliers.list().then(setSuppliers).catch(() => {});
-  }, [isAdd]);
   useEffect(() => {
     if (isAdd) {
       api.procurement.settings().then((r) => {
@@ -3560,10 +3556,7 @@ function ActionModal({
   const quoteLines = items.map((it) => {
     const unitPrice = Number(unitPrices[it.id] || 0);
     const base = Number(it.quantity) * unitPrice;
-    const supplierIdForItem = itemSupplierIds[it.id] || '';
-    const pickedSupplier = suppliers.find((s) => s.id === supplierIdForItem);
-    const supplierNameForItem = pickedSupplier?.name ?? (itemSuppliers[it.id] || '').trim();
-    return { item: it, unitPrice, supplierId: supplierIdForItem || null, supplierName: supplierNameForItem, ndsIncluded: !!itemNds[it.id], paymentType: itemPaymentTypes[it.id] || '', total: Math.round(base) };
+    return { item: it, unitPrice, supplierId: null, supplierName: supplierName.trim(), ndsIncluded: !!itemNds[it.id], paymentType: itemPaymentTypes[it.id] || '', total: Math.round(base) };
   });
   const quoteTotal = quoteLines.reduce((sum, l) => sum + l.total, 0);
   // Effective reject comment: chosen preset, or free text when «Другое».
@@ -3573,7 +3566,7 @@ function ActionModal({
   const ok =
     (!action.comment || effectiveComment.length > 0) &&
     (!action.amount || isAdd || (amount !== '' && Number(amount) > 0)) &&
-    (!isAdd || (quoteLines.length > 0 && quoteLines.every((l) => Number.isFinite(l.unitPrice) && l.unitPrice > 0 && l.paymentType.trim().length > 0) && quoteTotal > 0)) &&
+    (!isAdd || (supplierName.trim().length > 0 && supplierPhone.replace(/\D/g, '').length >= 7 && quoteLines.length > 0 && quoteLines.every((l) => Number.isFinite(l.unitPrice) && l.unitPrice > 0 && l.paymentType.trim().length > 0) && quoteTotal > 0)) &&
     (!isSelect || quotationId !== '') &&
     (!isAssign || assigneeId !== '');
 
@@ -3595,6 +3588,13 @@ function ActionModal({
         {isAdd && (
           <>
             <div style={{ marginBottom: 12 }}>
+              <label htmlFor="quote-supplier-name" style={lbl}>{t('proc.supplierName')}</label>
+              <input id="quote-supplier-name" value={supplierName} onChange={(e) => setSupplierName(e.target.value)} autoComplete="organization" placeholder={t('proc.supplierNamePlaceholder')} style={inputStyle} />
+              <label htmlFor="quote-supplier-phone" style={{ ...lbl, marginTop: 8 }}>{t('proc.supplierPhone')}</label>
+              <input id="quote-supplier-phone" value={supplierPhone} onChange={(e) => setSupplierPhone(e.target.value)} type="tel" inputMode="tel" autoComplete="tel" placeholder="+998 90 123 45 67" style={inputStyle} />
+              <div style={{ fontSize: 12, lineHeight: 1.45, color: 'var(--fg3)', marginTop: 6 }}>{t('proc.supplierPhoneHint')}</div>
+            </div>
+            <div style={{ marginBottom: 12 }}>
               <div style={lbl}>{t('proc.itemPrices')}</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {quoteLines.map(({ item, total }) => (
@@ -3613,29 +3613,6 @@ function ActionModal({
                       placeholder={t('proc.unitPrice')}
                       style={{ ...inputStyle, padding: '10px 12px', fontFamily: "'IBM Plex Mono', monospace" }}
                     />
-                    {suppliers.length > 0 && (
-                      <select
-                        value={itemSupplierIds[item.id] ?? ''}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setItemSupplierIds((prev) => ({ ...prev, [item.id]: value }));
-                          const s = suppliers.find((x) => x.id === value);
-                          if (s) setItemSuppliers((prev) => ({ ...prev, [item.id]: s.name }));
-                        }}
-                        style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
-                      >
-                        <option value="">{t('proc.selectSupplier')}</option>
-                        {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                      </select>
-                    )}
-                    {!(itemSupplierIds[item.id]) && (
-                      <input
-                        value={itemSuppliers[item.id] ?? ''}
-                        onChange={(e) => setItemSuppliers((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                        placeholder={suppliers.length > 0 ? t('proc.supplierManual') : t('proc.supplier')}
-                        style={{ ...inputStyle, padding: '10px 12px', marginTop: 8 }}
-                      />
-                    )}
                     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 118px', gap: 8, marginTop: 8 }}>
                       <select
                         value={itemPaymentTypes[item.id] ?? ''}
@@ -3722,12 +3699,8 @@ function ActionModal({
                 pin: undefined,
                 comment: action.comment ? effectiveComment : undefined,
                 amount: isAdd ? quoteTotal : (action.amount ? Number(amount) : undefined),
-                supplierName: isAdd ? (() => {
-                  const names = [...new Set(quoteLines.map((l) => l.supplierName).filter(Boolean))];
-                  if (names.length === 1) return names[0];
-                  if (names.length > 1) return 'По позициям';
-                  return 'Не указан';
-                })() : undefined,
+                supplierName: isAdd ? supplierName.trim() : undefined,
+                supplierPhone: isAdd ? supplierPhone.trim() : undefined,
                 ndsIncluded: isAdd ? quoteLines.some((l) => l.ndsIncluded) : undefined,
                 paymentType: isAdd ? (() => {
                   const types = [...new Set(quoteLines.map((l) => l.paymentType).filter(Boolean))];

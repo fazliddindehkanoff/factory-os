@@ -21,6 +21,12 @@ const ENDPOINTS_WITHOUT_CLIENT: string[] = [
   // /snab-dashboard client, not by the Telegram React client in web/src/api.ts.
   'POST /admin/users',
   'PUT /admin/users/{}',
+  // Multilingual positions are managed by the self-contained settings page in
+  // /snab-dashboard, rather than by the Telegram React client.
+  'GET /admin/positions',
+  'POST /admin/positions',
+  'PUT /admin/positions/{}',
+  'DELETE /admin/positions/{}',
   // Unit-types management (namenklatura settings) is consumed by the
   // self-contained /snab-dashboard client, same as the account endpoints above.
   'GET /admin/unit-types',

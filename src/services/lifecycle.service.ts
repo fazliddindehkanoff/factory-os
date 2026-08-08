@@ -16,6 +16,7 @@ import * as schema from '../db/schema.js';
 import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
 import { applyStockOp } from './warehouse.service.js';
+import { normalizePhone } from '../auth/phone.js';
 import { nextStep, firstStep, applicableSteps, type WorkflowContext } from '../workflow/engine.js';
 import {
   actionsForKind,
@@ -495,6 +496,7 @@ export interface PerformInput {
   amount?: number;
   supplierName?: string;
   supplierId?: string;
+  supplierPhone?: string;
   ndsIncluded?: boolean;
   paymentType?: string;
   quoteItems?: { itemId: string; unitPrice: number; supplierName?: string; supplierId?: string | null; ndsIncluded?: boolean; paymentType?: string | null }[];
@@ -797,6 +799,29 @@ export async function performAction(db: Db, input: PerformInput) {
       const items = await tx.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, req.id));
       const byId = new Map(items.map((it: any) => [it.id, it]));
       const quoteItems = Array.isArray(input.quoteItems) ? input.quoteItems : [];
+      const suppliedPhone = String(input.supplierPhone ?? '').trim();
+      if (suppliedPhone) {
+        const suppliedName = String(input.supplierName ?? '').trim();
+        const normalizedPhone = normalizePhone(suppliedPhone);
+        if (!suppliedName) throw new ValidationError('Укажите имя поставщика');
+        if (normalizedPhone.length < 7) throw new ValidationError('Укажите корректный номер поставщика');
+        let [supplier] = await tx.select().from(schema.suppliers).where(and(
+          eq(schema.suppliers.holdingId, req.holdingId), eq(schema.suppliers.normalizedPhone, normalizedPhone),
+        )).limit(1);
+        if (!supplier) {
+          const inserted = await tx.insert(schema.suppliers).values({
+            holdingId: req.holdingId, name: suppliedName, phone: normalizedPhone, normalizedPhone, status: 'active',
+          }).onConflictDoNothing({ target: [schema.suppliers.holdingId, schema.suppliers.normalizedPhone] }).returning();
+          supplier = inserted[0] ?? (await tx.select().from(schema.suppliers).where(and(
+            eq(schema.suppliers.holdingId, req.holdingId), eq(schema.suppliers.normalizedPhone, normalizedPhone),
+          )).limit(1))[0];
+        } else if (supplier.status !== 'active') {
+          [supplier] = await tx.update(schema.suppliers).set({ status: 'active', updatedAt: new Date() })
+            .where(eq(schema.suppliers.id, supplier.id)).returning();
+        }
+        input.supplierId = supplier.id;
+        input.supplierName = supplier.name;
+      }
       let ndsIncluded = !!input.ndsIncluded;
       let amt = Math.max(0, Math.round(Number(input.amount) || 0));
       if (quoteItems.length > 0) {
@@ -808,8 +833,8 @@ export async function performAction(db: Db, input: PerformInput) {
           if (!item) throw new ValidationError('Позиция КП не найдена в заявке');
           const unitPrice = Number(qi.unitPrice);
           if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new ValidationError('Цена позиции должна быть неотрицательным числом');
-          let itemSupplierName = String(qi.supplierName ?? '').trim();
-          let itemSupplierId: string | null = qi.supplierId ? String(qi.supplierId) : null;
+          let itemSupplierName = String(input.supplierName ?? qi.supplierName ?? '').trim();
+          let itemSupplierId: string | null = input.supplierId ? String(input.supplierId) : qi.supplierId ? String(qi.supplierId) : null;
           if (itemSupplierId) {
             const [sup] = await tx.select().from(schema.suppliers).where(eq(schema.suppliers.id, itemSupplierId));
             if (!sup || sup.holdingId !== req.holdingId) throw new ValidationError('Поставщик не найден');

@@ -337,6 +337,13 @@
       "when": 1786190400000,
       "tag": "0047_positions_warehouse_responsible",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1786276800000,
+      "tag": "0048_supplier_phone_identity",
+      "breakpoints": true
     }
   ]
 }
