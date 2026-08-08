@@ -5365,7 +5365,7 @@ function pageHtml(): string {
 
 export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router {
   const r = Router();
-  const dashboardViews = new Set(['overview', 'procurement', 'requests', 'create', 'people', 'roles', 'workflow', 'namenklatura', 'suppliers', 'unit-types', 'departments', 'warehouses', 'branches']);
+  const dashboardViews = new Set(['overview', 'procurement', 'requests', 'create', 'settings', 'positions', 'people', 'roles', 'workflow', 'namenklatura', 'suppliers', 'unit-types', 'departments', 'warehouses', 'branches']);
 
   r.get('/assets/tabler-icons.min.css', (_req: Request, res: Response) => {
     res.type('text/css').send(TABLER_ICON_CSS);
