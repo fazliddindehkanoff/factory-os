@@ -208,6 +208,13 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
           { amount: estimatedAmount, requestType: input.requestType ?? 'material_request' },
           input.requesterId,
           input.holdingId,
+          input.creatorId ?? input.requesterId,
+          {
+            holdingId: input.holdingId,
+            companyId: input.companyId ?? null,
+            factoryId: input.factoryId ?? null,
+            departmentId: input.departmentId ?? null,
+          },
         )
       : { step: null, skipped: [] as any[] };
     const first = placement.step;
@@ -278,7 +285,7 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
         newStatus: statusForStep(s),
         changedBy: null,
         source: 'auto_skip',
-        comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+        comment: `Шаг «${s.stepName}» пропущен: заявитель создал заявку сам и отвечает за этот этап`,
       });
     }
     await tx.insert(schema.auditLogs).values({

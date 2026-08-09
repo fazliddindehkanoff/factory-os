@@ -61,10 +61,11 @@ async function seedOrg(db: any) {
   return { h, f, wf };
 }
 
-async function newRequest(db: any, h: any, f: any, requesterId: string) {
+async function newRequest(db: any, h: any, f: any, requesterId: string, creatorId?: string) {
   return createRequest(db, {
     holdingId: h.id,
     requesterId,
+    creatorId,
     factoryId: f.id,
     items: [{ name: 'X', quantity: 2, unitPrice: 1000 }],
   });
@@ -149,11 +150,11 @@ describe('data-driven lifecycle', () => {
     // requester also holds dept_head + a PIN.
     const both = await mkUser(db, h.id, 'requester', 'both', true);
     await db.insert(schema.userRoles).values({ userId: both, roleId: await roleId(db, 'dept_head'), holdingId: h.id });
-    // A SECOND dept_head must exist, else the step is auto-skipped (bug #1). Here we
-    // specifically test that self-approval stays blocked when the step IS live.
-    await mkUser(db, h.id, 'dept_head', 'other_dh', false);
+    // An assistant created this request on the department head's behalf, so the
+    // department-head step stays live; the selected requester still cannot approve it.
+    const assistant = await mkUser(db, h.id, 'requester', 'assistant');
 
-    const req = await newRequest(db, h, f, both);
+    const req = await newRequest(db, h, f, both, assistant);
     expect(acts(await availableActions(db, req, both))).not.toContain('approve');
     await expect(
       performAction(db, { requestId: req.id, action: 'approve', actor: { id: both, holdingId: h.id }, pin: PIN }),

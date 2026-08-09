@@ -1089,13 +1089,18 @@ export function buildRouter(deps: RouterDeps): Router {
           .from(schema.users)
           .where(inArray(schema.users.id, actorIds));
         const urs = await db
-          .select({ userId: schema.userRoles.userId, roleName: schema.roles.name })
+          .select({ userId: schema.userRoles.userId, roleCode: schema.roles.code, roleName: schema.roles.name })
           .from(schema.userRoles)
           .innerJoin(schema.roles, eq(schema.userRoles.roleId, schema.roles.id))
           .where(and(inArray(schema.userRoles.userId, actorIds), eq(schema.userRoles.status, 'active')));
-        const roleByUser = new Map<string, string>();
-        for (const r of urs) if (!roleByUser.has(r.userId)) roleByUser.set(r.userId, r.roleName);
-        for (const u of us) actorMap.set(u.id, { name: u.fullName, role: roleByUser.get(u.id) ?? null });
+        const roleByUser = new Map<string, { code: string; name: string }>();
+        for (const r of urs) {
+          const current = roleByUser.get(r.userId);
+          if (!current || (current.code === 'requester' && r.roleCode !== 'requester')) {
+            roleByUser.set(r.userId, { code: r.roleCode, name: r.roleName });
+          }
+        }
+        for (const u of us) actorMap.set(u.id, { name: u.fullName, role: roleByUser.get(u.id)?.name ?? null });
       }
       const statusHistoryOut = statusHistory.map((h: { changedBy: string | null }) => ({
         ...h,
@@ -1324,18 +1329,27 @@ export function buildRouter(deps: RouterDeps): Router {
             .where(eq(schema.departments.id, reqRow.departmentId))
         : [];
 
-      // Progress starts with the REQUESTER (who created it), then the approval steps.
+      // Progress starts with the real creator. For assistant-created requests this is
+      // intentionally different from the selected requester shown in request details.
+      const creationEvent = (statusHistory as {
+        oldStatus: string | null;
+        changedBy: string | null;
+        createdAt: unknown;
+        source: string | null;
+      }[]).find((h) => h.oldStatus === null && h.changedBy && h.source !== 'auto_skip');
+      const creationActor = creationEvent?.changedBy ? actorMap.get(creationEvent.changedBy) : null;
+      const creationRole = creationActor?.role ?? requesterRole?.name ?? 'Assistant';
       workflowTimeline.unshift({
         stepId: 'created',
         stepName: 'Создание заявки',
         stepKind: 'created',
         state: 'completed',
         action: 'created',
-        at: reqRow.createdAt,
-        actorName: requesterRow?.name ?? null,
-        actorRole: requesterRole?.name === 'Заместитель директора'
+        at: creationEvent?.createdAt ?? reqRow.createdAt,
+        actorName: creationActor?.name ?? requesterRow?.name ?? null,
+        actorRole: creationRole === 'Заместитель директора'
           ? 'Главный инженер'
-          : requesterRole?.name ?? 'Assistant',
+          : creationRole,
         comment: null,
       });
 

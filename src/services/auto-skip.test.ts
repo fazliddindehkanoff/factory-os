@@ -1,8 +1,4 @@
-/**
- * Bug #1: an approval step is auto-skipped ONLY when the request's author is the
- * sole eligible approver of that step. If anyone else holds the role, the step is
- * NOT skipped (they must approve).
- */
+/** Department-head self-approval is skipped only for requests they personally create. */
 import { describe, it, expect } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
@@ -62,8 +58,8 @@ describe('bug #1: auto-skip the author own approval step', () => {
     expect(aps.every((a: any) => a.workflowStepId !== s1.id)).toBe(true);
   });
 
-  it('does NOT skip when another user also holds the approver role', async () => {
-    const { db, holding, factory, s1, mkUser } = await setup();
+  it('skips the department-head stage even when another department head exists', async () => {
+    const { db, holding, factory, s2, mkUser } = await setup();
     const author = await mkUser('author', 'dept_head');
     await mkUser('other', 'dept_head'); // a second dept_head exists
 
@@ -74,7 +70,25 @@ describe('bug #1: auto-skip the author own approval step', () => {
       items: [{ name: 'X', quantity: 1, unitPrice: 100 }],
     });
     const [row] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.id));
-    // Stays on the dept_head step — the other dept_head must approve.
+    expect(row.currentStepId).toBe(s2.id);
+  });
+
+  it('does NOT skip when an assistant creates on behalf of a department head', async () => {
+    const { db, holding, factory, s1, mkUser } = await setup();
+    const assistant = await mkUser('assistant', 'requester');
+    const selectedRequester = await mkUser('head', 'dept_head');
+
+    const req = await createRequest(db, {
+      holdingId: holding.id,
+      requesterId: selectedRequester,
+      creatorId: assistant,
+      factoryId: factory.id,
+      items: [{ name: 'X', quantity: 1, unitPrice: 100 }],
+    });
+    const [row] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.id));
     expect(row.currentStepId).toBe(s1.id);
+    const hist = await db.select().from(schema.requestStatusHistory).where(eq(schema.requestStatusHistory.requestId, req.id));
+    expect(hist.find((h: any) => h.oldStatus === null && h.changedBy)?.changedBy).toBe(assistant);
+    expect(hist.some((h: any) => h.source === 'auto_skip')).toBe(false);
   });
 });

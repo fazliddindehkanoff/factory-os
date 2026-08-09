@@ -8,6 +8,7 @@ import * as schema from '../db/schema.js';
 import { seedSystemRolesAndPermissions } from '../db/seed.js';
 import { createApp } from '../server/app.js';
 import { issueSession } from '../auth/session.js';
+import { createRequest } from '../services/request.service.js';
 
 const SECRET = 'timeline-test-secret-long-enough';
 
@@ -67,6 +68,30 @@ async function setup() {
 }
 
 describe('request workflow timeline', () => {
+  it('shows the assistant as creator while preserving the selected requester', async () => {
+    const { db, holding, roles, addUser, app } = await setup();
+    const assistant = await addUser('Ассистент Алиса', 'timeline-assistant', roles.requester.id);
+    const selectedRequester = await addUser('Руководитель Боб', 'timeline-selected-head', roles.deptHead.id);
+    const row = await createRequest(db, {
+      holdingId: holding.id,
+      requesterId: selectedRequester.id,
+      creatorId: assistant.id,
+      items: [{ name: 'Материал', quantity: 1, unitPrice: 100 }],
+    });
+
+    const detail = await request(app)
+      .get(`/api/requests/${row.id}`)
+      .set('Authorization', `Bearer ${issueSession(assistant.id, SECRET)}`)
+      .expect(200);
+
+    expect(detail.body.requesterName).toBe('Руководитель Боб');
+    expect(detail.body.workflowTimeline[0]).toMatchObject({
+      stepName: 'Создание заявки',
+      actorName: 'Ассистент Алиса',
+      actorRole: 'Assistant',
+    });
+  });
+
   it('shows the actual business role of the user who created the request', async () => {
     const { db, holding, workflow, steps, roles, addUser, app } = await setup();
     const creator = await addUser('Начальник отдела', 'timeline-head', roles.deptHead.id);

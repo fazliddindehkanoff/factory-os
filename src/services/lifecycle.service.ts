@@ -114,19 +114,33 @@ export async function firstStepForRequest(
 }
 
 /**
- * Bug #1: an approval step is auto-skipped ONLY when the request's author HOLDS that
- * step's role AND is its sole holder in the holding. If the author doesn't hold the
- * role, or someone else also holds it, the step is NOT skipped (preserves normal
- * behaviour, incl. steps whose role currently has no holder). Non-approval steps are
- * never auto-skipped — they are real work.
+ * A request may skip its own approval only when it was created personally by the
+ * requester. In particular, a department head's own department-head approval is
+ * redundant even when the holding has other department heads. Requests filled in by
+ * an assistant on somebody else's behalf must never inherit this self-skip.
  */
 async function shouldAutoSkipStep(
   db: Db,
   step: KindStep,
   requesterId: string,
   holdingId: string,
+  creatorId: string,
+  scope: Scope,
 ): Promise<boolean> {
   if (step.stepKind !== 'approval' || !step.approverRoleId) return false;
+  if (creatorId !== requesterId) return false;
+
+  const [role] = await db
+    .select({ code: schema.roles.code })
+    .from(schema.roles)
+    .where(eq(schema.roles.id, step.approverRoleId))
+    .limit(1);
+  if (role?.code === 'dept_head') {
+    return (await roleActorIdsForScope(db, step.approverRoleId, scope, requesterId)).includes(requesterId);
+  }
+
+  // Preserve the historical rule for other approval roles: only a sole holder can
+  // self-skip the step.
   const holders = await db
     .select({ uid: schema.userRoles.userId })
     .from(schema.userRoles)
@@ -153,10 +167,12 @@ async function resolveSkippingSelfApprovals(
   requesterId: string,
   holdingId: string,
   start: KindStep | null,
+  creatorId = requesterId,
+  scope: Scope = { holdingId },
 ): Promise<{ step: KindStep | null; skipped: KindStep[] }> {
   const skipped: KindStep[] = [];
   let cur = start;
-  while (cur && (await shouldAutoSkipStep(db, cur, requesterId, holdingId))) {
+  while (cur && (await shouldAutoSkipStep(db, cur, requesterId, holdingId, creatorId, scope))) {
     skipped.push(cur);
     cur = nextStep(steps, ctx, cur.stepOrder) as KindStep | null;
   }
@@ -171,10 +187,12 @@ export async function initialPlacement(
   ctx: WorkflowContext,
   requesterId: string,
   holdingId: string,
+  creatorId = requesterId,
+  scope: Scope = { holdingId },
 ): Promise<{ step: KindStep | null; skipped: KindStep[] }> {
   const steps = await loadKindSteps(db, workflowId);
   const first = firstStep(steps, ctx) as KindStep | null;
-  return resolveSkippingSelfApprovals(db, steps, ctx, requesterId, holdingId, first);
+  return resolveSkippingSelfApprovals(db, steps, ctx, requesterId, holdingId, first, creatorId, scope);
 }
 
 export { resolveSkippingSelfApprovals };
@@ -199,6 +217,15 @@ async function loadStep(db: Db, stepId: string): Promise<KindStep | null> {
 
 async function actorHoldsRoleInScope(db: Db, userId: string, roleId: string, scope: Scope): Promise<boolean> {
   return (await roleActorIdsForScope(db, roleId, scope, userId)).includes(userId);
+}
+
+async function originalCreatorId(db: Db, requestId: string, fallbackId: string): Promise<string> {
+  const rows = await db
+    .select({ changedBy: schema.requestStatusHistory.changedBy })
+    .from(schema.requestStatusHistory)
+    .where(and(eq(schema.requestStatusHistory.requestId, requestId), isNull(schema.requestStatusHistory.oldStatus)))
+    .orderBy(schema.requestStatusHistory.createdAt);
+  return rows.find((row: { changedBy: string | null }) => row.changedBy)?.changedBy ?? fallbackId;
 }
 
 /**
@@ -659,7 +686,15 @@ export async function performAction(db: Db, input: PerformInput) {
         throw new ForbiddenError('Недостаточно прав для этого действия');
       }
       if (!req.workflowId) throw new ConflictError('Заявка не привязана к workflow');
-      const placement = await initialPlacement(tx, req.workflowId, reqContext(req), req.requesterId, req.holdingId);
+      const placement = await initialPlacement(
+        tx,
+        req.workflowId,
+        reqContext(req),
+        req.requesterId,
+        req.holdingId,
+        input.actor.id,
+        reqScope(req),
+      );
       for (const s of placement.skipped) {
         await tx.insert(schema.requestStatusHistory).values({
           requestId: req.id,
@@ -667,7 +702,7 @@ export async function performAction(db: Db, input: PerformInput) {
           newStatus: statusForStep(s),
           changedBy: null,
           source: 'auto_skip',
-          comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+          comment: `Шаг «${s.stepName}» пропущен: заявитель создал заявку сам и отвечает за этот этап`,
         });
       }
       const landed = placement.step;
@@ -1057,8 +1092,19 @@ export async function performAction(db: Db, input: PerformInput) {
     } else {
       const steps = await loadKindSteps(tx, req.workflowId!);
       let next = nextStep(steps, ctx, step.stepOrder) as KindStep | null;
-      // Bug #1: auto-skip the next approval step(s) if the author is their only approver.
-      const selfSkip = await resolveSkippingSelfApprovals(tx, steps, ctx, req.requesterId, req.holdingId, next);
+      // Keep creator and requester separate: an assistant-created request may not
+      // self-skip approvals merely because the selected requester holds the role.
+      const creatorId = await originalCreatorId(tx, req.id, req.requesterId);
+      const selfSkip = await resolveSkippingSelfApprovals(
+        tx,
+        steps,
+        ctx,
+        req.requesterId,
+        req.holdingId,
+        next,
+        creatorId,
+        reqScope(req),
+      );
       next = selfSkip.step;
       for (const s of selfSkip.skipped) {
         await tx.insert(schema.requestStatusHistory).values({
@@ -1067,7 +1113,7 @@ export async function performAction(db: Db, input: PerformInput) {
           newStatus: statusForStep(s),
           changedBy: null,
           source: 'auto_skip',
-          comment: `Шаг «${s.stepName}» пропущен: единственный согласующий — автор заявки`,
+          comment: `Шаг «${s.stepName}» пропущен: заявитель создал заявку сам и отвечает за этот этап`,
         });
       }
       if (next) {
