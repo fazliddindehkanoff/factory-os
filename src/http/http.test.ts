@@ -130,6 +130,24 @@ describe('HTTP API', () => {
       fullName: 'Selected requester',
       status: 'active',
     }).returning();
+    const [creatorDepartment, selectedDepartment] = await db.insert(schema.departments).values([
+      { holdingId: h.id, name: 'Creator department' },
+      { holdingId: h.id, name: 'Selected department' },
+    ]).returning();
+    await db.insert(schema.userDepartments).values([
+      { userId, departmentId: creatorDepartment.id },
+      { userId: selectedRequester.id, departmentId: selectedDepartment.id },
+    ]);
+
+    const config = await request(app)
+      .get('/api/config')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(config.body.departments.map((department: { id: string }) => department.id)).toEqual(
+      expect.arrayContaining([creatorDepartment.id, selectedDepartment.id]),
+    );
+    expect(config.body.users.find((user: { id: string }) => user.id === selectedRequester.id).departmentId)
+      .toBe(selectedDepartment.id);
 
     // Create a request through the API.
     const created = await request(app)

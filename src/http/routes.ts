@@ -487,8 +487,10 @@ export function buildRouter(deps: RouterDeps): Router {
             nameUz: d.nameUz,
             nameTr: d.nameTr,
           }));
-        // Restrict to the user's assigned otdels once an admin has assigned any —
-        // an unconfigured user (no assignments yet) still sees the full list.
+        const canCreateRequests = await hasPermissionInHolding(db, u.id, 'requests.create', u.holdingId);
+        // Non-creators only need their own scoped departments. Request creators
+        // must see every active department because they may submit on behalf of
+        // any active employee, including someone assigned to another department.
         const explicitAssignedDepts = await db
           .select({ departmentId: schema.userDepartments.departmentId })
           .from(schema.userDepartments)
@@ -503,13 +505,13 @@ export function buildRouter(deps: RouterDeps): Router {
             ...scopedAssignedDepts.map((d: { departmentId: string | null }) => d.departmentId).filter(Boolean),
           ] as string[],
         );
-        if (assignedIds.size > 0) {
+        if (assignedIds.size > 0 && !canCreateRequests) {
           departments = departments.filter((d: { id: string }) => assignedIds.has(d.id));
         }
         // Users for department-head selection — needed only by the create-request
         // form, so don't hand the full employee directory to roles that can't
         // create requests (L8).
-        if (await hasPermissionInHolding(db, u.id, 'requests.create', u.holdingId)) {
+        if (canCreateRequests) {
           const userRows = await db
             .select({ id: schema.users.id, fullName: schema.users.fullName })
             .from(schema.users)
