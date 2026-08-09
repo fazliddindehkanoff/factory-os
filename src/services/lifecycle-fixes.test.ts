@@ -211,7 +211,7 @@ describe('M7 — factory-scoped assignments open module endpoints', () => {
       .returning();
     await db.insert(schema.userRoles).values({ userId: u.id, roleId: await roleId(db, 'requester'), holdingId: h.id, factoryId: f.id });
 
-    const app = createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true, rateLimit: false });
+    const app = createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true });
     const tk = (await request(app).post('/api/auth/dev').send({ telegramId: 'narrow' }).expect(200)).body.token as string;
 
     await request(app).get('/api/requests').set('Authorization', `Bearer ${tk}`).expect(200);

@@ -48,7 +48,7 @@ async function make(opts: { onRejectStep2?: { onReject: string; onRejectStepOrde
     for (const c of codes) await db.insert(schema.userRoles).values({ userId: u.id, roleId: await roleId(c), holdingId: holding.id });
     return u.id;
   };
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
   const login = async (tg: string): Promise<string> => (await request(app).post('/api/auth/dev').send({ telegramId: tg }).expect(200)).body.token as string;
   const act = async (tg: string, id: string, action: string, extra: Record<string, unknown> = {}) => {
     const tk = await login(tg);

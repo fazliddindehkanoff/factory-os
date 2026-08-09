@@ -54,7 +54,7 @@ async function make() {
     for (const rid of roleIds) await db.insert(schema.userRoles).values({ userId: u.id, roleId: rid, holdingId: holding.id });
     return u.id;
   };
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
   const login = async (tg: string): Promise<string> => (await request(app).post('/api/auth/dev').send({ telegramId: tg }).expect(200)).body.token as string;
   return { db, app, holding, factory, wf, execRole, sysRoleId, user, login };
 }

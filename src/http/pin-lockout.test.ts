@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
+import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './pin-lockout.js';
 
 describe('PIN lockout', () => {
   const userId = 'test-user-lockout';

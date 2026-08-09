@@ -46,8 +46,7 @@ async function main(): Promise<number> {
     botToken: 'smoke-bot-token',
     sessionSecret: 'smoke-session-secret-0123456789',
     devAuth: true, // in-process harness only — never the production server
-    rateLimit: false,
-  });
+      });
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
     const s = app.listen(0, () => resolve(s));
   });

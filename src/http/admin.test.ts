@@ -16,7 +16,7 @@ async function make() {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
   const { holding } = await setupTenant(db, { holdingName: 'Zelal', ownerTelegramId: '999', ownerName: 'Owner', seedDemoUsers: true });
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
   return { app, db, holding };
 }
 

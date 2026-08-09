@@ -29,7 +29,7 @@ async function make() {
     .from(schema.roles)
     .where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, 'admin')));
   await db.insert(schema.userRoles).values({ userId: admin.id, roleId: role.id, holdingId: holding.id });
-  const app = createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true });
   const token = (await request(app).post('/api/auth/dev').send({ telegramId: 'adm' }).expect(200)).body.token as string;
   const post = (wfId: string, body: Record<string, unknown>) =>
     request(app).post(`/api/admin/workflows/${wfId}/steps`).set('Authorization', `Bearer ${token}`).send(body);

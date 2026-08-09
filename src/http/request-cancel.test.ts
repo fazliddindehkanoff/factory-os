@@ -26,7 +26,7 @@ async function make() {
   const roleId = async (c: string) => (await db.select().from(schema.roles).where(and(isNull(schema.roles.holdingId), eq(schema.roles.code, c))))[0].id as string;
   const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W', isActive: true }).returning();
   await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 1, stepName: 'Рук', stepKind: 'approval', approverRoleId: await roleId('dept_head') });
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
   const user = async (tg: string, code: string) => {
     const login = await request(app).post('/api/auth/dev').send({ telegramId: tg }).expect(200);
     const uid = login.body.user.id as string;

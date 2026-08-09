@@ -13,7 +13,7 @@ import { createRequest, sanitizeCustomFields, MAX_ITEM_QUANTITY, MAX_ITEM_PRICE 
 import { performAction, availableActions, statusLabelFor, inboxCandidates, markItemStock } from '../services/lifecycle.service.js';
 import { receiveStock, issueStock } from '../services/warehouse.service.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
-import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
+import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './pin-lockout.js';
 import { getDashboard } from '../services/dashboard.service.js';
 import type { Notifier } from '../bot/bot.js';
 import {
@@ -90,8 +90,6 @@ export interface RouterDeps {
   notify?: Notifier;
   /** Serve the bundled design (public/) via the compat API instead of the React app. */
   serveDesign?: boolean;
-  /** Rate limiting on /api (default on). Tests pass false to skip the auth/api limiters. */
-  rateLimit?: boolean;
 }
 
 /**
@@ -376,8 +374,7 @@ export function buildRouter(deps: RouterDeps): Router {
   });
 
   // ── Dev-only: seeded test users for the role-switcher (docs/TEST_MODE.md).
-  // Same stealth-404 contract as /auth/dev; lives under /dev (not /auth) so the
-  // panel probe does not eat the tight authLimiter budget. ──
+  // Same stealth-404 contract as /auth/dev. ──
   r.get('/dev/users', async (_req: Request, res: Response, next: NextFunction) => {
     try {
       if (!devAuth) {

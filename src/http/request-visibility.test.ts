@@ -35,7 +35,7 @@ async function make() {
   // director and warehouse are legitimate "role-in-workflow" viewers (bug #2).
   await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 1, stepName: 'A', stepKind: 'approval', approverRoleId: await roleId('director') });
   await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 2, stepName: 'WH', stepKind: 'warehouse_check', approverRoleId: await roleId('warehouse') });
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
   const user = async (codes: string[], tg: string): Promise<string> => {
     const [u] = await db.insert(schema.users).values({ holdingId: holding.id, fullName: tg, telegramId: tg, status: 'active' }).returning();
     for (const c of codes) await db.insert(schema.userRoles).values({ userId: u.id, roleId: await roleId(c), holdingId: holding.id });
@@ -173,7 +173,7 @@ describe('H3 — request detail visibility', () => {
     const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'WP', isActive: true }).returning();
     // procurement step's approver is procurement_manager (a DIFFERENT role than 'procurement')
     await db.insert(schema.workflowSteps).values({ workflowId: wf.id, stepOrder: 1, stepName: 'Закупка', stepKind: 'procurement', approverRoleId: await rid('procurement_manager') });
-    const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+    const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
     const mk = async (codes: string[], tg: string) => {
       const [u] = await db.insert(schema.users).values({ holdingId: holding.id, fullName: tg, telegramId: tg, status: 'active' }).returning();
       for (const c of codes) await db.insert(schema.userRoles).values({ userId: u.id, roleId: await rid(c), holdingId: holding.id });

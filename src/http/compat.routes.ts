@@ -13,7 +13,7 @@ import { createRequest } from '../services/request.service.js';
 import { approveApproval, rejectApproval } from '../services/approval.service.js';
 import { isTerminalStatus } from '../workflow/step-kinds.js';
 import { hashPin, verifyPin } from '../auth/pin.js';
-import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './rate-limit.js';
+import { pinLockoutRemaining, recordPinFailure, clearPinFailures } from './pin-lockout.js';
 import { receiveStock } from '../services/warehouse.service.js';
 
 type Db = any;

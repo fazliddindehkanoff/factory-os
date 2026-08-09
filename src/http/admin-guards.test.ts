@@ -23,7 +23,7 @@ async function make() {
   await migrate(db, { migrationsFolder: './drizzle' });
   // owner '999' gets the all-permissions 'owner' role (has settings.manage).
   await setupTenant(db, { holdingName: 'Z', ownerTelegramId: '999', ownerName: 'Owner' });
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
   return { app, db };
 }
 const login = async (app: any, tg: string): Promise<string> =>

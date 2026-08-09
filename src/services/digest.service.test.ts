@@ -47,7 +47,7 @@ async function setup(digestMinutes: number | null) {
   };
   const pushes: Array<[string, string]> = [];
   const deliver = async (tg: string, text: string) => { pushes.push([tg, text]); };
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false, notify: deliver });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, notify: deliver });
   return { db, h, f, user, app, pushes, deliver };
 }
 

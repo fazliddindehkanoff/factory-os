@@ -8,14 +8,10 @@ import { buildCompatRouter } from '../http/compat.routes.js';
 import { buildSnabDashboardRouter } from '../http/snab-dashboard.routes.js';
 import { legacyAuth } from '../http/legacy-auth.js';
 import { mapError } from '../http/errors.js';
-import { apiLimiter, authLimiter } from '../http/rate-limit.js';
 import { logger } from '../http/logger.js';
 
 export function createApp(deps: RouterDeps) {
   const app = express();
-  // Behind a reverse proxy (Caddy): trust the first hop so req.ip / X-Forwarded-For
-  // resolve to the real client and the rate limiters key on the client IP, not the proxy.
-  app.set('trust proxy', 1);
   app.use(helmet({
     contentSecurityPolicy: false, // Telegram Mini App needs inline scripts
     crossOriginEmbedderPolicy: false, // Mini App loaded in iframe
@@ -36,19 +32,6 @@ export function createApp(deps: RouterDeps) {
     });
     next();
   });
-
-  // Rate limiting (skippable in tests via deps.rateLimit === false)
-  if (deps.rateLimit !== false) {
-    app.use('/api/auth', (req: Request, res: Response, next: NextFunction) => {
-      // The development-only role switcher must be able to open every seeded
-      // account during one QA run. Production cannot enable devAuth (env startup
-      // validation rejects it), while all real authentication routes keep the
-      // strict 10/minute protection in every environment.
-      if (deps.devAuth && req.path === '/dev') { next(); return; }
-      authLimiter(req, res, next);
-    });
-    app.use('/api', apiLimiter);
-  }
 
   if (deps.serveDesign) {
     // Serve the bundled design (public/) and answer its API contract via the compat layer.

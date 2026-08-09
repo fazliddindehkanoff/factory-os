@@ -34,7 +34,7 @@ async function make() {
   // active state. The stronger existence rule for ACTIVE workflows is covered by
   // workflow-active-step-invariant.test.ts (NEW-2).
   const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'W', isActive: false }).returning();
-  const app = createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true });
   const token = (await request(app).post('/api/auth/dev').send({ telegramId: 'adm' }).expect(200)).body.token as string;
   const post = (body: Record<string, unknown>) =>
     request(app).post(`/api/admin/workflows/${wf.id}/steps`).set('Authorization', `Bearer ${token}`).send(body);

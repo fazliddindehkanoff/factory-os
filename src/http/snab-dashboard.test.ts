@@ -28,8 +28,7 @@ async function make() {
     botToken: '',
     sessionSecret: SECRET,
     devAuth: false,
-    rateLimit: false,
-  });
+      });
   return { app, db, client, owner: owner! };
 }
 

@@ -25,7 +25,7 @@ async function makeCompatApp() {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
   await seedSystemRolesAndPermissions(db);
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false, serveDesign: true });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, serveDesign: true });
   return { app, db };
 }
 

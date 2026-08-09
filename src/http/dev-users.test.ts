@@ -16,7 +16,7 @@ async function makeApp(devAuth: boolean) {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: './drizzle' });
   await seedTest(db);
-  return { app: createApp({ db, botToken: 'test:token', sessionSecret: SECRET, devAuth, rateLimit: false }), db };
+  return { app: createApp({ db, botToken: 'test:token', sessionSecret: SECRET, devAuth }), db };
 }
 
 describe('GET /api/dev/users (test-mode role switcher)', () => {

@@ -24,7 +24,7 @@ async function make() {
   await seedSystemRolesAndPermissions(db);
   const [holding] = await db.insert(schema.holdings).values({ name: 'H' }).returning();
   const [factory] = await db.insert(schema.factories).values({ holdingId: holding.id, name: 'F' }).returning();
-  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true, rateLimit: false });
+  const app = createApp({ db, botToken: BOT, sessionSecret: SECRET, devAuth: true });
   return { app, db, holding, factory };
 }
 

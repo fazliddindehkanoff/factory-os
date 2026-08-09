@@ -139,7 +139,7 @@ describe('role matrix — approval is gated by the step approver role', () => {
 
 describe('role matrix — request list visibility', () => {
   function app(db: any) {
-    return createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true, rateLimit: false });
+    return createApp({ db, botToken: 'test:token', sessionSecret: 'test-secret-long-enough', devAuth: true });
   }
   async function token(a: any, tg: string) {
     return (await request(a).post('/api/auth/dev').send({ telegramId: tg }).expect(200)).body.token as string;

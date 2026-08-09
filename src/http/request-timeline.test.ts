@@ -62,7 +62,7 @@ async function setup() {
     steps,
     roles,
     addUser,
-    app: createApp({ db, botToken: 'test:token', sessionSecret: SECRET, rateLimit: false }),
+    app: createApp({ db, botToken: 'test:token', sessionSecret: SECRET }),
   };
 }
 
