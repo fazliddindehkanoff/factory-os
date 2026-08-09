@@ -99,15 +99,29 @@ describe('скоуп отдела маршрутизирует заявку к �
     expect(actionsB.length).toBe(0);
   });
 
-  it('назначение БЕЗ скоупа покрывает весь холдинг (текущее поведение прода не меняется)', async () => {
-    const { db, holding, factory, deptA } = await make();
+  it('глобальная роль руководителя действует только в его назначенных отделах', async () => {
+    const { db, holding, factory, deptA, deptB } = await make();
     const requester = await user(db, holding, 'req', 'requester');
-    const headAll = await user(db, holding, 'headAll', 'dept_head'); // без отдела
-    const { row, step } = await flow(db, holding, factory, requester, deptA.id);
+    const headA = await user(db, holding, 'headA-global-role', 'dept_head');
+    await db.insert(schema.userDepartments).values({ userId: headA, departmentId: deptA.id });
+    const inA = await flow(db, holding, factory, requester, deptA.id);
+    const [rowB] = await db.insert(schema.requests).values({
+      holdingId: holding.id,
+      requesterId: requester,
+      workflowId: inA.row.workflowId,
+      currentStepId: inA.step.id,
+      departmentId: deptB.id,
+      requestNumber: 'REQ-DEPT-B',
+      status: 'pending_approval',
+    }).returning();
 
-    expect(await stepActorIds(db, row, step)).toContain(headAll);
-    expect((await getRequestVisibility(db, headAll)).canSee(row)).toBe(true);
-    expect((await availableActions(db, row, headAll)).map((a: { action: string }) => a.action)).toContain('approve');
+    expect(await stepActorIds(db, inA.row, inA.step)).toContain(headA);
+    expect(await stepActorIds(db, rowB, inA.step)).not.toContain(headA);
+    const visibility = await getRequestVisibility(db, headA);
+    expect(visibility.canSee(inA.row)).toBe(true);
+    expect(visibility.canSee(rowB)).toBe(false);
+    expect((await availableActions(db, inA.row, headA)).map((a: { action: string }) => a.action)).toContain('approve');
+    expect(await availableActions(db, rowB, headA)).toEqual([]);
   });
 
   it('складской шаг и уведомление получает только ответственный выбранного склада', async () => {

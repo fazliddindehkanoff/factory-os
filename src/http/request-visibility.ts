@@ -11,7 +11,7 @@
  * Otherwise the request is hidden. This replaces the old binary own-vs-whole-holding
  * rule where any oversight permission leaked every request.
  */
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
 
@@ -127,14 +127,16 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
   // Active role ASSIGNMENTS of the user — with their scopes: participation
   // visibility is granted per assignment, and a dept/factory-scoped assignment
   // must not leak other departments' requests (QA 2026-07-09, «выбор отдела»).
-  const assigns: { roleId: string; companyId: string | null; factoryId: string | null; departmentId: string | null }[] = await db
+  const assigns: { roleId: string; roleCode: string; companyId: string | null; factoryId: string | null; departmentId: string | null }[] = await db
     .select({
       roleId: schema.userRoles.roleId,
+      roleCode: schema.roles.code,
       companyId: schema.userRoles.companyId,
       factoryId: schema.userRoles.factoryId,
       departmentId: schema.userRoles.departmentId,
     })
     .from(schema.userRoles)
+    .innerJoin(schema.roles, eq(schema.roles.id, schema.userRoles.roleId))
     .where(and(eq(schema.userRoles.userId, userId), eq(schema.userRoles.status, 'active')));
   const myRoleIds = [...new Set(assigns.map((r) => r.roleId))] as string[];
 
@@ -197,11 +199,29 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
   }
 
   // Per assignment: the workflows it opens + the scope it is limited to.
-  const perAssign: { wfSet: Set<string>; companyId: string | null; factoryId: string | null; departmentId: string | null }[] = [];
+  const departmentMemberships = await db
+    .select({ departmentId: schema.userDepartments.departmentId })
+    .from(schema.userDepartments)
+    .where(eq(schema.userDepartments.userId, userId));
+  const memberDepartmentIds = [...new Set(
+    (departmentMemberships as { departmentId: string }[]).map((row) => row.departmentId),
+  )] as string[];
+  const perAssign: { wfSet: Set<string>; companyId: string | null; factoryId: string | null; departmentId: string | null; departmentlessOnly?: boolean }[] = [];
   for (const a of assigns) {
     const wfSet = new Set<string>(roleWf.get(a.roleId) ?? []);
     for (const k of roleKinds.get(a.roleId) ?? []) for (const wf of kindWf.get(k) ?? []) wfSet.add(wf);
-    if (wfSet.size) perAssign.push({ wfSet, companyId: a.companyId, factoryId: a.factoryId, departmentId: a.departmentId });
+    if (!wfSet.size) continue;
+    if (a.roleCode === 'dept_head' && a.departmentId == null) {
+      for (const departmentId of memberDepartmentIds) {
+        perAssign.push({ wfSet, companyId: a.companyId, factoryId: a.factoryId, departmentId });
+      }
+      // Legacy/API requests may have no department. A holding-level dept_head
+      // remains the handler only for that departmentless case, never as a
+      // fallback for a different selected department.
+      perAssign.push({ wfSet, companyId: a.companyId, factoryId: a.factoryId, departmentId: null, departmentlessOnly: true });
+    } else {
+      perAssign.push({ wfSet, companyId: a.companyId, factoryId: a.factoryId, departmentId: a.departmentId });
+    }
   }
 
   // Requests I've acted on: I changed their status, or I signed an approval.
@@ -229,17 +249,18 @@ export async function getRequestVisibility(db: Db, userId: string): Promise<Requ
     sub.push(sql`${schema.requests.inStock} IS DISTINCT FROM true`);
     if (p.companyId) sub.push(eq(schema.requests.companyId, p.companyId));
     if (p.factoryId) sub.push(eq(schema.requests.factoryId, p.factoryId));
-    if (p.departmentId) sub.push(eq(schema.requests.departmentId, p.departmentId));
+    if (p.departmentlessOnly) sub.push(isNull(schema.requests.departmentId));
+    else if (p.departmentId) sub.push(eq(schema.requests.departmentId, p.departmentId));
     conds.push(and(...sub)!);
   }
   if (involvedIds.length) conds.push(inArray(schema.requests.id, involvedIds));
   const scope = or(...conds)!;
 
   const involvedSet = new Set(involvedIds);
-  const assignCovers = (p: { companyId: string | null; factoryId: string | null; departmentId: string | null }, req: { companyId?: string | null; factoryId?: string | null; departmentId?: string | null }): boolean =>
+  const assignCovers = (p: { companyId: string | null; factoryId: string | null; departmentId: string | null; departmentlessOnly?: boolean }, req: { companyId?: string | null; factoryId?: string | null; departmentId?: string | null }): boolean =>
     (p.companyId == null || p.companyId === (req.companyId ?? null)) &&
     (p.factoryId == null || p.factoryId === (req.factoryId ?? null)) &&
-    (p.departmentId == null || p.departmentId === (req.departmentId ?? null));
+    (p.departmentlessOnly ? req.departmentId == null : p.departmentId == null || p.departmentId === (req.departmentId ?? null));
   return {
     seeAll: false,
     scope,

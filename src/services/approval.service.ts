@@ -8,11 +8,12 @@
  *  - the "one pending approval per request" invariant is enforced by the DB index.
  * Everything runs in a single transaction with status history + audit.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { nextStep } from '../workflow/engine.js';
 import { statusForStep, type KindStep } from '../workflow/step-kinds.js';
-import { scopeCovers, type Scope } from '../rbac/rbac.js';
+import type { Scope } from '../rbac/rbac.js';
+import { roleActorIdsForScope } from './step-actors.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
 
 type Db = any;
@@ -38,22 +39,7 @@ async function actorHoldsRoleInScope(
   roleId: string,
   scope: Scope,
 ): Promise<boolean> {
-  const rows = await tx
-    .select({
-      holdingId: schema.userRoles.holdingId,
-      companyId: schema.userRoles.companyId,
-      factoryId: schema.userRoles.factoryId,
-      departmentId: schema.userRoles.departmentId,
-    })
-    .from(schema.userRoles)
-    .where(
-      and(
-        eq(schema.userRoles.userId, userId),
-        eq(schema.userRoles.roleId, roleId),
-        eq(schema.userRoles.status, 'active'),
-      ),
-    );
-  return rows.some((r: Scope) => scopeCovers(r, scope));
+  return (await roleActorIdsForScope(tx, roleId, scope, userId)).includes(userId);
 }
 
 async function loadApprovalContext(tx: Db, approvalId: string, actorUserId: string, allowSelf: boolean) {

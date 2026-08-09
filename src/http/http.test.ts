@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import crypto from 'node:crypto';
 import { PGlite } from '@electric-sql/pglite';
@@ -155,6 +155,7 @@ describe('HTTP API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         requesterId: selectedRequester.id,
+        departmentId: selectedDepartment.id,
         items: [
           { name: 'Cotton', quantity: 2, unitPrice: 1000 },
           { name: 'Dye', quantity: 1, unitPrice: 500 },
@@ -167,6 +168,15 @@ describe('HTTP API', () => {
     expect(storedRequest.requesterId).toBe(selectedRequester.id);
     const [creationAudit] = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.entityId, created.body.id));
     expect(creationAudit.userId).toBe(userId);
+    await vi.waitFor(async () => {
+      const [configurationNotice] = await db.select().from(schema.notifications).where(and(
+        eq(schema.notifications.entityId, created.body.id),
+        eq(schema.notifications.recipientUserId, userId),
+        eq(schema.notifications.kind, 'configuration'),
+      ));
+      expect(configurationNotice?.message).toContain('Selected department');
+      expect(configurationNotice?.message).toContain('не назначен ответственный руководитель отдела');
+    });
     const storedItems = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, created.body.id));
     expect(storedItems.map((it) => it.name).sort()).toEqual(['Cotton', 'Dye']);
 

@@ -13,7 +13,8 @@
  */
 import { and, eq, inArray, isNull, like, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
-import { hasPermission, scopeCovers, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
+import { hasPermission, getUserPermissionCodes, type Scope } from '../rbac/rbac.js';
+import { roleActorIdsForScope } from './step-actors.js';
 import { ValidationError, ForbiddenError, NotFoundError, ConflictError } from './errors.js';
 import { applyStockOp } from './warehouse.service.js';
 import { normalizePhone } from '../auth/phone.js';
@@ -197,22 +198,7 @@ async function loadStep(db: Db, stepId: string): Promise<KindStep | null> {
 }
 
 async function actorHoldsRoleInScope(db: Db, userId: string, roleId: string, scope: Scope): Promise<boolean> {
-  const rows = await db
-    .select({
-      holdingId: schema.userRoles.holdingId,
-      companyId: schema.userRoles.companyId,
-      factoryId: schema.userRoles.factoryId,
-      departmentId: schema.userRoles.departmentId,
-    })
-    .from(schema.userRoles)
-    .where(
-      and(
-        eq(schema.userRoles.userId, userId),
-        eq(schema.userRoles.roleId, roleId),
-        eq(schema.userRoles.status, 'active'),
-      ),
-    );
-  return rows.some((r: Scope) => scopeCovers(r, scope));
+  return (await roleActorIdsForScope(db, roleId, scope, userId)).includes(userId);
 }
 
 /**

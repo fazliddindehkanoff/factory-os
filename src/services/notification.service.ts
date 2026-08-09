@@ -31,6 +31,7 @@ export type NotificationKind =
   | 'needs_revision'
   | 'returned_step'
   | 'closed'
+  | 'configuration'
   | 'security'
   | 'escalation'
   | 'digest';

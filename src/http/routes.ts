@@ -188,7 +188,29 @@ async function notifyStepApprovers(
     }
 
     const userIds = await stepActorIds(db, reqRow, step);
-    if (!userIds.length) return;
+    if (!userIds.length) {
+      const [role] = step.approverRoleId
+        ? await db.select({ code: schema.roles.code }).from(schema.roles).where(eq(schema.roles.id, step.approverRoleId))
+        : [];
+      if (role?.code === 'dept_head' && reqRow.departmentId) {
+        const [department] = await db.select({ name: schema.departments.name })
+          .from(schema.departments).where(eq(schema.departments.id, reqRow.departmentId));
+        const recipientUserId = opts.actorId ?? reqRow.requesterId;
+        if (recipientUserId) {
+          await notifyUser(db, push, {
+            holdingId: reqRow.holdingId,
+            recipientUserId,
+            title: `Не назначен руководитель отдела — ${reqRow.requestNumber}`,
+            message: `Для отдела «${department?.name ?? 'выбранный отдел'}» не назначен ответственный руководитель отдела. Назначьте руководителя в настройках сотрудников, чтобы заявка попала ответственному.`,
+            priority: 'high',
+            kind: 'configuration',
+            entityType: 'request',
+            entityId: reqRow.id,
+          });
+        }
+      }
+      return;
+    }
     const msg = newRequestForApproverMessage(reqRow.requestNumber, reqRow.title ?? '', step.stepName);
     for (const uId of userIds) {
       if (uId === reqRow.requesterId || uId === opts.actorId) continue;

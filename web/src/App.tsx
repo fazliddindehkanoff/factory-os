@@ -716,7 +716,7 @@ interface NotifItem {
   title: string;
   message: string;
   priority: string;
-  kind: string | null; // тип события (step_pending | approved_final | ...), null у старых строк
+  kind: string | null; // тип события (step_pending | configuration | approved_final | ...), null у старых строк
   status: string; // pending | delivered (=unread) | read | failed
   errorMessage: string | null;
   entityType: string | null;
@@ -736,6 +736,7 @@ const NOTIF_KIND: Record<string, { label: string; tint: string }> = {
   needs_revision: { label: 'Возвращено на доработку', tint: 'warning' },
   returned_step: { label: 'Возврат на этап', tint: 'warning' },
   closed: { label: 'Закрыта', tint: 'success' },
+  configuration: { label: 'Настройка', tint: 'warning' },
   security: { label: 'Безопасность', tint: 'warning' },
   escalation: { label: 'Просрочено', tint: 'danger' },
   digest: { label: 'Сводка', tint: 'accent' },
