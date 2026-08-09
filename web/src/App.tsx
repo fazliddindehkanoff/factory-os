@@ -1467,6 +1467,7 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
   const [unitTypes, setUnitTypes] = useState<DeptOption[]>([]);
   const [materials, setMaterials] = useState<CatalogMaterial[]>([]);
   const [configUsers, setConfigUsers] = useState<ConfigUser[]>([]);
+  const [requesterId, setRequesterId] = useState(me.user.id);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [idx, setIdx] = useState(0);
   const [showErrors, setShowErrors] = useState(false);
@@ -1519,12 +1520,16 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
             init[fld.key] = fld.required && opts[0] ? opts[0].value : '';
           } else init[fld.key] = '';
         }
-        let draft: { values?: Record<string, string | boolean>; requestItems?: DraftRequestItem[]; idx?: number } | null = null;
+        let draft: { requesterId?: string; values?: Record<string, string | boolean>; requestItems?: DraftRequestItem[]; idx?: number } | null = null;
         try { draft = JSON.parse(sessionStorage.getItem(CREATE_DRAFT_KEY) || 'null'); } catch { draft = null; }
         if (draft) sessionStorage.removeItem(CREATE_DRAFT_KEY);
         const initialValues = draft?.values && typeof draft.values === 'object' ? { ...init, ...draft.values } : init;
-        const currentUser = usrs.find((user) => user.id === me.user.id);
-        const requesterDepartmentId = currentUser?.departments?.[0]?.id ?? currentUser?.departmentId ?? '';
+        const initialRequesterId = draft?.requesterId && usrs.some((user) => user.id === draft?.requesterId)
+          ? draft.requesterId
+          : me.user.id;
+        setRequesterId(initialRequesterId);
+        const initialRequester = usrs.find((user) => user.id === initialRequesterId);
+        const requesterDepartmentId = initialRequester?.departments?.[0]?.id ?? initialRequester?.departmentId ?? '';
         const defaultDepartmentId = requesterDepartmentId || (depts.length === 1 ? depts[0].id : '');
         if (!initialValues.department && defaultDepartmentId) {
           initialValues.department = defaultDepartmentId;
@@ -1540,11 +1545,11 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
 
   useEffect(() => {
     const saveDraft = () => {
-      sessionStorage.setItem(CREATE_DRAFT_KEY, JSON.stringify({ values, requestItems, idx }));
+      sessionStorage.setItem(CREATE_DRAFT_KEY, JSON.stringify({ requesterId, values, requestItems, idx }));
     };
     window.addEventListener(LANGUAGE_RELOAD_EVENT, saveDraft);
     return () => window.removeEventListener(LANGUAGE_RELOAD_EVENT, saveDraft);
-  }, [values, requestItems, idx]);
+  }, [requesterId, values, requestItems, idx]);
 
   const optionsFor = (f: FormField): { value: string; label: string; meta?: string }[] =>
     f.key === 'cf_department'
@@ -1576,6 +1581,13 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
     if (key === 'department' && v !== autoDepartmentRef.current) autoDepartmentRef.current = '';
     return next;
   });
+  const selectRequester = (id: string) => {
+    setRequesterId(id);
+    const picked = configUsers.find((user) => user.id === id);
+    const departmentId = picked?.departments?.[0]?.id ?? picked?.departmentId ?? '';
+    setValues((previous) => ({ ...previous, department: departmentId }));
+    autoDepartmentRef.current = departmentId;
+  };
 
   const steps = fields ? [...new Set(fields.map((f) => f.step))].sort((a, b) => a - b) : [];
   const total = steps.length + 1; // field steps + review
@@ -1745,6 +1757,7 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
     setError(null);
     try {
       const payload: CreateRequestData = { items: [] };
+      payload.requesterId = requesterId;
       const custom: Record<string, unknown> = {};
       let firstText = '';
       for (const f of fields ?? []) {
@@ -2275,13 +2288,22 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
               <div>{renderField(f)}</div>
               {idx === 0 && f.key === 'requestType' && (
                 <div>
-                  <label style={fieldLabel}>Заявитель</label>
-                  <input
-                    aria-label="Заявитель"
-                    value={userOptionLabel(configUsers.find((user) => user.id === me.user.id) ?? { id: me.user.id, fullName: me.user.fullName }, lang)}
-                    readOnly
-                    style={{ ...input, color: 'var(--fg2)', cursor: 'default' }}
-                  />
+                  <label htmlFor="request-requester" style={fieldLabel}>Заявитель</label>
+                  <div style={{ position: 'relative' }}>
+                    <select
+                      id="request-requester"
+                      value={requesterId}
+                      onChange={(event) => selectRequester(event.target.value)}
+                      style={{ ...input, appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', paddingRight: 38, cursor: 'pointer' }}
+                    >
+                      {configUsers.map((user) => (
+                        <option key={user.id} value={user.id}>{userOptionLabel(user, lang)}</option>
+                      ))}
+                    </select>
+                    <span style={{ position: 'absolute', right: 14, top: '50%', marginTop: -8, pointerEvents: 'none', color: 'var(--fg3)', display: 'inline-block', transform: 'rotate(90deg)' }}>
+                      <Icon name="chev" size={16} sw={2.2} />
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -2293,10 +2315,15 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
         // Превью заявки = как она будет выглядеть в карточке: только заполненные
         // «общие» поля (без перенесённых в позиции и без пустых «—»), а сами
         // позиции — отдельными блоками с наименованием, количеством, деталями и фото.
-        const infoRows = (fields ?? [])
+        const selectedRequester = configUsers.find((user) => user.id === requesterId)
+          ?? { id: me.user.id, fullName: me.user.fullName };
+        const infoRows = [
+          { label: 'Заявитель', value: userOptionLabel(selectedRequester, lang) },
+          ...(fields ?? [])
           .filter((f) => f.key !== 'itemName' && !(productStep != null && f.step === productStep) && !movedToProductKeys.has(f.key))
           .map((f) => ({ label: f.label, value: displayValue(f) }))
-          .filter((r) => r.value && r.value !== '—' && r.value !== 'нет');
+          .filter((r) => r.value && r.value !== '—' && r.value !== 'нет'),
+        ];
         const draftItems = requestItems.filter((it) => String(it.values.itemName ?? '').trim());
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>

@@ -76,6 +76,7 @@ export interface RequestItemInput {
 }
 
 export interface CreateRequestData {
+  requesterId?: string;
   title?: string;
   requestType?: string;
   priority?: string;

@@ -875,6 +875,20 @@ export function buildRouter(deps: RouterDeps): Router {
         return;
       }
       const body = req.body ?? {};
+      const requesterId = String(body.requesterId ?? u.id).trim() || u.id;
+      const [requester] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(and(
+          eq(schema.users.id, requesterId),
+          eq(schema.users.holdingId, u.holdingId),
+          eq(schema.users.status, 'active'),
+        ))
+        .limit(1);
+      if (!requester) {
+        res.status(400).json({ error: 'Выбранный заявитель не найден среди активных сотрудников' });
+        return;
+      }
       if (body.factoryId) {
         const [f] = await db.select().from(schema.factories).where(and(eq(schema.factories.id, body.factoryId), eq(schema.factories.holdingId, u.holdingId)));
         if (!f) { res.status(400).json({ error: 'Factory not found in your holding' }); return; }
@@ -901,7 +915,8 @@ export function buildRouter(deps: RouterDeps): Router {
       const customFields = await sanitizeCustomFields(db, u.holdingId, 'request_create', body.customFields);
       const result = await createRequest(db, {
         holdingId: u.holdingId,
-        requesterId: u.id,
+        requesterId,
+        creatorId: u.id,
         factoryId: body.factoryId ?? null,
         departmentId: body.departmentId ?? null,
         requestType: body.requestType,

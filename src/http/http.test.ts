@@ -125,12 +125,18 @@ describe('HTTP API', () => {
       roleId: await systemRoleId(db, 'requester'),
       holdingId: h.id,
     });
+    const [selectedRequester] = await db.insert(schema.users).values({
+      holdingId: h.id,
+      fullName: 'Selected requester',
+      status: 'active',
+    }).returning();
 
     // Create a request through the API.
     const created = await request(app)
       .post('/api/requests')
       .set('Authorization', `Bearer ${token}`)
       .send({
+        requesterId: selectedRequester.id,
         items: [
           { name: 'Cotton', quantity: 2, unitPrice: 1000 },
           { name: 'Dye', quantity: 1, unitPrice: 500 },
@@ -139,6 +145,10 @@ describe('HTTP API', () => {
       .expect(201);
     expect(created.body.status).toBe('pending_approval');
     expect(created.body.estimatedAmount).toBe(2500);
+    const [storedRequest] = await db.select().from(schema.requests).where(eq(schema.requests.id, created.body.id));
+    expect(storedRequest.requesterId).toBe(selectedRequester.id);
+    const [creationAudit] = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.entityId, created.body.id));
+    expect(creationAudit.userId).toBe(userId);
     const storedItems = await db.select().from(schema.requestItems).where(eq(schema.requestItems.requestId, created.body.id));
     expect(storedItems.map((it) => it.name).sort()).toEqual(['Cotton', 'Dye']);
 
