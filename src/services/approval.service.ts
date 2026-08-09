@@ -1,14 +1,14 @@
 /**
  * Approval service — approve/reject an approval and advance the request through the
  * data-driven workflow. Fixes the legacy bugs by construction:
- *  - separation of duties: a requester cannot approve their own request (default ON);
+ *  - separation of duties: the real creator cannot approve their own request (default ON);
  *  - authority: the actor must hold the step's approver role within the request scope;
  *  - idempotency: a non-pending approval cannot be re-processed;
  *  - the next stage and terminal state come from the workflow engine, not a hardcoded chain;
  *  - the "one pending approval per request" invariant is enforced by the DB index.
  * Everything runs in a single transaction with status history + audit.
  */
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { nextStep } from '../workflow/engine.js';
 import { statusForStep, type KindStep } from '../workflow/step-kinds.js';
@@ -22,7 +22,7 @@ export interface ApproveInput {
   approvalId: string;
   actorUserId: string;
   comment?: string;
-  /** Policy escape hatch; default false (self-approval forbidden). */
+  /** Policy escape hatch; default false (creator self-approval forbidden). */
   allowSelfApproval?: boolean;
 }
 
@@ -62,7 +62,17 @@ async function loadApprovalContext(tx: Db, approvalId: string, actorUserId: stri
   const [req] = await tx.select().from(schema.requests).where(eq(schema.requests.id, approval.requestId));
   if (!req) throw new NotFoundError('Request not found');
 
-  if (!allowSelf && req.requesterId === actorUserId) {
+  const creatorRows = await tx
+    .select({ changedBy: schema.requestStatusHistory.changedBy })
+    .from(schema.requestStatusHistory)
+    .where(and(
+      eq(schema.requestStatusHistory.requestId, req.id),
+      isNull(schema.requestStatusHistory.oldStatus),
+    ))
+    .orderBy(schema.requestStatusHistory.createdAt);
+  const creatorId = creatorRows.find((row: { changedBy: string | null }) => row.changedBy)?.changedBy
+    ?? req.requesterId;
+  if (!allowSelf && creatorId === actorUserId) {
     throw new ForbiddenError('Нельзя согласовывать собственную заявку');
   }
 

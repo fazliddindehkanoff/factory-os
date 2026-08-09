@@ -316,11 +316,12 @@ export async function holdingRequiresPin(db: Db, holdingId: string): Promise<boo
  * they the person responsible for the current step? Reject is then offered only
  * to that same responsible handler, never to every reject-permission holder.
  */
-/** SoD: the requester may not decide money/routing on their own request. */
-const sodBlocked = (def: StepActionDef, req: RequestRow, userId: string): boolean =>
-  (def.action === 'approve' || !!def.sod) && req.requesterId === userId;
+/** SoD: the real creator may not decide money/routing on their own request. */
+const sodBlocked = (def: StepActionDef, creatorId: string, userId: string): boolean =>
+  (def.action === 'approve' || !!def.sod) && creatorId === userId;
 
 async function canHandleStep(db: Db, userId: string, req: RequestRow, step: KindStep): Promise<boolean> {
+  const creatorId = await originalCreatorId(db, req.id, req.requesterId);
   for (const a of actionsForKind(step.stepKind)) {
     // Гейт строится по ОСНОВНЫМ действиям шага: reject/revision сами защищаются
     // этим предикатом, иначе проверка зациклилась бы на них самих.
@@ -331,7 +332,7 @@ async function canHandleStep(db: Db, userId: string, req: RequestRow, step: Kind
     if (step.stepKind === 'procurement' && a.action !== 'add_quotation') continue;
     // FIXES 2026-07-17 (лист G): на проверке цены есть и «Пересмотреть цену».
     if (step.stepKind === 'price_approval' && !['approve_price', 'return_research'].includes(a.action)) continue;
-    if (sodBlocked(a, req, userId)) continue; // separation of duties
+    if (sodBlocked(a, creatorId, userId)) continue; // separation of duties
     if (a.requesterOnly && req.requesterId !== userId) continue;
     if (await actorMayAct(db, userId, req, step, a)) return true;
   }
@@ -433,6 +434,7 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
   }
   const step = await loadStep(db, req.currentStepId);
   if (!step) return [];
+  const creatorId = await originalCreatorId(db, req.id, req.requesterId);
   // Bug #8: the "assign to procurement" action is offered on an approval step only
   // when the NEXT step is a procurement step (i.e. the procurement head hands off).
   let nextIsProcurement = false;
@@ -472,7 +474,7 @@ export async function availableActions(db: Db, req: RequestRow, userId: string):
     // назначение делается там, поэтому approve на согласовании остаётся.
     if (a.action === 'approve' && step.stepKind === 'approval' && nextIsDirectProcurement && !req.responsibleUserId) continue;
     // Self-service on money/routing decisions is forbidden (separation of duties).
-    if (sodBlocked(a, req, userId)) continue;
+    if (sodBlocked(a, creatorId, userId)) continue;
     if (a.requesterOnly && req.requesterId !== userId) continue;
     if (!(await actorMayAct(db, userId, req, step, a))) continue;
     out.push(toUi(a));
@@ -759,7 +761,8 @@ export async function performAction(db: Db, input: PerformInput) {
     const def = findKindAction(step.stepKind, input.action);
     if (!def) throw new ValidationError('Действие недоступно на этом шаге');
 
-    if (sodBlocked(def, req, input.actor.id)) {
+    const creatorId = await originalCreatorId(tx, req.id, req.requesterId);
+    if (sodBlocked(def, creatorId, input.actor.id)) {
       throw new ForbiddenError(
         def.action === 'approve'
           ? 'Нельзя согласовывать собственную заявку'

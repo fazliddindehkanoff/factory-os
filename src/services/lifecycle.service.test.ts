@@ -144,20 +144,35 @@ describe('data-driven lifecycle', () => {
     expect(r.currentStepId).toBeNull();
   });
 
-  it('forbids self-approval even with the approver role', async () => {
+  it('lets the selected department head approve/reject when an assistant is the real creator', async () => {
     const db = await setup();
     const { h, f } = await seedOrg(db);
     // requester also holds dept_head + a PIN.
     const both = await mkUser(db, h.id, 'requester', 'both', true);
     await db.insert(schema.userRoles).values({ userId: both, roleId: await roleId(db, 'dept_head'), holdingId: h.id });
-    // An assistant created this request on the department head's behalf, so the
-    // department-head step stays live; the selected requester still cannot approve it.
+    // An assistant created this request on the department head's behalf. The head
+    // is the selected requester, but is not the creator, so they handle this step.
     const assistant = await mkUser(db, h.id, 'requester', 'assistant');
 
     const req = await newRequest(db, h, f, both, assistant);
-    expect(acts(await availableActions(db, req, both))).not.toContain('approve');
-    await expect(
-      performAction(db, { requestId: req.id, action: 'approve', actor: { id: both, holdingId: h.id }, pin: PIN }),
-    ).rejects.toThrow(/собственную заявку/);
+    const actions = acts(await availableActions(db, req, both));
+    expect(actions).toContain('approve');
+    expect(actions).toContain('reject');
+    const approved = await performAction(db, {
+      requestId: req.id,
+      action: 'approve',
+      actor: { id: both, holdingId: h.id },
+      pin: PIN,
+    });
+    expect(approved.status).toBe('warehouse_check');
+
+    const second = await newRequest(db, h, f, both, assistant);
+    const rejected = await performAction(db, {
+      requestId: second.id,
+      action: 'reject',
+      actor: { id: both, holdingId: h.id },
+      comment: 'Не согласовано',
+    });
+    expect(rejected.status).toBe('rejected');
   });
 });

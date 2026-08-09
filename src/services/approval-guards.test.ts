@@ -40,13 +40,26 @@ async function userWithRoles(db: any, holding: any, codes: string[], tg: string)
   return u.id;
 }
 
-async function approvalFlow(db: any, holding: any, factory: any, requesterId: string, approverRoleId: string | null) {
+async function approvalFlow(
+  db: any,
+  holding: any,
+  factory: any,
+  requesterId: string,
+  approverRoleId: string | null,
+  creatorId?: string,
+) {
   const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'Appr', isActive: true }).returning();
   await db.insert(schema.workflowSteps).values([
     { workflowId: wf.id, stepOrder: 1, stepName: 'Согласование', stepKind: 'approval', approverRoleId },
     { workflowId: wf.id, stepOrder: 2, stepName: 'Закрытие', stepKind: 'close', approverRoleId: await roleId(db, 'requester') },
   ]);
-  const req = await createRequest(db, { holdingId: holding.id, requesterId, factoryId: factory.id, items: [{ name: 'X', quantity: 1, unitPrice: 100 }] });
+  const req = await createRequest(db, {
+    holdingId: holding.id,
+    requesterId,
+    creatorId,
+    factoryId: factory.id,
+    items: [{ name: 'X', quantity: 1, unitPrice: 100 }],
+  });
   const [appr] = await db.select().from(schema.approvals).where(and(eq(schema.approvals.requestId, req.id), eq(schema.approvals.status, 'pending')));
   return { req, approvalId: appr.id };
 }
@@ -88,6 +101,24 @@ describe('C1 — approveApproval is fail-closed', () => {
 
     await expect(approveApproval(db, { approvalId, actorUserId: self })).rejects.toThrow(ForbiddenError);
     expect((await sigs(db, approvalId)).length).toBe(0);
+  });
+
+  it('selected requester may approve when another user actually created the request', async () => {
+    const { db, holding, factory } = await make();
+    const selected = await userWithRoles(db, holding, ['requester', 'director'], 'selected');
+    const assistant = await userWithRoles(db, holding, ['requester'], 'assistant');
+    const { approvalId } = await approvalFlow(
+      db,
+      holding,
+      factory,
+      selected,
+      await roleId(db, 'director'),
+      assistant,
+    );
+
+    await expect(approveApproval(db, { approvalId, actorUserId: selected })).resolves.toMatchObject({
+      status: 'close',
+    });
   });
 
   it('valid approver → success, with signature + audit written only then', async () => {
