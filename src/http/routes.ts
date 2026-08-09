@@ -459,12 +459,12 @@ export function buildRouter(deps: RouterDeps): Router {
       let settingsMap: Record<string, string> = {};
       let stages: { id: string; label: string; order: number }[] = [];
       let warehouses: { id: string; name: string }[] = [];
-      let departments: { id: string; name: string; nameUz: string | null; nameTr: string | null }[] = [];
+      let departments: { id: string; name: string; nameUz: string | null; nameTr: string | null; warehouseId: string | null }[] = [];
       let users: {
         id: string;
         fullName: string;
         departmentId: string | null;
-        departments: { id: string; name: string; nameUz: string | null; nameTr: string | null }[];
+        departments: { id: string; name: string; nameUz: string | null; nameTr: string | null; warehouseId: string | null }[];
       }[] = [];
       if (u.holdingId) {
         const settingsRows = await db
@@ -496,16 +496,25 @@ export function buildRouter(deps: RouterDeps): Router {
         )
           .filter((w: { status: string | null }) => w.status !== 'inactive')
           .map((w: { id: string; name: string }) => ({ id: w.id, name: w.name }));
-        departments = (
+        const departmentRows = (
           await db.select().from(schema.departments).where(eq(schema.departments.holdingId, u.holdingId))
-        )
-          .filter((d: { status: string | null }) => d.status !== 'inactive')
+        ).filter((d: { status: string | null }) => d.status !== 'inactive');
+        const departmentWarehouseLinks = departmentRows.length
+          ? await db.select().from(schema.departmentWarehouses)
+              .where(inArray(schema.departmentWarehouses.departmentId, departmentRows.map((d: { id: string }) => d.id)))
+          : [];
+        const warehouseByDepartment = new Map(
+          departmentWarehouseLinks.map((link: { departmentId: string; warehouseId: string }) => [link.departmentId, link.warehouseId]),
+        );
+        departments = departmentRows
           .map((d: { id: string; name: string; nameUz: string | null; nameTr: string | null }) => ({
             id: d.id,
             name: d.name,
             nameUz: d.nameUz,
             nameTr: d.nameTr,
+            warehouseId: warehouseByDepartment.get(d.id) ?? null,
           }));
+        const departmentById = new Map(departments.map((department) => [department.id, department]));
         const canCreateRequests = await hasPermissionInHolding(db, u.id, 'requests.create', u.holdingId);
         // Non-creators only need their own scoped departments. Request creators
         // must see every active department because they may submit on behalf of
@@ -562,11 +571,17 @@ export function buildRouter(deps: RouterDeps): Router {
                 .innerJoin(schema.departments, eq(schema.departments.id, schema.userRoles.departmentId))
                 .where(and(inArray(schema.userRoles.userId, userIds), eq(schema.userRoles.status, 'active')))
             : [];
-          const deptsByUser = new Map<string, { id: string; name: string; nameUz: string | null; nameTr: string | null }[]>();
+          const deptsByUser = new Map<string, { id: string; name: string; nameUz: string | null; nameTr: string | null; warehouseId: string | null }[]>();
           for (const d of [...explicitDeptRows, ...scopedDeptRows] as { userId: string; id: string; name: string; nameUz: string | null; nameTr: string | null }[]) {
             const existing = deptsByUser.get(d.userId) ?? [];
             if (!existing.some((x) => x.id === d.id)) {
-              deptsByUser.set(d.userId, [...existing, { id: d.id, name: d.name, nameUz: d.nameUz, nameTr: d.nameTr }]);
+              deptsByUser.set(d.userId, [...existing, departmentById.get(d.id) ?? {
+                id: d.id,
+                name: d.name,
+                nameUz: d.nameUz,
+                nameTr: d.nameTr,
+                warehouseId: null,
+              }]);
             }
           }
           users = userRows.map((u0: { id: string; fullName: string }) => {

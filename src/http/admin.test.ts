@@ -128,6 +128,14 @@ describe('constructor / admin API', () => {
       responsibleUserId: employee.body.id,
       responsibleUserName: 'Warehouse Responsible',
     });
+
+    const department = await request(app).post('/api/admin/departments').set(auth)
+      .send({ name: 'Отдел со складом', warehouseId: warehouse.body.id }).expect(201);
+    expect(department.body.warehouseId).toBe(warehouse.body.id);
+    const departments = await request(app).get('/api/admin/departments').set(auth).expect(200);
+    expect(departments.body.find((d: any) => d.id === department.body.id)).toMatchObject({
+      warehouseId: warehouse.body.id,
+    });
   });
 
   it('lets roles.manage users read roles but only owner can mutate role definitions', async () => {
@@ -207,7 +215,7 @@ describe('constructor / admin API', () => {
     const cfgUser = cfg.body.users.find((u: any) => u.id === member.id);
     expect(cfgUser.departmentId).toBe(dept.id);
     expect(cfgUser.departments).toEqual([
-      { id: dept.id, name: 'Production', nameUz: 'Ishlab chiqarish', nameTr: 'Uretim' },
+      { id: dept.id, name: 'Production', nameUz: 'Ishlab chiqarish', nameTr: 'Uretim', warehouseId: null },
     ]);
 
     await request(app)

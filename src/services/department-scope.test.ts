@@ -124,22 +124,25 @@ describe('скоуп отдела маршрутизирует заявку к �
     expect(await availableActions(db, rowB, headA)).toEqual([]);
   });
 
-  it('складской шаг и уведомление получает только ответственный выбранного склада', async () => {
-    const { db, holding } = await make();
+  it('складской шаг автоматически идёт ответственному склада выбранного отдела', async () => {
+    const { db, holding, deptA } = await make();
     const requester = await user(db, holding, 'warehouse-req', 'requester');
     const responsible = await user(db, holding, 'warehouse-owner', 'warehouse');
     const otherWarehouseUser = await user(db, holding, 'warehouse-other', 'warehouse');
     const [warehouse] = await db.insert(schema.warehouses).values({ holdingId: holding.id, name: 'Target warehouse' }).returning();
+    const [otherWarehouse] = await db.insert(schema.warehouses).values({ holdingId: holding.id, name: 'Wrong warehouse' }).returning();
     await db.insert(schema.warehouseResponsibles).values({ warehouseId: warehouse.id, holdingId: holding.id, userId: responsible });
+    await db.insert(schema.departmentWarehouses).values({ departmentId: deptA.id, holdingId: holding.id, warehouseId: warehouse.id });
     const [wf] = await db.insert(schema.workflows).values({ holdingId: holding.id, name: 'Warehouse route', isActive: true }).returning();
     const [step] = await db.insert(schema.workflowSteps).values({
       workflowId: wf.id, stepOrder: 1, stepName: 'Warehouse check', stepKind: 'warehouse_check', approverRoleId: await roleId(db, 'warehouse'),
     }).returning();
     const req = await createRequest(db, {
-      holdingId: holding.id, requesterId: requester, warehouseId: warehouse.id,
+      holdingId: holding.id, requesterId: requester, departmentId: deptA.id, warehouseId: otherWarehouse.id,
       items: [{ name: 'X', quantity: 1, unitPrice: 1 }],
     });
     const [row] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.id));
+    expect(row.warehouseId).toBe(warehouse.id);
     expect(await stepActorIds(db, row, step)).toEqual([responsible]);
     expect((await availableActions(db, row, responsible)).length).toBeGreaterThan(0);
     expect(await availableActions(db, row, otherWarehouseUser)).toEqual([]);

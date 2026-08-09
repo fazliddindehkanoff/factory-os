@@ -211,10 +211,10 @@ export const api = {
     renameFactory: (id: string, name: string) =>
       call('/admin/factories/' + id, { method: 'PUT', body: JSON.stringify({ name }) }),
     deleteFactory: (id: string) => call('/admin/factories/' + id, { method: 'DELETE' }),
-    createDepartment: (name: string, factoryId: string | null, nameUz?: string, nameTr?: string) =>
-      call('/admin/departments', { method: 'POST', body: JSON.stringify({ name, factory_id: factoryId, nameUz, nameTr }) }),
-    renameDepartment: (id: string, name: string, nameUz?: string, nameTr?: string) =>
-      call('/admin/departments/' + id, { method: 'PUT', body: JSON.stringify({ name, nameUz, nameTr }) }),
+    createDepartment: (name: string, factoryId: string | null, nameUz?: string, nameTr?: string, warehouseId?: string | null) =>
+      call('/admin/departments', { method: 'POST', body: JSON.stringify({ name, factory_id: factoryId, nameUz, nameTr, warehouseId }) }),
+    renameDepartment: (id: string, name: string, nameUz?: string, nameTr?: string, warehouseId?: string | null) =>
+      call('/admin/departments/' + id, { method: 'PUT', body: JSON.stringify({ name, nameUz, nameTr, warehouseId }) }),
     deleteDepartment: (id: string) => call('/admin/departments/' + id, { method: 'DELETE' }),
     departmentUsers: (id: string) => call(`/admin/departments/${id}/users`),
     createWarehouse: (name: string, factoryId: string | null) =>

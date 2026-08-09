@@ -182,10 +182,28 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
     const year = new Date().getFullYear();
     const requestNumber = await generateRequestNumber(tx, input.holdingId, year);
     const workflow = await selectWorkflow(tx, input.holdingId, input.requestType);
+    let departmentWarehouseId: string | null = null;
+    if (input.departmentId) {
+      const [configured] = await tx
+        .select({ warehouseId: schema.departmentWarehouses.warehouseId, warehouseStatus: schema.warehouses.status })
+        .from(schema.departmentWarehouses)
+        .innerJoin(schema.warehouses, eq(schema.warehouses.id, schema.departmentWarehouses.warehouseId))
+        .where(and(
+          eq(schema.departmentWarehouses.departmentId, input.departmentId),
+          eq(schema.departmentWarehouses.holdingId, input.holdingId),
+          eq(schema.warehouses.holdingId, input.holdingId),
+        ))
+        .limit(1);
+      if (configured?.warehouseStatus !== 'active' && configured?.warehouseId) {
+        throw new ValidationError('Склад выбранного отдела неактивен — обновите настройки отдела');
+      }
+      departmentWarehouseId = configured?.warehouseId ?? null;
+    }
     let warehouse: { id: string; name: string } | null = null;
-    if (input.warehouseId) {
+    const effectiveWarehouseId = departmentWarehouseId ?? input.warehouseId;
+    if (effectiveWarehouseId) {
       [warehouse] = await tx.select({ id: schema.warehouses.id, name: schema.warehouses.name }).from(schema.warehouses)
-        .where(and(eq(schema.warehouses.id, input.warehouseId), eq(schema.warehouses.holdingId, input.holdingId), eq(schema.warehouses.status, 'active'))).limit(1);
+        .where(and(eq(schema.warehouses.id, effectiveWarehouseId), eq(schema.warehouses.holdingId, input.holdingId), eq(schema.warehouses.status, 'active'))).limit(1);
     } else if (input.warehouseName?.trim()) {
       const wanted = input.warehouseName.trim();
       [warehouse] = await tx.select({ id: schema.warehouses.id, name: schema.warehouses.name }).from(schema.warehouses)
@@ -195,7 +213,7 @@ export async function createRequest(db: Db, input: CreateRequestInput) {
           sql`lower(trim(coalesce(${schema.warehouses.nameTr}, ''))) = lower(trim(${wanted}))`,
         ))).limit(1);
     }
-    if ((input.warehouseId || input.warehouseName?.trim()) && !warehouse) throw new ValidationError('Склад не найден в организации');
+    if ((effectiveWarehouseId || input.warehouseName?.trim()) && !warehouse) throw new ValidationError('Склад не найден в организации');
 
     // Place the request on the FIRST applicable step of its workflow (data-driven),
     // auto-skipping approval steps whose only approver would be the author (bug #1).

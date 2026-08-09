@@ -139,6 +139,23 @@ export const warehouses = pgTable(
   (t) => ({ holdingIdx: index('warehouses_holding_idx').on(t.holdingId) }),
 );
 
+// Each department can route its requests through one configured warehouse.
+// A separate table avoids a forward reference from departments to warehouses.
+export const departmentWarehouses = pgTable(
+  'department_warehouses',
+  {
+    departmentId: uuid('department_id').primaryKey().references(() => departments.id, { onDelete: 'cascade' }),
+    holdingId: uuid('holding_id').notNull().references(() => holdings.id),
+    warehouseId: uuid('warehouse_id').notNull().references(() => warehouses.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    holdingIdx: index('department_warehouses_holding_idx').on(t.holdingId),
+    warehouseIdx: index('department_warehouses_warehouse_idx').on(t.warehouseId),
+  }),
+);
+
 // Multilingual job titles. Users keep the legacy `position` text snapshot below
 // for backward-compatible exports, while new UI/API writes use this stable FK.
 export const positions = pgTable(

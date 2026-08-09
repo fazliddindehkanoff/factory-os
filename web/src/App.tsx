@@ -1441,7 +1441,7 @@ const parseDescRows = (desc?: string): { label: string; value: string }[] =>
         });
 
 /** Create wizard rendered entirely from the admin-configured schema (/api/form/request_create). */
-type DeptOption = { id: string; name: string; nameUz: string | null; nameTr: string | null };
+type DeptOption = { id: string; name: string; nameUz: string | null; nameTr: string | null; warehouseId?: string | null };
 type ConfigUser = { id: string; fullName: string; departmentId?: string | null; departments?: DeptOption[] };
 
 const userDepartmentLabel = (user: ConfigUser, lang: Lang): string => {
@@ -1551,6 +1551,21 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
     window.addEventListener(LANGUAGE_RELOAD_EVENT, saveDraft);
     return () => window.removeEventListener(LANGUAGE_RELOAD_EVENT, saveDraft);
   }, [requesterId, values, requestItems, idx]);
+
+  const departmentWarehouseId = departments.find((department) => department.id === values.department)?.warehouseId ?? null;
+  const departmentWarehouseName = warehouses.find((warehouse) => warehouse.id === departmentWarehouseId)?.name ?? '';
+  useEffect(() => {
+    if (!departmentWarehouseName) return;
+    setRequestItems((previous) => {
+      let changed = false;
+      const next = previous.map((item) => {
+        if (item.values.warehouse === departmentWarehouseName) return item;
+        changed = true;
+        return { ...item, values: { ...item.values, warehouse: departmentWarehouseName } };
+      });
+      return changed ? next : previous;
+    });
+  }, [departmentWarehouseName, requestItems.length]);
 
   const optionsFor = (f: FormField): { value: string; label: string; meta?: string }[] =>
     f.key === 'cf_department'
@@ -2016,6 +2031,7 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
                 aria-label={pf.label}
                 value={String(v ?? '')}
                 onChange={(e) => updateRequestItemValue(itemIndex, pf.key, e.target.value)}
+                disabled={pf.key === 'warehouse' && !!departmentWarehouseId}
                 style={{ ...input, appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', cursor: 'pointer', color: v ? 'var(--fg)' : 'var(--fg3)', paddingRight: 40 }}
               >
                 <option value="">{placeholder}</option>

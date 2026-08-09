@@ -686,20 +686,24 @@ async function fetchCreateMeta(db: Db, holdingId: string, userId?: string): Prom
     ORDER BY full_name ASC
   `);
   const deptRes = await db.execute(sql`
-    SELECT id, name, name_uz, name_tr FROM departments
-    WHERE holding_id = ${holdingId} AND status = 'active'
-    ORDER BY name ASC
+    SELECT d.id, d.name, d.name_uz, d.name_tr, dw.warehouse_id
+    FROM departments d
+    LEFT JOIN department_warehouses dw ON dw.department_id = d.id
+    WHERE d.holding_id = ${holdingId} AND d.status = 'active'
+    ORDER BY d.name ASC
   `);
   const userDeptRes = await db.execute(sql`
-    SELECT ud.user_id, d.id AS department_id, d.name, d.name_uz, d.name_tr
+    SELECT ud.user_id, d.id AS department_id, d.name, d.name_uz, d.name_tr, dw.warehouse_id
     FROM user_departments ud
     JOIN departments d ON d.id = ud.department_id
+    LEFT JOIN department_warehouses dw ON dw.department_id = d.id
     JOIN users u ON u.id = ud.user_id
     WHERE u.holding_id = ${holdingId} AND u.status = 'active' AND d.status = 'active'
     UNION
-    SELECT ur.user_id, d.id AS department_id, d.name, d.name_uz, d.name_tr
+    SELECT ur.user_id, d.id AS department_id, d.name, d.name_uz, d.name_tr, dw.warehouse_id
     FROM user_roles ur
     JOIN departments d ON d.id = ur.department_id
+    LEFT JOIN department_warehouses dw ON dw.department_id = d.id
     JOIN users u ON u.id = ur.user_id
     WHERE u.holding_id = ${holdingId} AND u.status = 'active' AND ur.status = 'active' AND d.status = 'active'
   `);
@@ -719,11 +723,11 @@ async function fetchCreateMeta(db: Db, holdingId: string, userId?: string): Prom
     WHERE holding_id = ${holdingId} AND screen = 'request_create' AND enabled = true
   `);
   const allDepartments = (Array.isArray(deptRes) ? deptRes : deptRes.rows ?? [])
-    .map((d: any) => ({ id: text(d.id), name: text(d.name), nameUz: text(d.name_uz), nameTr: text(d.name_tr) }));
-  const departmentsByUser = new Map<string, { id: string; name: string; nameUz: string; nameTr: string }[]>();
+    .map((d: any) => ({ id: text(d.id), name: text(d.name), nameUz: text(d.name_uz), nameTr: text(d.name_tr), warehouseId: text(d.warehouse_id) || null }));
+  const departmentsByUser = new Map<string, { id: string; name: string; nameUz: string; nameTr: string; warehouseId: string | null }[]>();
   for (const row of (Array.isArray(userDeptRes) ? userDeptRes : userDeptRes.rows ?? []) as any[]) {
     const ownerId = text(row.user_id);
-    const department = { id: text(row.department_id), name: text(row.name), nameUz: text(row.name_uz), nameTr: text(row.name_tr) };
+    const department = { id: text(row.department_id), name: text(row.name), nameUz: text(row.name_uz), nameTr: text(row.name_tr), warehouseId: text(row.warehouse_id) || null };
     const current = departmentsByUser.get(ownerId) ?? [];
     if (!current.some((item) => item.id === department.id)) departmentsByUser.set(ownerId, [...current, department]);
   }
@@ -2201,6 +2205,7 @@ function pageHtml(): string {
           <div class="modal-field"><label for="otdelNameUz">UZ</label><input class="fin" id="otdelNameUz" /></div>
           <div class="modal-field"><label for="otdelNameTr">TR</label><input class="fin" id="otdelNameTr" /></div>
           <div class="modal-field full"><label data-i18n="otdels.branches">Филиалы (branches)</label><div class="checkbox-list" id="otdelFactories"></div></div>
+          <div class="modal-field full"><label for="otdelWarehouse" data-i18n="otdels.warehouse">Склад отдела</label><select class="fin" id="otdelWarehouse"><option value="">Не назначен</option></select></div>
         </div>
         <div class="err-line" id="otdelErr"></div>
         <div class="modal-actions"><button class="btn ghost" id="otdelCancel" type="button" data-i18n="common.cancel">Отмена</button><button class="btn" id="otdelSave" type="submit" data-i18n="common.save">Сохранить</button></div>
@@ -2325,7 +2330,7 @@ function pageHtml(): string {
         'unitTypes.title':'Единицы измерения','unitTypes.subtitle':'Управляемый список — используется в заявках и номенклатуре',
         'unitTypes.add':'+ Добавить единицу','unitTypes.colCode':'Код','unitTypes.colNameRu':'RU','unitTypes.colNameUz':'UZ','unitTypes.colNameTr':'TR',
         'nav.otdels':'Отделы','nav.warehouses':'Склады',
-        'otdels.title':'Отделы','otdels.subtitle':'Название на трёх языках и филиалы (branches), к которым привязан отдел','otdels.add':'+ Добавить отдел','otdels.branches':'Филиалы',
+        'otdels.title':'Отделы','otdels.subtitle':'Название на трёх языках, филиалы и склад отдела','otdels.add':'+ Добавить отдел','otdels.branches':'Филиалы','otdels.warehouse':'Склад отдела',
         'warehouses.title':'Склады','warehouses.subtitle':'Склады, филиалы и ответственные сотрудники','warehouses.add':'+ Добавить склад','warehouses.colName':'Название','warehouses.colBranch':'Филиал','warehouses.responsible':'Ответственный сотрудник',
         'nav.branches':'Филиалы','branches.title':'Филиалы','branches.subtitle':'Заводы/площадки холдинга — к ним привязываются отделы и склады','branches.add':'+ Добавить филиал','branches.colName':'Название',
         'common.cancel':'Отмена','common.save':'Сохранить','common.loading':'Загрузка…','common.empty':'Ничего не найдено',
@@ -2355,7 +2360,7 @@ function pageHtml(): string {
         'unitTypes.title':'O‘lchov birliklari','unitTypes.subtitle':'Boshqariladigan ro‘yxat — arizalar va nomenklaturada ishlatiladi',
         'unitTypes.add':'+ Birlik qo‘shish','unitTypes.colCode':'Kod','unitTypes.colNameRu':'RU','unitTypes.colNameUz':'UZ','unitTypes.colNameTr':'TR',
         'nav.otdels':'Bo‘limlar','nav.warehouses':'Omborlar',
-        'otdels.title':'Bo‘limlar','otdels.subtitle':'Uch tilda nomi va bo‘lim biriktirilgan filiallar','otdels.add':'+ Bo‘lim qo‘shish','otdels.branches':'Filiallar',
+        'otdels.title':'Bo‘limlar','otdels.subtitle':'Uch tildagi nomi, filiallari va bo‘lim ombori','otdels.add':'+ Bo‘lim qo‘shish','otdels.branches':'Filiallar','otdels.warehouse':'Bo‘lim ombori',
         'warehouses.title':'Omborlar','warehouses.subtitle':'Omborlar, filiallar va mas’ul xodimlar','warehouses.add':'+ Ombor qo‘shish','warehouses.colName':'Nomi','warehouses.colBranch':'Filial','warehouses.responsible':'Mas’ul xodim',
         'nav.branches':'Filiallar','branches.title':'Filiallar','branches.subtitle':'Xolding zavodlari — bo‘limlar va omborlar shularga bog‘lanadi','branches.add':'+ Filial qo‘shish','branches.colName':'Nomi',
         'common.cancel':'Bekor qilish','common.save':'Saqlash','common.loading':'Yuklanmoqda…','common.empty':'Hech narsa topilmadi',
@@ -2385,7 +2390,7 @@ function pageHtml(): string {
         'unitTypes.title':'Birimler','unitTypes.subtitle':'Yönetilen liste — taleplerde ve ürün listesinde kullanılır',
         'unitTypes.add':'+ Birim ekle','unitTypes.colCode':'Kod','unitTypes.colNameRu':'RU','unitTypes.colNameUz':'UZ','unitTypes.colNameTr':'TR',
         'nav.otdels':'Departmanlar','nav.warehouses':'Depolar',
-        'otdels.title':'Departmanlar','otdels.subtitle':'Uc dilde ad ve departmanin bagli oldugu subeler','otdels.add':'+ Departman ekle','otdels.branches':'Subeler',
+        'otdels.title':'Departmanlar','otdels.subtitle':'Üç dilde ad, şubeler ve departman deposu','otdels.add':'+ Departman ekle','otdels.branches':'Şubeler','otdels.warehouse':'Departman deposu',
         'warehouses.title':'Depolar','warehouses.subtitle':'Depolar, şubeler ve sorumlu çalışanlar','warehouses.add':'+ Depo ekle','warehouses.colName':'Ad','warehouses.colBranch':'Sube','warehouses.responsible':'Sorumlu çalışan',
         'nav.branches':'Subeler','branches.title':'Subeler','branches.subtitle':'Holdingin fabrikalari — departmanlar ve depolar bunlara baglanir','branches.add':'+ Sube ekle','branches.colName':'Ad',
         'common.cancel':'İptal','common.save':'Kaydet','common.loading':'Yükleniyor…','common.empty':'Sonuç bulunamadı',
@@ -4530,8 +4535,9 @@ function pageHtml(): string {
     let otdelsLoaded = false;
     async function ensureOtdels(force = false) {
       try {
-        const [depts] = await Promise.all([coreApi('/admin/departments'), loadFactories()]);
+        const [depts, , warehouses] = await Promise.all([coreApi('/admin/departments'), loadFactories(), coreApi('/admin/warehouses')]);
         otdelsItems = depts;
+        warehousesItems = warehouses;
         otdelsLoaded = true;
         renderOtdels();
       } catch (err) {
@@ -4540,10 +4546,11 @@ function pageHtml(): string {
     }
     function renderOtdels() {
       const factoryById = new Map(factoriesItems.map((f) => [f.id, f.name]));
-      const head = '<div class="unit-type-row head" style="grid-template-columns:1fr 1fr 1fr 1.4fr 76px;"><span>' + t('unitTypes.colNameRu') + '</span><span>' + t('unitTypes.colNameUz') + '</span><span>' + t('unitTypes.colNameTr') + '</span><span data-i18n="otdels.branches">Филиалы</span><span></span></div>';
+      const warehouseById = new Map(warehousesItems.map((warehouse) => [warehouse.id, warehouse.name]));
+      const head = '<div class="unit-type-row head" style="grid-template-columns:1fr 1fr 1fr 1.2fr 1.2fr 76px;"><span>' + t('unitTypes.colNameRu') + '</span><span>' + t('unitTypes.colNameUz') + '</span><span>' + t('unitTypes.colNameTr') + '</span><span data-i18n="otdels.branches">Филиалы</span><span data-i18n="otdels.warehouse">Склад отдела</span><span></span></div>';
       const body = otdelsItems.map((d) => {
         const chips = (d.factoryIds || []).map((id) => '<span class="pill">' + esc(factoryById.get(id) || '—') + '</span>').join('') || '<span class="identity-meta">—</span>';
-        return '<div class="unit-type-row" style="grid-template-columns:1fr 1fr 1fr 1.4fr 76px;"><span>' + esc(d.name) + '</span><span>' + esc(d.nameUz || '—') + '</span><span>' + esc(d.nameTr || '—') + '</span><div class="chip-list">' + chips + '</div><div class="unit-type-actions">' +
+        return '<div class="unit-type-row" style="grid-template-columns:1fr 1fr 1fr 1.2fr 1.2fr 76px;"><span>' + esc(d.name) + '</span><span>' + esc(d.nameUz || '—') + '</span><span>' + esc(d.nameTr || '—') + '</span><div class="chip-list">' + chips + '</div><span>' + esc(warehouseById.get(d.warehouseId) || '—') + '</span><div class="unit-type-actions">' +
           '<button class="icon-action" type="button" title="Изменить" data-edit-otdel="' + esc(d.id) + '"><i class="ti ti-pencil" aria-hidden="true"></i></button>' +
           '<button class="icon-action danger" type="button" title="Удалить" data-delete-otdel="' + esc(d.id) + '"><i class="ti ti-trash" aria-hidden="true"></i></button>' +
           '</div></div>';
@@ -4560,6 +4567,9 @@ function pageHtml(): string {
       document.getElementById('otdelFactories').innerHTML = factoriesItems.map((f) =>
         '<label><input type="checkbox" value="' + esc(f.id) + '" ' + (selected.has(f.id) ? 'checked' : '') + ' /><span>' + esc(f.name) + '</span></label>',
       ).join('') || '<span class="identity-meta">Нет филиалов</span>';
+      const warehouse = document.getElementById('otdelWarehouse');
+      warehouse.innerHTML = '<option value="">Не назначен</option>' + warehousesItems.map((w) => '<option value="' + esc(w.id) + '">' + esc(w.name) + '</option>').join('');
+      warehouse.value = d ? d.warehouseId || '' : '';
       document.getElementById('otdelErr').textContent = '';
       document.getElementById('otdelModal').classList.remove('hidden');
       document.getElementById('otdelNameRu').focus();
@@ -4586,6 +4596,7 @@ function pageHtml(): string {
         nameUz: document.getElementById('otdelNameUz').value.trim(),
         nameTr: document.getElementById('otdelNameTr').value.trim(),
         factoryIds,
+        warehouseId: document.getElementById('otdelWarehouse').value || null,
       };
       const save = document.getElementById('otdelSave');
       const error = document.getElementById('otdelErr');
@@ -4999,6 +5010,15 @@ function pageHtml(): string {
     function requesterDepartmentLabel(user) {
       return (user.departments || []).map((department) => localized(department, 'name', 'nameUz', 'nameTr')).filter(Boolean).join(', ');
     }
+    function syncDepartmentWarehouseChoice() {
+      const departmentId = document.getElementById('fDepartment').value;
+      const department = (meta.departments || []).find((item) => item.id === departmentId)
+        || (meta.users || []).flatMap((user) => user.departments || []).find((item) => item.id === departmentId);
+      const warehouse = document.getElementById('fWarehouse');
+      if (department && department.warehouseId) warehouse.value = department.warehouseId;
+      warehouse.disabled = !!(department && department.warehouseId);
+      warehouse.title = warehouse.disabled ? 'Склад назначен в настройках отдела' : '';
+    }
     function syncRequesterDepartment(preferredDepartmentId) {
       const requesterId = document.getElementById('fRequester').value;
       const requester = (meta.users || []).find((user) => user.id === requesterId);
@@ -5007,6 +5027,7 @@ function pageHtml(): string {
       fillSelect('fDepartment', choices.map((department) => ({ id:department.id, label:localized(department,'name','nameUz','nameTr') })), 'id', 'label', true);
       const preferred = preferredDepartmentId && choices.some((department) => department.id === preferredDepartmentId) ? preferredDepartmentId : '';
       document.getElementById('fDepartment').value = preferred || (configured[0] || {}).id || '';
+      syncDepartmentWarehouseChoice();
     }
     function openNativeDatePicker(event) {
       const field = event.currentTarget;
@@ -5030,14 +5051,15 @@ function pageHtml(): string {
         const departmentLabel = requesterDepartmentLabel(user);
         return { id:user.id, label:departmentLabel ? user.name + ' · ' + departmentLabel : user.name };
       }), 'id', 'label', false);
+      fillSelect('fWarehouse', meta.warehouses.map((w) => ({ v:w.id, l:localized(w,'name','nameUz','nameTr') })), 'v', 'l', true);
       document.getElementById('fRequester').value = session.user.id;
       document.getElementById('fRequester').disabled = false;
       syncRequesterDepartment('');
       document.getElementById('fRequester').addEventListener('change', () => syncRequesterDepartment(''));
+      document.getElementById('fDepartment').addEventListener('change', syncDepartmentWarehouseChoice);
       document.getElementById('fNeeded').addEventListener('click', openNativeDatePicker);
       document.getElementById('fNeeded').addEventListener('focus', openNativeDatePicker);
       fillSelect('fObject', meta.objects, 'value', 'label', true);
-      fillSelect('fWarehouse', meta.warehouses.map((w) => ({ v:w.id, l:localized(w,'name','nameUz','nameTr') })), 'v', 'l', true);
       fillSelect('fPurpose', meta.purposes, 'value', 'label', true);
       const op = document.getElementById('originPills');
       op.innerHTML = meta.origins.map((o) =>

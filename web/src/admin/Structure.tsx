@@ -11,6 +11,7 @@ interface Dept {
   nameTr: string | null;
   status: string;
   userCount: number;
+  warehouseId: string | null;
 }
 interface Wh {
   id: string;
@@ -39,6 +40,7 @@ interface SheetState {
   nameUz: string;
   nameTr: string;
   factoryId: string;
+  warehouseId: string;
 }
 
 interface DeptUser {
@@ -87,10 +89,10 @@ export function Structure() {
       if (sheet.kind === 'factory' && sheet.mode === 'add') await api.admin.createFactory(sheet.name.trim());
       else if (sheet.kind === 'factory') await api.admin.renameFactory(sheet.id!, sheet.name.trim());
       else if (sheet.mode === 'add' && sheet.kind === 'department')
-        await api.admin.createDepartment(sheet.name.trim(), factoryId, sheet.nameUz.trim(), sheet.nameTr.trim());
+        await api.admin.createDepartment(sheet.name.trim(), factoryId, sheet.nameUz.trim(), sheet.nameTr.trim(), sheet.warehouseId || null);
       else if (sheet.mode === 'add') await api.admin.createWarehouse(sheet.name.trim(), factoryId);
       else if (sheet.kind === 'department')
-        await api.admin.renameDepartment(sheet.id!, sheet.name.trim(), sheet.nameUz.trim(), sheet.nameTr.trim());
+        await api.admin.renameDepartment(sheet.id!, sheet.name.trim(), sheet.nameUz.trim(), sheet.nameTr.trim(), sheet.warehouseId || null);
       else await api.admin.renameWarehouse(sheet.id!, sheet.name.trim());
       setSheet(null);
       load();
@@ -118,16 +120,19 @@ export function Structure() {
   };
 
   const factories = data.factories;
+  const allWarehouses = [...factories.flatMap((factory) => factory.warehouses), ...data.unassigned.warehouses];
+  const warehouseName = new Map(allWarehouses.map((warehouse) => [warehouse.id, warehouse.name]));
   const deptRow = (d: Dept) => (
-    <Row key={d.id} onRename={() => setSheet({ kind: 'department', mode: 'rename', id: d.id, name: d.name, nameUz: d.nameUz ?? '', nameTr: d.nameTr ?? '', factoryId: '' })} onDelete={() => remove('department', d.id, d.name)}>
+    <Row key={d.id} onRename={() => setSheet({ kind: 'department', mode: 'rename', id: d.id, name: d.name, nameUz: d.nameUz ?? '', nameTr: d.nameTr ?? '', factoryId: '', warehouseId: d.warehouseId ?? '' })} onDelete={() => remove('department', d.id, d.name)}>
       <button onClick={() => showDeptUsers(d.id, d.name)} className="flex items-center gap-2 text-left">
         <span className="text-sm text-fg">{d.name}</span>
         <Pill tone="muted">{d.userCount} чел.</Pill>
+        {d.warehouseId && <Pill tone="system">{warehouseName.get(d.warehouseId) ?? 'Склад'}</Pill>}
       </button>
     </Row>
   );
   const whRow = (w: Wh) => (
-    <Row key={w.id} onRename={() => setSheet({ kind: 'warehouse', mode: 'rename', id: w.id, name: w.name, nameUz: '', nameTr: '', factoryId: '' })} onDelete={() => remove('warehouse', w.id, w.name)}>
+    <Row key={w.id} onRename={() => setSheet({ kind: 'warehouse', mode: 'rename', id: w.id, name: w.name, nameUz: '', nameTr: '', factoryId: '', warehouseId: '' })} onDelete={() => remove('warehouse', w.id, w.name)}>
       <span className="text-sm text-fg">{w.name}</span>
     </Row>
   );
@@ -136,13 +141,13 @@ export function Structure() {
     <div className="space-y-5">
       {error && <Err>{error}</Err>}
       <div className="flex gap-2.5">
-        <PrimaryBtn className="flex-1" onClick={() => setSheet({ kind: 'factory', mode: 'add', name: '', nameUz: '', nameTr: '', factoryId: '' })}>
+        <PrimaryBtn className="flex-1" onClick={() => setSheet({ kind: 'factory', mode: 'add', name: '', nameUz: '', nameTr: '', factoryId: '', warehouseId: '' })}>
           + Завод
         </PrimaryBtn>
-        <GhostBtn className="flex-1" onClick={() => setSheet({ kind: 'department', mode: 'add', name: '', nameUz: '', nameTr: '', factoryId: '' })}>
+        <GhostBtn className="flex-1" onClick={() => setSheet({ kind: 'department', mode: 'add', name: '', nameUz: '', nameTr: '', factoryId: '', warehouseId: '' })}>
           + Отдел
         </GhostBtn>
-        <GhostBtn className="flex-1" onClick={() => setSheet({ kind: 'warehouse', mode: 'add', name: '', nameUz: '', nameTr: '', factoryId: '' })}>
+        <GhostBtn className="flex-1" onClick={() => setSheet({ kind: 'warehouse', mode: 'add', name: '', nameUz: '', nameTr: '', factoryId: '', warehouseId: '' })}>
           + Склад
         </GhostBtn>
       </div>
@@ -155,7 +160,7 @@ export function Structure() {
               <Pill tone="system">{f.departments.length} отд.</Pill>
             </div>
             <div className="flex gap-1.5">
-              <MiniBtn onClick={() => setSheet({ kind: 'factory', mode: 'rename', id: f.id, name: f.name, nameUz: '', nameTr: '', factoryId: '' })}>✎</MiniBtn>
+              <MiniBtn onClick={() => setSheet({ kind: 'factory', mode: 'rename', id: f.id, name: f.name, nameUz: '', nameTr: '', factoryId: '', warehouseId: '' })}>✎</MiniBtn>
               <MiniBtn className="bg-danger/15 text-danger" onClick={() => remove('factory', f.id, f.name)}>✕</MiniBtn>
             </div>
           </div>
@@ -239,6 +244,15 @@ export function Structure() {
                 <div className="mt-4">
                   <Label>Название (TR)</Label>
                   <Field value={sheet.nameTr} onChange={(e) => setSheet({ ...sheet, nameTr: e.target.value })} placeholder="напр. Tedarik" />
+                </div>
+                <div className="mt-4">
+                  <Label>Склад отдела</Label>
+                  <Select value={sheet.warehouseId} onChange={(e) => setSheet({ ...sheet, warehouseId: (e.target as HTMLSelectElement).value })}>
+                    <option value="">Не назначен</option>
+                    {allWarehouses.map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                    ))}
+                  </Select>
                 </div>
               </>
             )}

@@ -571,11 +571,24 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
             .from(schema.departmentFactories)
             .where(inArray(schema.departmentFactories.departmentId, live.map((d: { id: string }) => d.id)))
         : [];
+      const warehouseLinks = live.length
+        ? await db
+            .select()
+            .from(schema.departmentWarehouses)
+            .where(inArray(schema.departmentWarehouses.departmentId, live.map((d: { id: string }) => d.id)))
+        : [];
       const factoryIdsByDept = new Map<string, string[]>();
       for (const l of links as { departmentId: string; factoryId: string }[]) {
         factoryIdsByDept.set(l.departmentId, [...(factoryIdsByDept.get(l.departmentId) ?? []), l.factoryId]);
       }
-      res.json(live.map((d: { id: string }) => ({ ...d, factoryIds: factoryIdsByDept.get(d.id) ?? [] })));
+      const warehouseByDept = new Map(
+        warehouseLinks.map((link: { departmentId: string; warehouseId: string }) => [link.departmentId, link.warehouseId]),
+      );
+      res.json(live.map((d: { id: string }) => ({
+        ...d,
+        factoryIds: factoryIdsByDept.get(d.id) ?? [],
+        warehouseId: warehouseByDept.get(d.id) ?? null,
+      })));
     } catch (e) {
       next(e);
     }
@@ -619,12 +632,20 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       const warehouses = (
         await db.select().from(schema.warehouses).where(eq(schema.warehouses.holdingId, hid))
       ).filter((w: { status: string }) => w.status === 'active');
+      const departmentWarehouseLinks = departments.length
+        ? await db.select().from(schema.departmentWarehouses)
+            .where(inArray(schema.departmentWarehouses.departmentId, departments.map((d: { id: string }) => d.id)))
+        : [];
+      const warehouseByDepartment = new Map(
+        departmentWarehouseLinks.map((link: { departmentId: string; warehouseId: string }) => [link.departmentId, link.warehouseId]),
+      );
       const userCounts = await departmentUserCounts(hid);
 
       type Node = { id: string; name: string; status: string };
       const deptNode = (d: { id: string; name: string; status: string }) => ({
         ...d,
         userCount: userCounts.get(d.id) ?? 0,
+        warehouseId: warehouseByDepartment.get(d.id) ?? null,
       });
       const factoryNodes = factories.map((f: Node) => ({
         id: f.id,
@@ -732,6 +753,30 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
     return ids;
   }
 
+  async function validatedDepartmentWarehouseId(
+    body: Record<string, unknown>,
+    holdingId: string,
+  ): Promise<string | null | undefined> {
+    if (!Object.prototype.hasOwnProperty.call(body, 'warehouseId')) return undefined;
+    const warehouseId = str(body.warehouseId) || null;
+    if (!warehouseId) return null;
+    const warehouse = await loadHoldingRow(db, schema.warehouses, warehouseId, holdingId);
+    if (warehouse.status !== 'active') throw new ValidationError('Выбранный склад неактивен');
+    return warehouseId;
+  }
+
+  async function syncDepartmentWarehouse(
+    tx: Db,
+    departmentId: string,
+    holdingId: string,
+    warehouseId: string | null,
+  ): Promise<void> {
+    await tx.delete(schema.departmentWarehouses).where(eq(schema.departmentWarehouses.departmentId, departmentId));
+    if (warehouseId) {
+      await tx.insert(schema.departmentWarehouses).values({ departmentId, holdingId, warehouseId });
+    }
+  }
+
   r.post('/departments', requirePerm('settings.manage'), async (req, res, next) => {
     try {
       const u = actor(req);
@@ -741,6 +786,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       if (!name) throw new ValidationError('name обязателен');
       if (factoryId) await loadHoldingRow(db, schema.factories, factoryId, u.holdingId as string);
       const factoryIds = await validatedFactoryIds(body, u.holdingId as string);
+      const warehouseId = await validatedDepartmentWarehouseId(body, u.holdingId as string);
       const dept = await db.transaction(async (tx: Db) => {
         const [row] = await tx
           .insert(schema.departments)
@@ -753,9 +799,10 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
           })
           .returning();
         if (factoryIds) await syncDepartmentFactories(tx, row.id, factoryIds);
+        if (warehouseId !== undefined) await syncDepartmentWarehouse(tx, row.id, u.holdingId as string, warehouseId);
         return row;
       });
-      res.status(201).json(dept);
+      res.status(201).json({ ...dept, warehouseId: warehouseId ?? null });
     } catch (e) {
       next(e);
     }
@@ -770,6 +817,7 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
       if (!name) throw new ValidationError('name обязателен');
       await loadHoldingRow(db, schema.departments, id, u.holdingId as string);
       const factoryIds = await validatedFactoryIds(body, u.holdingId as string);
+      const warehouseId = await validatedDepartmentWarehouseId(body, u.holdingId as string);
       const updated = await db.transaction(async (tx: Db) => {
         const [row] = await tx
           .update(schema.departments)
@@ -781,9 +829,10 @@ export function buildAdminRouter(db: Db, auth: RequestHandler, sessionSecret: st
           .where(eq(schema.departments.id, id))
           .returning();
         if (factoryIds) await syncDepartmentFactories(tx, id, factoryIds);
+        if (warehouseId !== undefined) await syncDepartmentWarehouse(tx, id, u.holdingId as string, warehouseId);
         return row;
       });
-      res.json(updated);
+      res.json({ ...updated, ...(warehouseId !== undefined ? { warehouseId } : {}) });
     } catch (e) {
       next(e);
     }
