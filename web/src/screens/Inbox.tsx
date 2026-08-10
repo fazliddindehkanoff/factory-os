@@ -37,7 +37,7 @@ function displayInboxActions(status: string, actions: { action: string; label: s
 // не наименование товара. dd.mm — короткая дата для «Создана».
 function shortDate(iso?: string | null): string | null {
   if (!iso) return null;
-  try { return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }); } catch { return null; }
+  try { return new Date(iso).toLocaleDateString('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit' }); } catch { return null; }
 }
 
 const PRIORITY_TAG: Record<string, { label: string; danger?: boolean }> = {

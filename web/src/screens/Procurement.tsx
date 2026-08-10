@@ -30,7 +30,7 @@ interface QueueRequest {
 
 function qDate(iso?: string | null): string | null {
   if (!iso) return null;
-  try { return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }); } catch { return null; }
+  try { return new Date(iso).toLocaleDateString('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit' }); } catch { return null; }
 }
 
 type Tab = 'queue' | 'suppliers';

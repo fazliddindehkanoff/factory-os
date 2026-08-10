@@ -146,7 +146,7 @@ export function progressOf(status: string): string {
 
 export function fmtDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return new Date(iso).toLocaleString('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   } catch { return iso; }
 }
 
@@ -195,7 +195,7 @@ export function dayLabel(iso: string): string {
   const d = new Date(iso);
   const now = new Date();
   const y = new Date(now); y.setDate(now.getDate() - 1);
-  const dmy = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const dmy = d.toLocaleDateString('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', year: 'numeric' });
   if (sameDay(d, now)) return `Сегодня · ${dmy}`;
   if (sameDay(d, y)) return `Вчера · ${dmy}`;
   return dmy;

@@ -244,7 +244,7 @@ async function actorMayAct(
   if (!(await hasPermission(db, userId, def.perm, scope))) return false;
   // Reject/revision гейтятся отдельно через canHandleStep (ответственный за шаг),
   // поэтому требование «держит роль шага» к ним не применяется здесь.
-  if (['approval', 'price_approval'].includes(step.stepKind) && !def.reject && !def.revision && step.approverRoleId) {
+  if (['approval', 'price_approval', 'procurement_intake'].includes(step.stepKind) && !def.reject && !def.revision && step.approverRoleId) {
     if (!(await actorHoldsRoleInScope(db, userId, step.approverRoleId, scope))) return false;
   }
   // Once a specific procurement person is assigned, only they work the

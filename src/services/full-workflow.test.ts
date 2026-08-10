@@ -13,7 +13,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { seedSystemRolesAndPermissions } from '../db/seed.js';
 import { createRequest } from './request.service.js';
-import { performAction, markItemStock } from './lifecycle.service.js';
+import { performAction, markItemStock, availableActions } from './lifecycle.service.js';
 import { hashPin } from '../auth/pin.js';
 
 const PIN = '1234';
@@ -132,6 +132,9 @@ describe('new step-kinds: intake → price approval → ordering → per-item re
       items: [{ name: 'Труба', materialId: mat.id, quantity: 10, unitPrice: 700 }],
     });
     expect((await act(req.id, 'approve', dh, { pin: PIN })).status).toBe('procurement_intake');
+    const [intake] = await db.select().from(schema.requests).where(eq(schema.requests.id, req.id));
+    expect(await availableActions(db, intake, pman)).toEqual([]);
+    await expect(act(req.id, 'assign_procurement', pman, { assigneeId: pman })).rejects.toThrow(/Недостаточно прав/);
     // #5 руководитель снабжения: назначает снабженца → поиск.
     expect((await act(req.id, 'assign_procurement', phead, { assigneeId: pman })).status).toBe('procurement');
     // #6 назначенный снабженец: одно предложение сразу уходит на одобрение менеджеру.

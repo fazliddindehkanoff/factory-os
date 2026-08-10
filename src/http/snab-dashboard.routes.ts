@@ -2917,7 +2917,7 @@ function pageHtml(): string {
       window.__snabToast = setTimeout(() => el.classList.add('hidden'), 3000);
     }
     function renderDashboardDate() {
-      const date = new Date().toLocaleDateString('ru-RU', { weekday:'long', day:'numeric', month:'long' });
+      const date = new Date().toLocaleDateString('ru-RU', { timeZone:'Asia/Tashkent', weekday:'long', day:'numeric', month:'long' });
       document.getElementById('dashboardDate').textContent = 'Zelal Textile · ' + date;
     }
     function groupedByDay(data) {
@@ -2968,7 +2968,7 @@ function pageHtml(): string {
       rows = body.rows || [];
       materials = body.materials || materials;
       renderProductCodeList();
-      document.getElementById('updated').textContent = 'Обновлено: ' + new Date().toLocaleString('ru-RU');
+      document.getElementById('updated').textContent = 'Обновлено: ' + new Date().toLocaleString('ru-RU', {timeZone:'Asia/Tashkent'});
       render();
     }
     /* With table-layout:fixed the column widths are the layout, so the table's own
@@ -3130,7 +3130,7 @@ function pageHtml(): string {
       if (!value) return '—';
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return '—';
-      return date.toLocaleString('ru-RU', withTime ? {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'} : {day:'2-digit',month:'2-digit',year:'numeric'});
+      return date.toLocaleString('ru-RU', withTime ? {timeZone:'Asia/Tashkent',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'} : {timeZone:'Asia/Tashkent',day:'2-digit',month:'2-digit',year:'numeric'});
     }
     function requestStatus(row) { return row.statusLabel || requestStatusLabels[row.status] || row.status || '—'; }
     function setInboxCount() {
@@ -3277,7 +3277,11 @@ function pageHtml(): string {
         const received = receivedQty <= 0
           ? '—'
           : '<span style="color:' + (receivedQty < orderedQty ? 'var(--amber)' : 'var(--green)') + '">' + esc(receivedQty + ' из ' + orderedQty + (unitLabel ? ' ' + unitLabel : '')) + '</span>';
-        return '<tr><td>' + (index + 1) + '</td><td><strong>' + esc(item.name || item.itemName || '—') + '</strong><div class="request-meta">' + esc(item.code || item.itemCode || '') + '</div></td><td>' + esc(String(orderedQty) + ' ' + unitLabel) + '</td><td>' + esc(price) + '</td><td>' + received + '</td><td>' + stock + '</td></tr>';
+        const warehouseName = item.warehouseName || row.warehouseName || '—';
+        const warehouseCell = mayStock
+          ? '<div style="margin-bottom:6px">' + esc(warehouseName) + '</div>' + stock
+          : esc(warehouseName);
+        return '<tr><td>' + (index + 1) + '</td><td><strong>' + esc(item.name || item.itemName || '—') + '</strong><div class="request-meta">' + esc(item.code || item.itemCode || '') + '</div></td><td>' + esc(String(orderedQty) + ' ' + unitLabel) + '</td><td>' + esc(price) + '</td><td>' + received + '</td><td>' + warehouseCell + '</td></tr>';
       }).join('');
       const custom = (row.customInfo || []).length ? '<section class="detail-section"><div class="detail-section-title">Дополнительно</div><div class="detail-summary">' + row.customInfo.map((item) => detailCell(item.label,item.value)).join('') + '</div></section>' : '';
       const quotes = (row.quotations || []).length ? '<section class="detail-section"><div class="detail-section-title">Коммерческие предложения</div><div class="quote-list">' + row.quotations.map((quote) => '<div class="quote-card ' + (quote.selected ? 'selected' : '') + '"><div><strong>' + esc(quote.supplierName || 'Поставщик не указан') + '</strong><div class="request-meta">' + esc(quote.paymentType || '') + '</div></div><div><strong>' + esc(money(quote.amount) + ' UZS') + '</strong>' + (quote.selected ? '<div class="request-meta">Выбрано</div>' : '') + '</div></div>').join('') + '</div></section>' : '';

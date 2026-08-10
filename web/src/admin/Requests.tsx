@@ -75,7 +75,7 @@ export function RequestsAdmin() {
               <div className="font-mono text-xs font-semibold text-accent">{row.requestNumber}</div>
               <div className="mt-1 truncate text-sm font-semibold text-fg">{row.title || 'Без названия'}</div>
               <div className="mt-1 text-xs text-fg3">
-                {row.requesterName || '—'} · {new Date(row.createdAt).toLocaleDateString('ru-RU')} · {row.status}
+                {row.requesterName || '—'} · {new Date(row.createdAt).toLocaleDateString('ru-RU', { timeZone: 'Asia/Tashkent' })} · {row.status}
               </div>
             </div>
             <MiniBtn disabled={busy} onClick={() => remove(row)} className="bg-danger/15 text-danger">Удалить</MiniBtn>

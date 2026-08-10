@@ -755,7 +755,7 @@ function fmtDateTime(v: string | null): string {
   if (!v) return '';
   const d = new Date(v);
   if (isNaN(d.getTime())) return '';
-  return d.toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function NotificationsScreen({ onOpenRequest, onChanged }: { onOpenRequest: (id: string) => void; onChanged: () => void }) {
@@ -1804,6 +1804,17 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
       if (invalidItem) throw new Error('Укажите количество больше нуля для каждого продукта');
       const title = items[0]?.name || firstText;
       if (title) payload.title = title;
+      // Product cards carry these values in the mobile wizard, while desktop
+      // details read the canonical request-level fields.
+      const neededDates = requestItems
+        .map((item) => String(item.values.neededDate ?? '').trim())
+        .filter(Boolean)
+        .sort();
+      if (neededDates[0]) payload.neededDate = neededDates[0];
+      const warehouseName = requestItems
+        .map((item) => String(item.values.warehouse ?? '').trim())
+        .find(Boolean);
+      if (warehouseName) payload.warehouseName = warehouseName;
       payload.items = items;
       if (Object.keys(custom).length) payload.customFields = custom;
       const res = await api.createRequest(payload);
@@ -2594,7 +2605,7 @@ function actionBtnStyle(action: string): CSSProperties {
 
 function fmtDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return new Date(iso).toLocaleString('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   } catch {
     return iso;
   }
@@ -2606,7 +2617,7 @@ function dayLabel(iso: string): string {
   const now = new Date();
   const y = new Date(now);
   y.setDate(now.getDate() - 1);
-  const dmy = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const dmy = d.toLocaleDateString('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', year: 'numeric' });
   if (sameDay(d, now)) return `Сегодня · ${dmy}`;
   if (sameDay(d, y)) return `Вчера · ${dmy}`;
   return dmy;
