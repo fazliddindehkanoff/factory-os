@@ -43,9 +43,10 @@ export function createBot(
   const openKb = (label = '🏭 Открыть Factory OS') => new InlineKeyboard().webApp(label, appUrl);
   const phoneKb = () => new Keyboard().requestContact('📱 Поделиться номером').resized().oneTime();
 
-  // The chat "Menu" button opens the Mini App for everyone.
+  // Keep the global Menu button harmless. A per-chat Web App menu is installed
+  // only after that Telegram account has proved ownership of a provisioned phone.
   bot.api
-    .setChatMenuButton({ menu_button: { type: 'web_app', text: 'Factory OS', web_app: { url: appUrl } } })
+    .setChatMenuButton({ menu_button: { type: 'commands' } })
     .catch((e: unknown) => console.error('[bot] setChatMenuButton', (e as Error)?.message));
   // Global default commands (shown until /start learns the user's role).
   bot.api
@@ -59,23 +60,42 @@ export function createBot(
   const permsOf = async (ctx: Context): Promise<string[]> =>
     resolvePerms && ctx.from ? resolvePerms(String(ctx.from.id)).catch(() => []) : [];
 
+  const isLinked = async (ctx: Context): Promise<boolean> =>
+    !!(hasAccount && ctx.from && (await hasAccount(String(ctx.from.id)).catch(() => false)));
+
+  const askForPhone = async (ctx: Context): Promise<void> => {
+    if (ctx.chat) {
+      await bot.api
+        .setChatMenuButton({ chat_id: ctx.chat.id, menu_button: { type: 'commands' } })
+        .catch((e: unknown) => console.error('[bot] locked setChatMenuButton', (e as Error)?.message));
+    }
+    await ctx.reply(askPhoneMessage(), { reply_markup: phoneKb() });
+  };
+
+  const unlockChat = async (ctx: Context): Promise<void> => {
+    if (!ctx.chat) return;
+    const perms = await permsOf(ctx);
+    const cmds = MENU.filter((m) => m.perm === null || perms.includes(m.perm)).map(({ command, description }) => ({ command, description }));
+    await Promise.all([
+      bot.api
+        .setMyCommands([{ command: 'start', description: 'Запуск' }, ...cmds], { scope: { type: 'chat', chat_id: ctx.chat.id } })
+        .catch((e: unknown) => console.error('[bot] per-chat setMyCommands', (e as Error)?.message)),
+      bot.api
+        .setChatMenuButton({ chat_id: ctx.chat.id, menu_button: { type: 'web_app', text: 'Factory OS', web_app: { url: appUrl } } })
+        .catch((e: unknown) => console.error('[bot] unlocked setChatMenuButton', (e as Error)?.message)),
+    ]);
+  };
+
   bot.command('start', async (ctx) => {
     // Unknown Telegram id → must prove identity via phone before anything else.
-    // hasAccount is optional so this stays a no-op (today's behavior) if the caller
-    // doesn't wire it up (e.g. in a lightweight test bot).
-    const linked = hasAccount && ctx.from ? await hasAccount(String(ctx.from.id)).catch(() => false) : true;
+    // Fail closed when account lookup is unavailable: the bot must never expose
+    // a Mini App button before the Telegram identity is verified.
+    const linked = await isLinked(ctx);
     if (!linked) {
-      await ctx.reply(askPhoneMessage(), { reply_markup: phoneKb() });
+      await askForPhone(ctx);
       return;
     }
-    const perms = await permsOf(ctx);
-    // Install this user's personal command menu (scoped to their chat).
-    if (ctx.chat) {
-      const cmds = MENU.filter((m) => m.perm === null || perms.includes(m.perm)).map(({ command, description }) => ({ command, description }));
-      await bot.api
-        .setMyCommands([{ command: 'start', description: 'Запуск' }, ...cmds], { scope: { type: 'chat', chat_id: ctx.chat.id } })
-        .catch((e: unknown) => console.error('[bot] per-chat setMyCommands', (e as Error)?.message));
-    }
+    await unlockChat(ctx);
     await ctx.reply(startMessage(ctx.from?.first_name), { reply_markup: openKb() });
   });
 
@@ -97,10 +117,15 @@ export function createBot(
       return;
     }
     await ctx.reply(phoneLinkedMessage(result.fullName), { reply_markup: { remove_keyboard: true } });
+    await unlockChat(ctx);
     await ctx.reply(startMessage(ctx.from.first_name), { reply_markup: openKb() });
   });
 
   bot.command('app', async (ctx) => {
+    if (!(await isLinked(ctx))) {
+      await askForPhone(ctx);
+      return;
+    }
     await ctx.reply('Открываю Factory OS:', { reply_markup: openKb() });
   });
   bot.command('help', async (ctx) => {
@@ -110,6 +135,10 @@ export function createBot(
   for (const m of MENU) {
     if (m.command === 'app' || m.command === 'help') continue;
     bot.command(m.command, async (ctx) => {
+      if (!(await isLinked(ctx))) {
+        await askForPhone(ctx);
+        return;
+      }
       await ctx.reply(`${m.description}:`, { reply_markup: openKb('🏭 Открыть') });
     });
   }

@@ -4,7 +4,7 @@ import { loadEnv, devAuthEnabled } from '../config/env.js';
 import { createDb } from '../db/client.js';
 import { createApp } from './app.js';
 import { createBot, makeNotifier, type Notifier } from '../bot/bot.js';
-import { eq } from 'drizzle-orm';
+import { and, eq, or, isNull } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import { getUserPermissionCodes } from '../rbac/rbac.js';
 import { normalizePhone } from '../auth/phone.js';
@@ -33,13 +33,25 @@ if (env.BOT_TOKEN) {
     },
     async (tgId) => {
       const [u] = await db.select().from(schema.users).where(eq(schema.users.telegramId, tgId));
-      return !!u?.holdingId;
+      return !!u?.holdingId && u.status === 'active';
     },
     async (rawPhone, tgId) => {
       const phone = normalizePhone(rawPhone);
+      if (!phone) return { linked: false };
       const [u] = await db.select().from(schema.users).where(eq(schema.users.phone, phone));
-      if (!u) return { linked: false };
-      await db.update(schema.users).set({ telegramId: tgId, status: 'active', updatedAt: new Date() }).where(eq(schema.users.id, u.id));
+      // Only an admin-provisioned, tenant-assigned account may be linked. Never
+      // let a second Telegram account take over an already linked phone/profile.
+      if (!u?.holdingId || (u.telegramId && u.telegramId !== tgId) || ['disabled', 'suspended', 'archived'].includes(u.status)) {
+        return { linked: false };
+      }
+      const [other] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.telegramId, tgId));
+      if (other && other.id !== u.id) return { linked: false };
+      const [linked] = await db
+        .update(schema.users)
+        .set({ telegramId: tgId, status: 'active', updatedAt: new Date() })
+        .where(and(eq(schema.users.id, u.id), or(isNull(schema.users.telegramId), eq(schema.users.telegramId, tgId))))
+        .returning({ id: schema.users.id });
+      if (!linked) return { linked: false };
       return { linked: true, fullName: u.fullName };
     },
   );
