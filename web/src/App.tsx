@@ -1461,7 +1461,7 @@ const matchConfigUser = (users: ConfigUser[], value: unknown): ConfigUser | unde
 };
 
 function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; onCreated: (id: string) => void }) {
-  const { lang } = useI18n();
+  const { lang, tl } = useI18n();
   const [fields, setFields] = useState<FormField[] | null>(null);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [departments, setDepartments] = useState<DeptOption[]>([]);
@@ -2000,7 +2000,7 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
               let pending = selected.length;
               for (let i = 0; i < selected.length; i++) {
                 const file = selected[i];
-                if (file.size > 2 * 1024 * 1024) { setError('Файл ' + file.name + ' больше 2 МБ'); pending--; if (pending <= 0) { setValues((p) => ({ ...p, ['__files_' + f.key]: [...((p as any)['__files_' + f.key] || []), ...newFiles] as any })); } continue; }
+                if (file.size > 2 * 1024 * 1024) { setError(tl(`Файл ${file.name} больше 2 МБ`)); pending--; if (pending <= 0) { setValues((p) => ({ ...p, ['__files_' + f.key]: [...((p as any)['__files_' + f.key] || []), ...newFiles] as any })); } continue; }
                 const reader = new FileReader();
                 reader.onload = () => {
                   const base64 = (reader.result as string).split(',')[1] || '';
@@ -2083,7 +2083,7 @@ function CreateRequest({ me, onDone, onCreated }: { me: Me; onDone: () => void; 
                   for (let x = 0; x < selected.length; x++) {
                     const file = selected[x];
                     if (file.size > 2 * 1024 * 1024) {
-                      setError('Файл ' + file.name + ' больше 2 МБ');
+                      setError(tl(`Файл ${file.name} больше 2 МБ`));
                       pending--;
                       if (pending <= 0) updateRequestItemFiles(itemIndex, pf.key, (old) => [...old, ...newFiles]);
                       continue;
@@ -2516,6 +2516,7 @@ function ImageThumb({ attachmentId, alt, size = 40 }: { attachmentId: string; al
 function AttachmentsSection({ requestId }: { requestId: string }) {
   const [atts, setAtts] = useState<{ id: string; filename: string; mime: string; size: number }[] | null>(null);
   const [uploading, setUploading] = useState(false);
+  const { tl } = useI18n();
 
   useEffect(() => {
     api.attachments.list(requestId).then(setAtts).catch(() => setAtts([]));
@@ -2524,7 +2525,7 @@ function AttachmentsSection({ requestId }: { requestId: string }) {
   const upload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { alert('Файл больше 2 МБ'); return; }
+    if (file.size > 2 * 1024 * 1024) { alert(tl('Файл больше 2 МБ')); return; }
     setUploading(true);
     try {
       const reader = new FileReader();
@@ -3158,7 +3159,7 @@ function RequestDetailView({ id, me, onBack, tick = 0 }: { id: string; me: Me; o
  *  «на доработке»: поправить поля перед «Отправить повторно». Кнопка появляется
  *  только по canEdit из ответа сервера; состав полей = принимаемым PUT /requests/:id. */
 function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClose: () => void; onSaved: () => void }) {
-  const { lang } = useI18n();
+  const { lang, tl } = useI18n();
   const cf0 = req.customFields && typeof req.customFields === 'object' ? (req.customFields as Record<string, unknown>) : {};
   // Лист Excel №1: полная правка — тип, отдел и настраиваемые поля (объект, место закупа).
   const [requestType, setRequestType] = useState(req.requestType ?? '');
@@ -3391,7 +3392,7 @@ function EditRequestSheet({ req, onClose, onSaved }: { req: RequestDetail; onClo
               for (let x = 0; x < selected.length; x++) {
                 const file = selected[x];
                 if (file.size > 2 * 1024 * 1024) {
-                  setMsg('Файл ' + file.name + ' больше 2 МБ');
+                  setMsg(tl(`Файл ${file.name} больше 2 МБ`));
                   pending--;
                   if (pending <= 0) updateItemFiles(itemIndex, pf.key, (old) => [...old, ...newFiles]);
                   continue;
@@ -3833,6 +3834,7 @@ function DevSwitcher({ users, pin, current }: { users: DevUser[]; pin: string; c
 }
 
 function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | null; error: string | null; onLoggedIn: () => void }) {
+  const { tl } = useI18n();
   const [tgId, setTgId] = useState('');
   const [err, setErr] = useState<string | null>(error);
   const [loading, setLoading] = useState(false);
@@ -3856,7 +3858,7 @@ function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | nul
       <div className="w-full max-w-xs">
         <div className="mb-1 text-center text-2xl font-bold tracking-tight text-fg">⚙️ Factory OS</div>
         <p className="mb-5 text-center text-xs leading-relaxed text-fg3">
-          Telegram ichida odatiy kirish. Test muhitida — telefon yoki test login orqali kirish.
+          {tl('Обычный вход внутри Telegram. В тестовой среде — через телефон или тестовый логин.')}
         </p>
         {testUsers && testUsers.length > 0 && (
           <div className="mb-4">
@@ -3876,7 +3878,7 @@ function DevLogin({ testUsers, error, onLoggedIn }: { testUsers: DevUser[] | nul
         <input
           value={tgId}
           onChange={(e) => setTgId(e.target.value)}
-          placeholder="Telefon yoki test login"
+          placeholder={tl('Телефон или тестовый логин')}
           className="mb-2.5 w-full rounded-xl border border-line bg-card px-3.5 py-3 text-center font-mono text-sm text-fg outline-none placeholder:text-fg3 focus:border-accent"
         />
         <button

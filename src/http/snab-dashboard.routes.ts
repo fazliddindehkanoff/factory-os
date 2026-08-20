@@ -178,6 +178,34 @@ const EDITABLE_KEYS = new Set<keyof DashboardRow>([
   'productNote',
 ]);
 
+const SENSITIVE_QUERY_KEYS = new Set([
+  'username',
+  'password',
+  'user',
+  'pass',
+  'token',
+  'login',
+  'password1',
+]);
+
+function sanitizeQuery(query: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [rawKey, rawValue] of Object.entries(query)) {
+    const key = rawKey.toLowerCase();
+    if (SENSITIVE_QUERY_KEYS.has(key)) continue;
+    if (Array.isArray(rawValue)) {
+      for (const item of rawValue) {
+        if (typeof item === 'string') params.append(rawKey, item);
+        else if (item != null) params.append(rawKey, String(item));
+      }
+      continue;
+    }
+    if (rawValue == null) continue;
+    params.append(rawKey, String(rawValue));
+  }
+  return params.toString();
+}
+
 function dashboardCredentials(): { username: string; password: string } {
   return {
     username: process.env.SNAB_DASHBOARD_USERNAME?.trim() ?? '',
@@ -606,7 +634,7 @@ async function updateDashboardRow(db: Db, holdingId: string, itemId: string, pat
   if (catalogMaterial) {
     row.productCode = catalogMaterial.code;
     row.materialName = titleFor(catalogMaterial, lang);
-    if (catalogMaterial.unit) row.unit = catalogMaterial.unit;
+    if (!row.unit && catalogMaterial.unit) row.unit = catalogMaterial.unit;
   }
   const quantity = num(row.quantity);
   const unitPrice = num(row.unitPrice);
@@ -826,7 +854,7 @@ async function createFromDashboard(db: Db, holdingId: string, body: CreateBody):
     (item as any).materialId = catalogMaterial.id;
     item.code = catalogMaterial.code;
     item.name = titleFor(catalogMaterial, body.lang);
-    if (catalogMaterial.unit) item.unit = catalogMaterial.unit;
+    if (!item.unit && catalogMaterial.unit) item.unit = catalogMaterial.unit;
   }
   if (!items.length) throw new Error('Добавьте хотя бы одну позицию');
   for (const it of items) if (!(it.qty > 0)) throw new Error('Количество должно быть больше нуля: ' + it.name);
@@ -1315,8 +1343,25 @@ function pageHtml(): string {
     .request-tab{padding:7px 11px;border:0;border-radius:8px;background:transparent;color:var(--text-sec);font-size:11.5px;font-weight:600;cursor:pointer;}
     .request-tab.active{background:rgba(99,102,241,.18);color:var(--accent-soft-text);}
     .request-list{display:grid;gap:8px;}
-    .request-row{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(130px,.7fr) minmax(120px,.65fr) minmax(110px,.55fr) minmax(26px,auto);align-items:center;gap:16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--card);cursor:pointer;transition:border-color .12s,background .12s,translate .12s;}
+    .request-row-wrapper{display:block;}
+    .request-row{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(130px,.7fr) minmax(120px,.65fr) minmax(110px,.55fr) minmax(80px,auto);align-items:center;gap:16px;padding:14px 16px;border:1px solid var(--border);border-radius:14px;background:var(--card);transition:border-color .12s,background .12s,translate .12s;}
     .request-row:hover{border-color:var(--border-strong);background:var(--card-hover);translate:0 -1px;}
+    .request-row-details{margin-top:6px;padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--card);overflow:hidden;animation:inspector-reveal .16s ease both;}
+    .request-row-details .detail-summary{grid-template-columns:repeat(4,minmax(0,1fr));}
+    .request-detail-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;}
+    .request-detail-main,.request-detail-sidebar{min-width:0;}
+    .request-detail-sidebar{display:grid;gap:10px;align-content:start;}
+    .request-detail-box{padding:12px;border:1px solid var(--border);border-radius:13px;background:var(--veil);}
+    .request-detail-box-title{margin-bottom:9px;color:var(--text-sec);font-size:10.5px;font-weight:700;letter-spacing:.05em;}
+    .request-detail-list{display:grid;gap:8px;margin:0;padding:0 0 0 16px;color:var(--text-sec);font-size:11px;line-height:1.4;}
+    .request-detail-list strong{color:var(--text);font-weight:650;}
+    .request-detail-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
+    .request-detail-actions .action-btn{width:100%;min-height:34px;padding:8px 9px;font-size:10.5px;}
+    .request-mini-timeline{display:grid;gap:8px;}
+    .request-mini-timeline .timeline-step{padding:0;border:0;background:transparent;}
+    .request-mini-timeline .timeline-step:not(:last-child){padding-bottom:8px;border-bottom:1px solid var(--border);}
+    .request-mini-timeline .timeline-name{font-size:11px;}
+    .request-mini-timeline .timeline-meta{font-size:10px;}
     .request-number{color:var(--accent-soft-text);font:10.5px 'IBM Plex Mono',ui-monospace,monospace;}
     .request-title{margin-top:3px;font-size:13.5px;font-weight:600;}
     .request-meta{color:var(--text-muted);font-size:11px;}
@@ -1325,6 +1370,52 @@ function pageHtml(): string {
     .request-priority.high,.request-priority.urgent,.request-priority.critical{color:var(--amber);}
     .request-arrow{color:var(--text-muted);font-size:18px;text-align:right;}
     .request-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;}
+    .requests-workspace{display:grid;grid-template-columns:minmax(0,2.4fr) minmax(320px,.95fr);gap:16px;align-items:start;isolation:isolate;}
+    .requests-main{min-width:0;overflow:clip;}
+    .request-controls{position:sticky;top:64px;z-index:4;margin:0 0 8px;padding:8px 0 10px;background:var(--bg);}
+    .request-controls .request-tabs{margin-bottom:8px;}
+    .requests-main>.toolbar{display:grid;grid-template-columns:minmax(220px,1fr) 190px;align-items:center;}
+    .requests-main>.toolbar .search{min-height:40px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);}
+    .requests-main>.toolbar .fin{width:100%!important;}
+    .request-inspector{position:sticky;top:64px;z-index:1;width:100%;min-width:0;max-height:calc(100dvh - 80px);min-height:390px;box-sizing:border-box;padding:16px;border:1px solid var(--border);border-radius:16px;background:var(--card);box-shadow:0 10px 28px -24px rgba(16,24,40,.32);overflow:auto;}
+    .inspector-empty{min-height:354px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:24px;text-align:center;color:var(--text-muted);}
+    .inspector-empty strong{color:var(--text);font-size:14px;}
+    .inspector-empty span{max-width:220px;font-size:11px;line-height:1.5;}
+    .inspector-empty-icon{display:grid;place-items:center;width:46px;height:46px;margin-bottom:4px;border:1px solid var(--border);border-radius:13px;background:var(--veil);color:var(--accent-soft-text);}
+    .request-row.selected{border-color:var(--accent1);background:color-mix(in srgb,var(--accent1) 10%,var(--card));box-shadow:0 0 0 2px color-mix(in srgb,var(--accent1) 14%,transparent);}
+    .inspector-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding-bottom:13px;border-bottom:1px solid var(--border);}
+    .inspector-head h2{margin:3px 0 0;font-size:17px;line-height:1.25;}
+    .inspector-kicker{color:var(--accent-soft-text);font:10px 'IBM Plex Mono',ui-monospace,monospace;}
+    .inspector-close{display:none;width:30px;height:30px;border:1px solid var(--border);border-radius:8px;background:var(--veil);color:var(--text-sec);cursor:pointer;}
+    .inspector-status{display:inline-flex;width:max-content;margin-top:9px;padding:4px 8px;border:1px solid rgba(99,102,241,.23);border-radius:999px;background:rgba(99,102,241,.09);color:var(--accent-soft-text);font-size:10px;font-weight:650;}
+    .inspector-action{margin-top:13px;padding:10px 11px;border:1px solid var(--border);border-radius:11px;background:var(--veil);}
+    .inspector-action-label{color:var(--text-muted);font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;}
+    .inspector-action strong{display:block;margin-top:4px;font-size:11.5px;line-height:1.4;}
+    .inspector-summary{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:11px;}
+    .inspector-cell{min-width:0;padding:9px 10px;border:1px solid var(--border);border-radius:10px;background:var(--veil);}
+    .inspector-cell span{display:block;margin-bottom:4px;color:var(--text-muted);font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;}
+    .inspector-cell strong{display:block;overflow:hidden;color:var(--text);font-size:11px;font-weight:650;text-overflow:ellipsis;white-space:nowrap;}
+    .inspector-progress{height:7px;margin-top:12px;overflow:hidden;border-radius:999px;background:var(--veil);}
+    .inspector-progress span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent1),var(--accent2));transition:width .2s ease;}
+    .inspector-progress-meta{display:flex;justify-content:space-between;margin-top:5px;color:var(--text-muted);font-size:10px;}
+    .inspector-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:13px;}
+    .inspector-btn{padding:9px 10px;border:1px solid rgba(99,102,241,.32);border-radius:9px;background:rgba(99,102,241,.15);color:var(--accent-soft-text);font-size:11px;font-weight:650;cursor:pointer;}
+    .inspector-btn.secondary{border-color:var(--border);background:var(--veil);color:var(--text-sec);}
+    .inspector-btn.danger{border-color:var(--red-bd);background:var(--red-bg);color:var(--red);}
+    .inspector-details{display:grid;gap:10px;margin-top:13px;padding-top:13px;border-top:1px solid var(--border);animation:inspector-reveal .16s ease both;}
+    .inspector-detail-section{padding:11px;border:1px solid var(--border);border-radius:11px;background:var(--veil);}
+    .inspector-detail-section h3{margin:0 0 7px;color:var(--text-sec);font-size:10px;letter-spacing:.07em;text-transform:uppercase;}
+    .inspector-detail-section p{margin:0;color:var(--text-sec);font-size:11px;line-height:1.5;white-space:pre-wrap;}
+    .inspector-items{display:grid;gap:6px;}
+    .inspector-item{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;font-size:11px;line-height:1.35;}
+    .inspector-item span{color:var(--text-sec);}
+    .inspector-item strong{color:var(--text);font-weight:650;text-align:right;white-space:nowrap;}
+    .request-inspector .detail-summary{grid-template-columns:1fr 1fr;margin-top:12px;margin-bottom:0;}
+    .request-inspector .detail-section{margin-top:12px;padding:11px;}
+    .request-inspector .detail-items{min-width:560px;font-size:10.5px;}
+    .request-inspector .detail-actions{margin-top:12px;}
+    @keyframes inspector-reveal{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+    @media (prefers-reduced-motion:reduce){.request-row,.inspector-progress span{transition:none}.inspector-details{animation:none}}
     .modal.detail-modal{width:min(940px,100%);max-height:calc(100dvh - 28px);overflow:auto;padding:0;}
     .detail-head{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:19px 20px;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--bg-elev) 96%,transparent);backdrop-filter:blur(8px);}
     .detail-head h2{margin:3px 0 0;font-size:20px;}
@@ -1402,9 +1493,12 @@ function pageHtml(): string {
       .admin-stats{grid-template-columns:1fr 1fr;}
       .modal-form-grid,.permission-options,.columns-grid{grid-template-columns:1fr;}
       .modal-field.full{grid-column:auto;}
+      .requests-workspace{display:block;}
+      .request-inspector{display:none !important;}
       .request-row{grid-template-columns:1fr auto;gap:8px 12px;}
       .request-row>div:nth-child(2),.request-row>div:nth-child(3),.request-row>div:nth-child(4){display:none;}
       .detail-summary{grid-template-columns:1fr 1fr;}
+      .request-detail-grid{grid-template-columns:1fr;}
       .action-fields{grid-template-columns:1fr;}
       .action-fields .full{grid-column:auto;}
       .quote-entry-controls{grid-template-columns:1fr 1fr;}
@@ -1529,8 +1623,19 @@ function pageHtml(): string {
     .login-input{color:#F8FAFC;}
     .login-input::placeholder{color:#667085;}
     @media (max-width:1180px){
+      .app-shell{display:block;}
+      .sidebar{position:fixed;inset:0 auto 0 0;z-index:30;width:min(300px,calc(100vw - 42px));height:100dvh;transform:translateX(-105%);transition:transform .2s ease;}
+      body.sidebar-open .sidebar{transform:translateX(0);}
+      .menu-btn{display:grid;place-items:center;}
+      .navbar{padding-inline:20px;}
+      .wrap{padding-inline:20px;}
       .ops-kpis{grid-template-columns:repeat(3,minmax(0,1fr));}
       .ops-panel:nth-child(1),.ops-panel:nth-child(2){grid-column:span 6;}
+      .requests-workspace{grid-template-columns:minmax(0,1fr) minmax(300px,.85fr);gap:14px;}
+      .request-row{grid-template-columns:minmax(0,1fr) auto auto;gap:10px 12px;}
+      .request-row>div:nth-child(3),.request-row>div:nth-child(4){display:none;}
+      .request-row-details .detail-summary{grid-template-columns:repeat(2,minmax(0,1fr));}
+      .request-detail-grid{grid-template-columns:1fr;}
     }
     @media (max-width:760px){
       .app-shell{display:block;}
@@ -1559,6 +1664,19 @@ function pageHtml(): string {
       .items td:nth-child(9):before{content:'Примечание';}
       .items td:nth-child(10){position:absolute;right:24px;margin-top:-4px;}
       .items input,.items select,.items textarea{min-height:40px;padding:8px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev);}
+      .request-tabs{width:100%;overflow-x:auto;}
+      .request-tab{flex:0 0 auto;white-space:nowrap;}
+      .request-controls{top:68px;margin:-4px 0 8px;padding:6px 0 9px;}
+      .requests-main>.toolbar{grid-template-columns:1fr;}
+      .request-row{grid-template-columns:minmax(0,1fr) auto;padding:12px;}
+      .request-row-details{padding:10px;overflow:hidden;}
+      .request-row-details .detail-summary{grid-template-columns:repeat(2,minmax(0,1fr));}
+      .request-row-details .detail-cell{min-width:0;padding:9px;}
+      .request-row-details .detail-cell strong{overflow-wrap:anywhere;}
+      .request-row-details .detail-section{padding:10px;}
+      .request-row-details .detail-items{min-width:560px;}
+      .request-detail-actions{grid-template-columns:1fr;}
+      .request-detail-box{padding:11px;}
     }
   </style>
 </head>
@@ -1781,13 +1899,24 @@ function pageHtml(): string {
         <div class="wrap hidden" id="viewRequests">
           <div class="top">
             <div>
-              <h1>Заявки и согласования</h1>
-              <div class="sub">Тот же маршрут и те же действия, что в Telegram Web App</div>
+              <h1 data-i18n="requests.title">Заявки и согласования</h1>
+              <div class="sub" data-i18n="requests.subtitle">Тот же маршрут и те же действия, что в Telegram Web App</div>
             </div>
-            <div style="display:flex;align-items:center;gap:10px;"><div class="request-tabs"><button class="request-tab active" data-request-mode="all" type="button">Все заявки</button><button class="request-tab" data-request-mode="inbox" type="button">Требуют действия <span id="inboxCount">0</span></button></div><button class="btn ghost hidden" id="deleteAllRequests" type="button">Удалить все</button></div>
+            <button class="btn ghost hidden" id="deleteAllRequests" type="button">Удалить все</button>
           </div>
-          <div class="toolbar"><input class="search" id="requestSearch" placeholder="Номер или название заявки…" /><select class="fin" id="requestStatus" style="width:190px"><option value="">Все статусы</option><option value="pending_approval">На согласовании</option><option value="warehouse_check">Проверка склада</option><option value="procurement">Снабжение</option><option value="finance_payment">Оплата</option><option value="delivery">Доставка</option><option value="receiving">Приёмка</option><option value="closed">Закрыто</option><option value="rejected">Отклонено</option></select></div>
-          <div class="request-list" id="requestList"><div class="empty-admin">Загрузка заявок…</div></div>
+          <div class="requests-workspace">
+            <div class="requests-main">
+              <div class="request-controls">
+                <div class="request-tabs"><button class="request-tab active" data-request-mode="all" type="button"><span data-i18n="requests.all">Все заявки</span></button><button class="request-tab" data-request-mode="inbox" type="button"><span data-i18n="requests.inbox">Требуют действия</span> <span id="inboxCount">0</span></button></div>
+                <div class="toolbar"><input class="search" id="requestSearch" data-i18n-ph="requests.search" placeholder="Номер или название заявки…" /><select class="fin" id="requestStatus" style="width:190px"><option value="" data-i18n="requests.allStatuses">Все статусы</option><option value="pending_approval">На согласовании</option><option value="warehouse_check">Проверка склада</option><option value="procurement">Снабжение</option><option value="finance_payment">Оплата</option><option value="delivery">Доставка</option><option value="receiving">Приёмка</option><option value="closed">Закрыто</option><option value="rejected">Отклонено</option></select></div>
+              </div>
+              <div class="request-list" id="requestList"><div class="empty-admin">Загрузка заявок…</div></div>
+            </div>
+            <aside class="request-inspector" id="requestInspector" aria-live="polite">
+              <div class="inspector-empty" id="requestInspectorEmpty"><div class="inspector-empty-icon"><i class="ti ti-click"></i></div><strong data-i18n="requests.select">Выберите заявку</strong><span data-i18n="requests.selectHint">Нажмите на строку, чтобы увидеть её сводку и доступные действия.</span></div>
+              <div class="hidden" id="requestInspectorContent"></div>
+            </aside>
+          </div>
         </div>
 
         <!-- ── VIEW: create (ported from the confirmed «Новая заявка» mock) ── -->
@@ -2334,6 +2463,7 @@ function pageHtml(): string {
         'warehouses.title':'Склады','warehouses.subtitle':'Склады, филиалы и ответственные сотрудники','warehouses.add':'+ Добавить склад','warehouses.colName':'Название','warehouses.colBranch':'Филиал','warehouses.responsible':'Ответственный сотрудник',
         'nav.branches':'Филиалы','branches.title':'Филиалы','branches.subtitle':'Заводы/площадки холдинга — к ним привязываются отделы и склады','branches.add':'+ Добавить филиал','branches.colName':'Название',
         'common.cancel':'Отмена','common.save':'Сохранить','common.loading':'Загрузка…','common.empty':'Ничего не найдено',
+        'requests.title':'Заявки и согласования','requests.subtitle':'Тот же маршрут и те же действия, что в Telegram Web App','requests.all':'Все заявки','requests.inbox':'Требуют действия','requests.search':'Номер или название заявки…','requests.allStatuses':'Все статусы','requests.select':'Выберите заявку','requests.selectHint':'Нажмите на строку, чтобы увидеть её сводку и доступные действия.','requests.currentAction':'Текущее действие','requests.progress':'Прогресс','requests.detail':'Детали','requests.hideDetail':'Скрыть детали','requests.fullCard':'Открыть карточку','requests.description':'Комментарий','requests.items':'Позиции','requests.extra':'Дополнительно','requests.quotes':'Коммерческие предложения','requests.route':'Маршрут','requests.noAction':'Доступных действий сейчас нет','requests.requester':'Автор','requests.department':'Отдел','requests.needed':'Нужно к','requests.owner':'Ответственный','requests.amount':'Сумма','requests.created':'Создана','requests.unit':'шт.','requests.noItems':'Позиции не указаны',
         'common.importExcel':'Импорт из Excel',
         'grid.autofit':'По содержимому','grid.resetWidth':'Ширина по умолчанию','grid.clearFilters':'Сбросить фильтры',
         'grid.searchPlaceholder':'Поиск по таблице…',
@@ -2364,6 +2494,7 @@ function pageHtml(): string {
         'warehouses.title':'Omborlar','warehouses.subtitle':'Omborlar, filiallar va mas’ul xodimlar','warehouses.add':'+ Ombor qo‘shish','warehouses.colName':'Nomi','warehouses.colBranch':'Filial','warehouses.responsible':'Mas’ul xodim',
         'nav.branches':'Filiallar','branches.title':'Filiallar','branches.subtitle':'Xolding zavodlari — bo‘limlar va omborlar shularga bog‘lanadi','branches.add':'+ Filial qo‘shish','branches.colName':'Nomi',
         'common.cancel':'Bekor qilish','common.save':'Saqlash','common.loading':'Yuklanmoqda…','common.empty':'Hech narsa topilmadi',
+        'requests.title':'Arizalar va tasdiqlashlar','requests.subtitle':'Telegram Web App bilan bir xil marshrut va amallar','requests.all':'Barcha arizalar','requests.inbox':'Amal talab qilinadi','requests.search':'Ariza raqami yoki nomi…','requests.allStatuses':'Barcha statuslar','requests.select':'Arizani tanlang','requests.selectHint':'Qatorni bosib, uning qisqacha maʼlumotlari va amallarini ko‘ring.','requests.currentAction':'Joriy amal','requests.progress':'Jarayon','requests.detail':'Tafsilotlar','requests.hideDetail':'Tafsilotlarni yashirish','requests.fullCard':'To‘liq kartani ochish','requests.description':'Izoh','requests.items':'Pozitsiyalar','requests.extra':'Qo‘shimcha','requests.quotes':'Tijorat takliflari','requests.route':'Marshrut','requests.noAction':'Hozir mavjud amallar yo‘q','requests.requester':'Muallif','requests.department':'Bo‘lim','requests.needed':'Kerak sana','requests.owner':'Masʼul','requests.amount':'Summa','requests.created':'Yaratilgan','requests.unit':'dona','requests.noItems':'Pozitsiyalar ko‘rsatilmagan',
         'common.importExcel':'Excel dan import',
         'grid.autofit':'Mazmun bo‘yicha','grid.resetWidth':'Standart kenglik','grid.clearFilters':'Filtrlarni tozalash',
         'grid.searchPlaceholder':'Jadval bo‘yicha qidiruv…',
@@ -2394,6 +2525,7 @@ function pageHtml(): string {
         'warehouses.title':'Depolar','warehouses.subtitle':'Depolar, şubeler ve sorumlu çalışanlar','warehouses.add':'+ Depo ekle','warehouses.colName':'Ad','warehouses.colBranch':'Sube','warehouses.responsible':'Sorumlu çalışan',
         'nav.branches':'Subeler','branches.title':'Subeler','branches.subtitle':'Holdingin fabrikalari — departmanlar ve depolar bunlara baglanir','branches.add':'+ Sube ekle','branches.colName':'Ad',
         'common.cancel':'İptal','common.save':'Kaydet','common.loading':'Yükleniyor…','common.empty':'Sonuç bulunamadı',
+        'requests.title':'Talepler ve onaylar','requests.subtitle':'Telegram Web App ile aynı rota ve işlemler','requests.all':'Tüm talepler','requests.inbox':'İşlem bekleyenler','requests.search':'Talep numarası veya adı…','requests.allStatuses':'Tüm durumlar','requests.select':'Talep seçin','requests.selectHint':'Özet ve kullanılabilir işlemleri görmek için bir satıra tıklayın.','requests.currentAction':'Mevcut işlem','requests.progress':'İlerleme','requests.detail':'Detay','requests.hideDetail':'Detayı gizle','requests.fullCard':'Kartı aç','requests.description':'Açıklama','requests.items':'Kalemler','requests.extra':'Ek bilgiler','requests.quotes':'Ticari teklifler','requests.route':'Rota','requests.noAction':'Şu anda kullanılabilir işlem yok','requests.requester':'Oluşturan','requests.department':'Departman','requests.needed':'Gerekli tarih','requests.owner':'Sorumlu','requests.amount':'Tutar','requests.created':'Oluşturuldu','requests.unit':'adet','requests.noItems':'Kalem belirtilmedi',
         'common.importExcel':'Excel dosyasindan aktar',
         'grid.autofit':'Icerige gore','grid.resetWidth':'Varsayilan genislik','grid.clearFilters':'Filtreleri temizle',
         'grid.searchPlaceholder':'Tabloda ara…',
@@ -2402,6 +2534,369 @@ function pageHtml(): string {
     const SNAB_DRAFT_KEY = 'snab.langSwitchDraft';
     function currentLang() { return localStorage.getItem('snab.lang') || 'ru'; }
     function t(key) { return (DICT[currentLang()] && DICT[currentLang()][key]) || DICT.ru[key] || key; }
+    const hasCyrillic = (value) => /[А-Яа-яЁё]/.test(value);
+    const FALLBACK_TEXT_MAP = Object.create(null);
+    (function buildFallbackTextMap() {
+      for (const key of Object.keys(DICT.ru)) {
+        const ru = DICT.ru[key];
+        const uz = DICT.uz[key];
+        const tr = DICT.tr[key];
+        if (typeof ru !== 'string') continue;
+        if (!FALLBACK_TEXT_MAP[ru]) {
+          FALLBACK_TEXT_MAP[ru] = {
+            ru,
+            uz: typeof uz === 'string' ? uz : ru,
+            tr: typeof tr === 'string' ? tr : ru,
+          };
+        }
+      }
+      Object.assign(FALLBACK_TEXT_MAP, {
+        'Снабжение — Dashboard': {
+          ru: 'Снабжение — Dashboard',
+          uz: 'Ta‘minot — Boshqaruv paneli',
+          tr: 'Satın alma — Kontrol paneli',
+        },
+        'Снабжение без слепых зон.': {
+          ru: 'Снабжение без слепых зон.',
+          uz: 'Ko‘rinarli bo‘lmagan nuqsonsiz ta’minot.',
+          tr: 'Kör noktalar olmadan tedarik.',
+        },
+        'Единый рабочий контур для заявок, закупок и поставщиков — от потребности до поступления на склад.': {
+          ru: 'Единый рабочий контур для заявок, закупок и поставщиков — от потребности до поступления на склад.',
+          uz: 'Buyurtmalar, ta’minot va yetkazib beruvchilar uchun yagona ish jarayoni — ehtiyojdan omborga kirishgacha.',
+          tr: 'Talep, tedarik ve tedarikçiler için tek bir iş akışı — talebin ihtiyacından depo girişine kadar.',
+        },
+        'Защищённый доступ': {
+          ru: 'Защищённый доступ',
+          uz: 'Xavfsiz kirish',
+          tr: 'Güvenli erişim',
+        },
+        'Вход в систему': { ru: 'Вход в систему', uz: 'Tizimga kirish', tr: 'Sisteme giriş' },
+        'Введите имя пользователя и пароль, выданные администратором.': {
+          ru: 'Введите имя пользователя и пароль, выданные администратором.',
+          uz: 'Adminga berilgan foydalanuvchi nomi va parolni kiriting.',
+          tr: 'Yöneticinin verdiği kullanıcı adı ve şifreyi girin.',
+        },
+        'Имя пользователя': { ru: 'Имя пользователя', uz: 'Foydalanuvchi nomi', tr: 'Kullanıcı adı' },
+        'Пароль': { ru: 'Пароль', uz: 'Parol', tr: 'Parola' },
+        'Показать пароль': { ru: 'Показать пароль', uz: 'Parolni ko‘rsatish', tr: 'Parolayı göster' },
+        'Например, snab.admin': { ru: 'Например, snab.admin', uz: 'Masalan, snab.admin', tr: 'Örneğin, snab.admin' },
+        'Введите пароль': { ru: 'Введите пароль', uz: 'Parolni kiriting', tr: 'Şifreyi girin' },
+        'Войти в систему': { ru: 'Войти в систему', uz: 'Tizimga kirish', tr: 'Sisteme girin' },
+        'Сессия сохраняется в этом браузере до выхода из системы.': {
+          ru: 'Сессия сохраняется в этом браузере до выхода из системы.',
+          uz: 'Sessiya ushbu brauzerda tizimdan chiqmaguningizgacha saqlanadi.',
+          tr: 'Oturum, bu tarayıcıda sistemden çıkana kadar saklanır.',
+        },
+        'Обновлено:': { ru: 'Обновлено:', uz: 'Yangilandi:', tr: 'Güncellendi:' },
+        'Переключить тему': { ru: 'Переключить тему', uz: 'Mavzuni almashtirish', tr: 'Temayı değiştir' },
+        'Уведомления': { ru: 'Уведомления', uz: 'Bildirishnomalar', tr: 'Bildirimler' },
+        'понедельник': { ru: 'понедельник', uz: 'dushanba', tr: 'pazartesi' },
+        'вторник': { ru: 'вторник', uz: 'seshanba', tr: 'salı' },
+        'среда': { ru: 'среда', uz: 'chorshanba', tr: 'çarşamba' },
+        'четверг': { ru: 'четверг', uz: 'payshanba', tr: 'perşembe' },
+        'пятница': { ru: 'пятница', uz: 'juma', tr: 'cuma' },
+        'суббота': { ru: 'суббота', uz: 'shanba', tr: 'cumartesi' },
+        'воскресенье': { ru: 'воскресенье', uz: 'yakshanba', tr: 'pazar' },
+        'Очередь чистая': { ru: 'Очередь чистая', uz: 'Navbat bo‘sh', tr: 'Kuyruk boş' },
+        'Всего позиций': { ru: 'Всего позиций', uz: 'Jami pozitsiyalar', tr: 'Toplam kalem' },
+        'Контекст готов': { ru: 'Контекст готов', uz: 'Kontekst tayyor', tr: 'Bağlam hazır' },
+        'Объект и склад': { ru: 'Объект и склад', uz: 'Obyekt va ombor', tr: 'Nesne ve depo' },
+        'Поставщик выбран': { ru: 'Поставщик выбран', uz: 'Yetkazib beruvchi tanlangan', tr: 'Tedarikçi seçildi' },
+        'Можно оформлять': { ru: 'Можно оформлять', uz: 'Rasmiylashtirish mumkin', tr: 'İşleme alınabilir' },
+        'Документы готовы': { ru: 'Документы готовы', uz: 'Hujjatlar tayyor', tr: 'Belgeler hazır' },
+        'Есть договор': { ru: 'Есть договор', uz: 'Shartnoma mavjud', tr: 'Sözleşme mevcut' },
+        'Заполненность': { ru: 'Заполненность', uz: 'To‘ldirilganlik', tr: 'Doluluk' },
+        'Документы': { ru: 'Документы', uz: 'Hujjatlar', tr: 'Belgeler' },
+        'Придумайте новый пароль': { ru: 'Придумайте новый пароль', uz: 'Yangi parol o‘ylang', tr: 'Yeni bir şifre oluşturun' },
+        'Этот пароль выдал администратор — прежде чем продолжить, задайте свой собственный (минимум 8 символов).': {
+          ru: 'Этот пароль выдал администратор — прежде чем продолжить, задайте свой собственный (минимум 8 символов).',
+          uz: 'Bu parolni admin berdi — davom etishdan oldin o‘z parolingizni belgilang (kamida 8 ta belgi).',
+          tr: 'Bu şifreyi yönetici verdi — devam etmeden önce kendi şifrenizi belirleyin (en az 8 karakter).',
+        },
+        'Новый пароль': { ru: 'Новый пароль', uz: 'Yangi parol', tr: 'Yeni şifre' },
+        'Повторите пароль': { ru: 'Повторите пароль', uz: 'Parolni takrorlang', tr: 'Parolayı tekrar edin' },
+        'Сохранить и продолжить': { ru: 'Сохранить и продолжить', uz: 'Saqlash va davom ettirish', tr: 'Kaydet ve devam et' },
+        'Снабжение': { ru: 'Снабжение', uz: 'Ta’minot', tr: 'Satın alma' },
+        'Учредитель': { ru: 'Учредитель', uz: 'Ustavdor', tr: 'Kurucu' },
+        'Операционный дашборд': { ru: 'Операционный дашборд', uz: 'Operatsion panel', tr: 'Operasyon panosu' },
+        'Активные заявки': { ru: 'Активные заявки', uz: 'Faol talabalar', tr: 'Aktif talepler' },
+        'Требуют действия': { ru: 'Требуют действия', uz: 'Amal talab qiladi', tr: 'İşlem gerektirir' },
+        'Позиции': { ru: 'Позиции', uz: 'Pozitsiyalar', tr: 'Kalemler' },
+        'Сумма': { ru: 'Сумма', uz: 'Mablag‘', tr: 'Tutar' },
+        'Поставщиков': { ru: 'Поставщиков', uz: 'Yetkazib beruvchilar', tr: 'Tedarikçiler' },
+        'Pipeline заявок': { ru: 'Pipeline заявок', uz: 'Talablar pipeline’i', tr: 'Talep hattı' },
+        'Открыть заявки ↗': { ru: 'Открыть заявки ↗', uz: 'Talablarni ochish ↗', tr: 'Talepleri aç ↗' },
+        'Последние события': { ru: 'Последние события', uz: 'So‘nggi hodisalar', tr: 'Son olaylar' },
+        'История ↗': { ru: 'История ↗', uz: 'Tarix ↗', tr: 'Geçmiş ↗' },
+        'Бюджет vs факт': { ru: 'Бюджет vs факт', uz: 'Byudjet va amaliyot', tr: 'Bütçe vs gerçek' },
+        'Отчёты': { ru: 'Отчёты', uz: 'Hisobotlar', tr: 'Raporlar' },
+        'Отчёты ↗': { ru: 'Отчёты ↗', uz: 'Hisobotlar ↗', tr: 'Raporlar ↗' },
+        'Удалить все': { ru: 'Удалить все', uz: 'Hammasini o‘chirish', tr: 'Hepsini sil' },
+        'Этапы создания заявки': { ru: 'Этапы создания заявки', uz: 'Talab yaratish bosqichlari', tr: 'Talep oluşturma aşamaları' },
+        'Детали': { ru: 'Детали', uz: 'Tafsilotlar', tr: 'Detaylar' },
+        'Продукты': { ru: 'Продукты', uz: 'Mahsulotlar', tr: 'Ürünler' },
+        'Проверка': { ru: 'Проверка', uz: 'Tekshiruv', tr: 'Kontrol' },
+        'Тип и контекст заявки': { ru: 'Тип и контекст заявки', uz: 'Talab turi va konteksti', tr: 'Talep tipi ve bağlamı' },
+        'Тип заявки': { ru: 'Тип заявки', uz: 'Talab turi', tr: 'Talep türü' },
+        'Отдел': { ru: 'Отдел', uz: 'Bo‘lim', tr: 'Departman' },
+        'Объект': { ru: 'Объект', uz: 'Obyekt', tr: 'Nesne' },
+        'Происхождение': { ru: 'Происхождение', uz: 'Manba', tr: 'Kaynak' },
+        'Параметры заявки': { ru: 'Параметры заявки', uz: 'Talab parametrlari', tr: 'Talep parametreleri' },
+        'Назначение / цель': { ru: 'Назначение / цель', uz: 'Maqsad / vazifa', tr: 'Amaç / hedef' },
+        'Необходимо к дате': { ru: 'Необходимо к дате', uz: 'Sanagacha kerak', tr: 'Tarihe kadar gerekli' },
+        'Степень срочности': { ru: 'Степень срочности', uz: 'Shoshilinchlik darajasi', tr: 'Aciliyet derecesi' },
+        'Аварийная заявка требует немедленного согласования — маршрут будет ускорен.': {
+          ru: 'Аварийная заявка требует немедленного согласования — маршрут будет ускорен.',
+          uz: 'Favqulodda holat uchun talab darhol tasdiqlanishi kerak — yo‘l tezlashtiriladi.',
+          tr: 'Acil talep için hızlı onay gerekir — süreç hızlandırılacaktır.',
+        },
+        'Типа и параметры': { ru: 'Типа и параметры', uz: 'Tur va parametrlar', tr: 'Tür ve parametreler' },
+        'Итого (ориентировочно):': { ru: 'Итого (ориентировочно):', uz: 'Jami (taxminiy):', tr: 'Toplam (tahmini):' },
+        'Комментарий': { ru: 'Комментарий', uz: 'Izoh', tr: 'Yorum' },
+        'Контекст для склада и снабжения: где используется, чем заменить нельзя, особые условия...': {
+          ru: 'Контекст для склада и снабжения: где используется, чем заменить нельзя, особые условия...',
+          uz: 'Ombor va ta’minot uchun kontekst: qayerda ishlatiladi, nimani almashtirib bo‘lmaydi, maxsus shartlar...',
+          tr: 'Depo ve tedarik için bağlam: nerede kullanıldığı, ne ile değiştirilemeyeceği, özel koşullar...',
+        },
+        'Проверьте заявку перед отправкой': { ru: 'Проверьте заявку перед отправкой', uz: 'Yuborishdan oldin talabni tekshiring', tr: 'Göndermeden önce talebi kontrol edin' },
+        '← Назад': { ru: '← Назад', uz: '← Orqaga', tr: '← Geri' },
+        'Далее →': { ru: 'Далее →', uz: 'Davom et →', tr: 'Devam et →' },
+        'Отправить заявку →': { ru: 'Отправить заявку →', uz: 'Talabni yuborish →', tr: 'Talebi gönder →' },
+        'Текущие действия': { ru: 'Текущие действия', uz: 'Hozirgi amallar', tr: 'Mevcut işlemler' },
+        'Удалить': { ru: 'Удалить', uz: 'O‘chirish', tr: 'Sil' },
+        'Все статусы': { ru: 'Все статусы', uz: 'Barcha holatlar', tr: 'Tüm durumlar' },
+        'На согласовании': { ru: 'На согласовании', uz: 'Tasdiqlanmoqda', tr: 'Onay bekliyor' },
+        'Проверка склада': { ru: 'Проверка склада', uz: 'Ombor nazorati', tr: 'Depo kontrolü' },
+        'Снабжение': { ru: 'Снабжение', uz: 'Ta’minot', tr: 'Satın alma' },
+        'Оплата': { ru: 'Оплата', uz: 'To‘lov', tr: 'Ödeme' },
+        'Доставка': { ru: 'Доставка', uz: 'Yetkazib berish', tr: 'Teslimat' },
+        'Приёмка': { ru: 'Приёмка', uz: 'Qabul', tr: 'Teslim alma' },
+        'Закрыто': { ru: 'Закрыто', uz: 'Yopildi', tr: 'Kapatıldı' },
+        'Отклонено': { ru: 'Отклонено', uz: 'Rad etildi', tr: 'Reddedildi' },
+        'В таблице закупок': { ru: 'В таблице закупок', uz: 'Xaridlar jadvalida', tr: 'Satın alma tablosunda' },
+        'Ожидают решения': { ru: 'Ожидают решения', uz: 'Qaror kutmoqda', tr: 'Karar bekliyor' },
+        'Отфильтровано сейчас': { ru: 'Отфильтровано сейчас', uz: 'Hozir filtrlangan', tr: 'Şu anda filtrelendi' },
+        'UZS по видимым строкам': { ru: 'UZS по видимым строкам', uz: 'Ko‘rinadigan qatorlar bo‘yicha UZS', tr: 'Görünür satırlardaki UZS' },
+        'Контрагенты в выборке': { ru: 'Контрагенты в выборке', uz: 'Namunadagi hamkorlar', tr: 'Örnekteki karşı taraflar' },
+        'Линия заявок': { ru: 'Линия заявок', uz: 'Talablar satri', tr: 'Talep hattı' },
+        'Аварийный': { ru: 'Аварийный', uz: 'Favqulodda', tr: 'Acil' },
+        'Открыть карточку': { ru: 'Открыть карточку', uz: 'Kartani ochish', tr: 'Kartı aç' },
+        'Скрыть детали': { ru: 'Скрыть детали', uz: 'Tafsilotlarni yashirish', tr: 'Detayları gizle' },
+        'Детали': { ru: 'Детали', uz: 'Tafsilotlar', tr: 'Detaylar' },
+        'Загрузка': { ru: 'Загрузка', uz: 'Yuklanmoqda', tr: 'Yükleniyor' },
+        'Загрузка деталей…': { ru: 'Загрузка деталей…', uz: 'Tafsilotlar yuklanmoqda…', tr: 'Detaylar yükleniyor…' },
+        'Загрузка заявок…': { ru: 'Загрузка заявок…', uz: 'Talablar yuklanmoqda…', tr: 'Talepler yükleniyor…' },
+        'Заявка': { ru: 'Заявка', uz: 'Talab', tr: 'Talep' },
+        'Автор': { ru: 'Автор', uz: 'Muallif', tr: 'Oluşturan' },
+        'Отдел': { ru: 'Отдел', uz: 'Bo‘lim', tr: 'Departman' },
+        'Ответственный': { ru: 'Ответственный', uz: 'Mas’ul', tr: 'Sorumlu' },
+        'Сумма скрыта': { ru: 'Сумма скрыта', uz: 'Miqdor yashirilgan', tr: 'Tutar gizli' },
+        'Нужна корректировка': { ru: 'Нужна корректировка', uz: 'Tuzatish kerak', tr: 'Düzeltme gerekli' },
+        'Ожидает вашего решения': { ru: 'Ожидает вашего решения', uz: 'Sizning qaroringizni kutmoqda', tr: 'Kararınız bekleniyor' },
+        'Этап': { ru: 'Этап', uz: 'Bosqich', tr: 'Aşama' },
+        'Текущий этап': { ru: 'Текущий этап', uz: 'Joriy bosqich', tr: 'Mevcut aşama' },
+        'Ожидает': { ru: 'Ожидает', uz: 'Kutmoqda', tr: 'Beklemede' },
+        'Низкий': { ru: 'Низкий', uz: 'Past', tr: 'Düşük' },
+        'Обычный': { ru: 'Обычный', uz: 'Oddiy', tr: 'Normal' },
+        'Срочный': { ru: 'Срочный', uz: 'Shoshilinch', tr: 'Acil' },
+        'Аварийный': { ru: 'Аварийный', uz: 'Favqulodda', tr: 'Acil durum' },
+        'Критический': { ru: 'Критический', uz: 'Kritik', tr: 'Kritik' },
+        'Редактировать строку': { ru: 'Редактировать строку', uz: 'Qatorni tahrirlash', tr: 'Satırı düzenle' },
+        'Изменения сохранятся только после нажатия кнопки.': {
+          ru: 'Изменения сохранятся только после нажатия кнопки.',
+          uz: 'O‘zgarishlar faqat tugma bosilgandan so‘ng saqlanadi.',
+          tr: 'Değişiklikler yalnızca düğmeye basıldıktan sonra kaydedilir.',
+        },
+        'Отменить': { ru: 'Отменить', uz: 'Bekor qilish', tr: 'İptal' },
+        'Сохранить изменения': { ru: 'Сохранить изменения', uz: 'O‘zgarishlarni saqlash', tr: 'Değişiklikleri kaydet' },
+        'Новый пользователь': { ru: 'Новый пользователь', uz: 'Yangi foydalanuvchi', tr: 'Yeni kullanıcı' },
+        'Логин dashboard (необязательно, по умолчанию — телефон)': {
+          ru: 'Логин dashboard (необязательно, по умолчанию — телефон)',
+          uz: 'Dashboard login (ixtiyoriy, standartda telefon)',
+          tr: 'Dashboard girişi (isteğe bağlı, varsayılan olarak telefon)',
+        },
+        'Пароль для dashboard <span id="passwordHint"></span>': { ru: 'Пароль для dashboard <span id="passwordHint"></span>', uz: 'Dashboard paroli <span id="passwordHint"></span>', tr: 'Dashboard şifresi <span id="passwordHint"></span>' },
+        'Новая должность': { ru: 'Новая должность', uz: 'Yangi lavozim', tr: 'Yeni pozisyon' },
+        'Название (RU)': { ru: 'Название (RU)', uz: 'Nomi (RU)', tr: 'Ad (RU)' },
+        'Название (UZ)': { ru: 'Название (UZ)', uz: 'Nomi (UZ)', tr: 'Ad (UZ)' },
+        'Название (TR)': { ru: 'Название (TR)', uz: 'Nomi (TR)', tr: 'Ad (TR)' },
+        'Новая роль': { ru: 'Новая роль', uz: 'Yangi rol', tr: 'Yeni rol' },
+        'Выберите только те действия, которые нужны сотруднику для работы.': {
+          ru: 'Выберите только те действия, которые нужны сотруднику для работы.',
+          uz: 'Faqat xodim uchun zarur bo‘lgan amallarni tanlang.',
+          tr: 'Sadece çalışanın ihtiyaç duyduğu işlemleri seçin.',
+        },
+        'Название роли': { ru: 'Название роли', uz: 'Rol nomi', tr: 'Rol adı' },
+        'Новый шаг': { ru: 'Новый шаг', uz: 'Yangi qadam', tr: 'Yeni adım' },
+        'Новый поставщик': { ru: 'Новый поставщик', uz: 'Yangi yetkazib beruvchi', tr: 'Yeni tedarikçi' },
+        'Рейтинг (0–5)': { ru: 'Рейтинг (0–5)', uz: 'Reyting (0–5)', tr: 'Puan (0–5)' },
+        'Заметка': { ru: 'Заметка', uz: 'Izoh', tr: 'Not' },
+        'Новый товар': { ru: 'Новый товар', uz: 'Yangi mahsulot', tr: 'Yeni ürün' },
+        'Код товара': { ru: 'Код товара', uz: 'Mahsulot kodi', tr: 'Ürün kodu' },
+        'Категория': { ru: 'Категория', uz: 'Kategoriya', tr: 'Kategori' },
+        'Ед. изм.': { ru: 'Ед. изм.', uz: 'O‘lchov birligi', tr: 'Ölçü birimi' },
+        'Контактное лицо': { ru: 'Контактное лицо', uz: 'Aloqa shaxsi', tr: 'İletişim kişisi' },
+        'Новая единица': { ru: 'Новая единица', uz: 'Yangi birlik', tr: 'Yeni birim' },
+        'Новый отдел': { ru: 'Новый отдел', uz: 'Yangi bo‘lim', tr: 'Yeni departman' },
+        'Филиалы (branches)': { ru: 'Филиалы (branches)', uz: 'Filiallar (branches)', tr: 'Şubeler (şubeler)' },
+        'Склад отдела': { ru: 'Склад отдела', uz: 'Bo‘lim ombori', tr: 'Departman deposu' },
+        'Ответственный сотрудник': { ru: 'Ответственный сотрудник', uz: 'Mas’ul xodim', tr: 'Sorumlu çalışan' },
+        'Новый склад': { ru: 'Новый склад', uz: 'Yangi ombor', tr: 'Yeni depo' },
+        'Название (RU)': { ru: 'Название (RU)', uz: 'Nomi (RU)', tr: 'Ad (RU)' },
+        'Название (TR)': { ru: 'Название (TR)', uz: 'Nomi (TR)', tr: 'Ad (TR)' },
+        'Новый филиал': { ru: 'Новый филиал', uz: 'Yangi filial', tr: 'Yeni şube' },
+        'Редактировать заявку': { ru: 'Редактировать заявку', uz: 'Talabni tahrirlash', tr: 'Talebi düzenle' },
+        'Изменения будут видны и в dashboard, и в Telegram Web App.': {
+          ru: 'Изменения будут видны и в dashboard, и в Telegram Web App.',
+          uz: 'O‘zgarishlar dashboard va Telegram Web App’da ham ko‘rinadi.',
+          tr: 'Değişiklikler dashboard ve Telegram Web App’te de görünür olacak.',
+        },
+        'Название заявки': { ru: 'Название заявки', uz: 'Talab nomi', tr: 'Talep adı' },
+        'Нужно к': { ru: 'Нужно к', uz: 'Muddati', tr: 'Gerekli tarih' },
+        'Склад': { ru: 'Склад', uz: 'Ombor', tr: 'Depo' },
+        'Позиции': { ru: 'Позиции', uz: 'Pozitsiyalar', tr: 'Kalemler' },
+        'Добавить позицию': { ru: 'Добавить позицию', uz: 'Qator qo‘shish', tr: 'Kalem ekle' },
+        'Сохранено': { ru: 'Сохранено', uz: 'Saqlandi', tr: 'Kaydedildi' },
+      });
+    })();
+    function translateDashboardDynamic(trimmed) {
+      const lang = currentLang();
+      if (lang === 'ru') return trimmed;
+
+      if (trimmed.startsWith('Обновлено:')) {
+        const value = trimmed.slice('Обновлено:'.length).trim();
+        return lang === 'uz' ? 'Yangilandi: ' + value : 'Güncellendi: ' + value;
+      }
+
+      const dateMatch = /^(.*?)(понедельник|вторник|среда|четверг|пятница|суббота|воскресенье),\s+(.+)$/.exec(trimmed);
+      if (dateMatch) {
+        const days = {
+          уз: { понедельник: 'dushanba', вторник: 'seshanba', среда: 'chorshanba', четверг: 'payshanba', пятница: 'juma', суббота: 'shanba', воскресенье: 'yakshanba' },
+          tr: { понедельник: 'pazartesi', вторник: 'salı', среда: 'çarşamba', четверг: 'perşembe', пятница: 'cuma', суббота: 'cumartesi', воскресенье: 'pazar' },
+        };
+        const day = lang === 'uz' ? days.уз[dateMatch[2]] : days.tr[dateMatch[2]];
+        const months = lang === 'uz'
+          ? { января: 'yanvar', февраля: 'fevral', марта: 'mart', апреля: 'aprel', мая: 'may', июня: 'iyun', июля: 'iyul', августа: 'avgust', сентября: 'sentabr', октября: 'oktabr', ноября: 'noyabr', декабря: 'dekabr' }
+          : { января: 'ocak', февраля: 'şubat', марта: 'mart', апреля: 'nisan', мая: 'mayıs', июня: 'haziran', июля: 'temmuz', августа: 'ağustos', сентября: 'eylül', октября: 'ekim', ноября: 'kasım', декабря: 'aralık' };
+        const date = dateMatch[3].replace(/(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)/, (month) => months[month]);
+        return dateMatch[1] + day + ', ' + date;
+      }
+
+      if (trimmed.startsWith('Код товара:')) {
+        const value = trimmed.slice('Код товара:'.length).trim();
+        return lang === 'uz'
+          ? 'Mahsulot kodi: ' + value
+          : 'Ürün kodu: ' + value;
+      }
+
+      if (trimmed.startsWith('Контекст:')) {
+        const value = trimmed.slice('Контекст:'.length).trim();
+        return lang === 'uz'
+          ? 'Kontekst: ' + value
+          : 'Bağlam: ' + value;
+      }
+
+      if (trimmed.startsWith('Заявка')) {
+        const requestNo = trimmed.slice('Заявка'.length).trim().replace(/^#/, '');
+        return lang === 'uz'
+          ? ('Talab #' + requestNo).trim()
+          : ('Talep #' + requestNo).trim();
+      }
+
+      return null;
+    }
+    const originalTextByNode = new WeakMap();
+    const originalAttrByElement = new WeakMap();
+    const I18N_ATTRS = ['placeholder', 'aria-label', 'title'];
+    function getOriginalAttribute(el, attr) {
+      const current = el.getAttribute(attr);
+      if (current === null) return null;
+      let map = originalAttrByElement.get(el);
+      if (!map) {
+        map = {};
+        originalAttrByElement.set(el, map);
+      }
+      if (!(attr in map)) {
+        if (!hasCyrillic(current)) return null;
+        map[attr] = current;
+      }
+      return map[attr] ?? null;
+    }
+    function translateLiteralText(value) {
+      const lang = currentLang();
+      if (lang === 'ru') return value;
+      const trimmed = value.trim();
+      if (!trimmed || !hasCyrillic(trimmed)) return value;
+      // JSX/template-rendered text can contain indentation or line breaks;
+      // compare a collapsed form too so a dictionary sentence still matches.
+      const normalized = trimmed.replace(/\s+/g, ' ');
+      const direct = FALLBACK_TEXT_MAP[trimmed] || FALLBACK_TEXT_MAP[normalized];
+      if (direct && direct[lang]) {
+        const translated = direct[lang];
+        return value === trimmed ? translated : value.replace(trimmed, translated);
+      }
+      const dynamic = translateDashboardDynamic(normalized);
+      if (dynamic) return value === trimmed ? dynamic : value.replace(trimmed, dynamic);
+      return value;
+    }
+    function applyI18nToNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const current = node.textContent ?? '';
+        if (!current) return;
+        if (!hasCyrillic(current) && !originalTextByNode.has(node)) return;
+        const original = originalTextByNode.get(node) ?? current;
+        if (!originalTextByNode.has(node)) originalTextByNode.set(node, original);
+        const next = translateLiteralText(original);
+        if (node.textContent !== next) node.textContent = next;
+        return;
+      }
+      if (!(node instanceof Element)) return;
+      if (['SCRIPT', 'STYLE', 'TEXTAREA'].includes(node.tagName)) return;
+      if (node instanceof HTMLInputElement && ['text', 'search', 'email', 'tel', 'url', 'password'].includes(node.type || '')) {
+        const original = getOriginalAttribute(node, 'placeholder');
+        if (original) {
+          const next = translateLiteralText(original);
+          if (node.placeholder !== next) node.placeholder = next;
+        }
+      }
+      for (const attr of I18N_ATTRS) {
+        const original = getOriginalAttribute(node, attr);
+        if (original === null) continue;
+        const next = translateLiteralText(original);
+        if (node.getAttribute(attr) !== next) node.setAttribute(attr, next);
+      }
+      for (const child of Array.from(node.childNodes)) applyI18nToNode(child);
+    }
+    const dashboardI18nObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'characterData') {
+          applyI18nToNode(mutation.target);
+          continue;
+        }
+        if (mutation.type === 'attributes') {
+          const node = mutation.target;
+          if (node instanceof Element) {
+            applyI18nToNode(node);
+          }
+          continue;
+        }
+        for (const node of Array.from(mutation.addedNodes)) {
+          applyI18nToNode(node);
+        }
+      }
+    });
+    function startDashboardI18nObserver() {
+      if (dashboardI18nObserver._running) return;
+      dashboardI18nObserver.observe(document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: I18N_ATTRS,
+      });
+      dashboardI18nObserver._running = true;
+    }
     // Entities with RU/UZ/TR name fields carry all three from the server — the
     // server has no idea which language the viewer has selected (it only lives
     // in localStorage), so localization always happens here, at render time.
@@ -2418,8 +2913,10 @@ function pageHtml(): string {
       return row.departmentName || localized(row, 'departmentNameResolved', 'departmentNameUz', 'departmentNameTr') || null;
     }
     function applyI18n() {
+      startDashboardI18nObserver();
       document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
       document.querySelectorAll('[data-i18n-ph]').forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
+      applyI18nToNode(document.body);
     }
     function activeViewName() {
       const active = document.querySelector('.side-link[data-view].active');
@@ -2628,9 +3125,10 @@ function pageHtml(): string {
       const importMaterialBtn = document.getElementById('importMaterial');
       if (importMaterialBtn) importMaterialBtn.classList.toggle('hidden', !canManageMaterials);
       document.getElementById('addSupplier').classList.toggle('hidden', !canManageSuppliers);
-      document.getElementById('sideUserName').textContent = session.user.fullName;
+      const localizedUserName = translateLiteralText(session.user.fullName);
+      document.getElementById('sideUserName').textContent = localizedUserName;
       document.getElementById('sideUserLogin').textContent = '@' + session.user.username;
-      document.getElementById('sideAvatar').textContent = initials(session.user.fullName);
+      document.getElementById('sideAvatar').textContent = initials(localizedUserName);
     }
     async function enterApp() {
       session = await api('me');
@@ -2917,7 +3415,8 @@ function pageHtml(): string {
       window.__snabToast = setTimeout(() => el.classList.add('hidden'), 3000);
     }
     function renderDashboardDate() {
-      const date = new Date().toLocaleDateString('ru-RU', { timeZone:'Asia/Tashkent', weekday:'long', day:'numeric', month:'long' });
+      const dateLocale = currentLang() === 'tr' ? 'tr-TR' : currentLang() === 'uz' ? 'uz-UZ' : 'ru-RU';
+      const date = new Date().toLocaleDateString(dateLocale, { timeZone:'Asia/Tashkent', weekday:'long', day:'numeric', month:'long' });
       document.getElementById('dashboardDate').textContent = 'Zelal Textile · ' + date;
     }
     function groupedByDay(data) {
@@ -3066,7 +3565,7 @@ function pageHtml(): string {
       const titleInput = document.querySelector('[data-row-edit-key="materialName"]');
       const unitInput = document.querySelector('[data-row-edit-key="unit"]');
       if (titleInput) titleInput.value = title;
-      if (unitInput && material.unit) unitInput.value = material.unit;
+      if (unitInput) unitInput.value = row.unit || material.unit || '';
       document.getElementById('rowEditSubtitle').textContent = title;
     }
     function openRowEdit(itemId) {
@@ -3120,6 +3619,12 @@ function pageHtml(): string {
     let requestsLoaded = false;
     let currentRequest = null;
     let currentAction = null;
+    let selectedRequestId = null;
+    let selectedRequestSeq = 0;
+    let expandedRequestId = null;
+    let expandedRequestSeq = 0;
+    const requestDetailCache = new Map();
+    const requestInspectorDataCache = new Map();
     const requestStatusLabels = {
       draft:'Черновик', pending_approval:'На согласовании', warehouse_check:'Проверка склада',
       procurement:'Снабжение', finance_payment:'Оплата', delivery:'Доставка', receiving:'Приёмка',
@@ -3163,27 +3668,210 @@ function pageHtml(): string {
         list.innerHTML = '<div class="empty-admin">' + esc(err instanceof Error ? err.message : 'Не удалось загрузить заявки') + '</div>';
       }
     }
+    function requestsDesktop() { return window.matchMedia('(min-width:761px)').matches; }
+    function inspectorCell(label, value) {
+      return '<div class="inspector-cell"><span>' + esc(label) + '</span><strong title="' + esc(value || '—') + '">' + esc(value || '—') + '</strong></div>';
+    }
+    function uniqueCustomInfo(items) {
+      const seen = new Set();
+      return (Array.isArray(items) ? items : []).filter((item) => {
+        const label = String(item?.label || '').trim();
+        const value = String(item?.value || '').trim();
+        const normalizedLabel = /^(object|объект|obyekt)$/i.test(label) ? 'object' : label.toLocaleLowerCase('ru-RU');
+        // This script is emitted inside a template literal; avoid a literal NUL
+        // in the generated JavaScript source, which browsers parse as a line break.
+        const key = normalizedLabel + '|' + value.toLocaleLowerCase('ru-RU');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+    function requestInspectorMarkup(row) {
+      const progress = Math.max(0, Math.min(100, Number(row.progressPercent ?? row.progress ?? (row.status === 'closed' ? 100 : 0)) || 0));
+      const amount = row.estimatedAmount == null ? '—' : money(row.estimatedAmount) + ' UZS';
+      const currentAction = row.currentAction || row.nextAction || row.actionLabel || requestStatus(row);
+      const ownerActions = Array.isArray(session?.roleCodes) && session.roleCodes.includes('owner')
+        ? '<button class="inspector-btn secondary" type="button" data-edit-request="' + esc(row.id) + '">Редактировать</button><button class="inspector-btn danger" type="button" data-delete-request="' + esc(row.id) + '">Удалить</button>'
+        : '';
+      return '<div class="inspector-head"><div><div class="inspector-kicker">Заявка</div><h2>' + esc(row.requestNumber || row.id || '—') + '</h2></div></div>' +
+        '<div class="inspector-action"><div class="inspector-action-label">Текущее действие</div><strong>' + esc(currentAction) + '</strong></div>' +
+        '<div class="inspector-summary">' + inspectorCell('Автор', row.requesterName) + inspectorCell('Отдел', deptNameFor(row)) + inspectorCell('Ответственный', row.responsibleName) + inspectorCell('Сумма', amount) + inspectorCell('Нужно к', dateText(row.neededDate)) + inspectorCell('Приоритет', priorityLabels[row.priority] || row.priority) + '</div>' +
+        '<div class="inspector-progress"><span style="width:' + progress + '%"></span></div><div class="inspector-progress-meta"><span>Прогресс</span><strong>' + progress + '%</strong></div>' +
+        (row.description ? '<section class="detail-section"><div class="detail-section-title">Комментарий</div><div style="font-size:11px;color:var(--text-sec)">' + esc(row.description) + '</div></section>' : '') +
+        '<div class="inspector-actions"><button class="inspector-btn" type="button" data-open-request="' + esc(row.id) + '">Открыть карточку</button>' + ownerActions + '</div>';
+    }
+    function renderRequestInspector(row) {
+      const empty = document.getElementById('requestInspectorEmpty');
+      const content = document.getElementById('requestInspectorContent');
+      if (!empty || !content) return;
+      if (!row) {
+        selectedRequestId = null;
+        empty.classList.remove('hidden');
+        content.classList.add('hidden');
+        content.innerHTML = '';
+        return;
+      }
+      empty.classList.add('hidden');
+      content.classList.remove('hidden');
+      content.innerHTML = requestInspectorMarkup(row);
+    }
+    function requestById(requestId) {
+      return requestRows.find((row) => row.id === requestId) || inboxRows.find((row) => row.id === requestId) || null;
+    }
+    async function selectRequest(requestId) {
+      const row = requestById(requestId);
+      if (!row) return;
+      if (expandedRequestId && expandedRequestId !== requestId) clearExpandedRequest();
+      selectedRequestId = requestId;
+      document.querySelectorAll('.request-row[data-request-id]').forEach((item) => item.classList.toggle('selected', item.dataset.requestId === requestId));
+      const cached = requestInspectorDataCache.get(requestId);
+      renderRequestInspector(cached || row);
+      if (cached) return;
+      const seq = ++selectedRequestSeq;
+      try {
+        const fullRow = await coreApi('/requests/' + encodeURIComponent(requestId));
+        requestInspectorDataCache.set(requestId, fullRow);
+        if (seq === selectedRequestSeq && selectedRequestId === requestId) renderRequestInspector(fullRow);
+      } catch {
+        // The list summary remains available if the full preview request fails.
+      }
+    }
+    function requestDetailsMarkup(row) {
+      const items = (row.items || []).map((item, index) => {
+        const orderedQty = Number(item.quantity || 0);
+        const unit = item.unit || item.unitName || '';
+        const receivedQty = Number(item.receivedQty || 0);
+        const received = receivedQty <= 0
+          ? '—'
+          : '<span style="color:' + (receivedQty < orderedQty ? 'var(--amber)' : 'var(--green)') + '">' + esc(receivedQty + ' из ' + orderedQty + (unit ? ' ' + unit : '')) + '</span>';
+        const warehouseName = item.warehouseName || row.warehouseName || '—';
+        const totalAmount = item.totalAmount == null ? '—' : money(item.totalAmount) + ' UZS';
+        return '<tr><td>' + esc(String(index + 1)) + '</td><td><strong>' + esc(item.name || item.itemName || '—') + '</strong><div class="request-meta">' + esc(item.code || item.itemCode || '') + '</div></td><td>' + esc(String(orderedQty) + (unit ? ' ' + unit : '')) + '</td><td>' + esc(totalAmount) + '</td><td>' + received + '</td><td>' + esc(warehouseName) + '</td></tr>';
+      }).join('');
+      const customInfo = uniqueCustomInfo(row.customInfo);
+      const custom = customInfo.length
+        ? '<section class="detail-section"><div class="detail-section-title">Дополнительно</div><div class="detail-summary">' + customInfo.map((item) => detailCell(item.label || '—', item.value || '—')).join('') + '</div></section>'
+        : '';
+      const quotes = (row.quotations || []).length
+        ? '<section class="detail-section"><div class="detail-section-title">Коммерческие предложения</div><div class="quote-list">' + row.quotations.map((quote) => '<div class="quote-card ' + (quote.selected ? 'selected' : '') + '"><div><strong>' + esc(quote.supplierName || 'Поставщик не указан') + '</strong><div class="request-meta">' + esc(quote.paymentType || '') + '</div></div><div><strong>' + esc(quote.amount == null ? '—' : money(quote.amount) + ' UZS') + '</strong>' + (quote.selected ? '<div class="request-meta">Выбрано</div>' : '') + '</div></div>').join('') + '</div></section>'
+        : '';
+      const timeline = (row.workflowTimeline || []).map((step) => '<div class="timeline-step ' + esc(step.state || 'future') + '"><span class="timeline-dot"></span><div><div class="timeline-name">' + esc(step.stepName || 'Этап') + '</div><div class="timeline-meta">' + esc([step.actorName, step.actorRole, dateText(step.at, true)].filter((value) => value && value !== '—').join(' · ') || (step.state === 'current' ? 'Текущий этап' : 'Ожидает')) + '</div>' + (step.comment ? '<div class="timeline-meta">«' + esc(step.comment) + '»</div>' : '') + '</div></div>').join('');
+      return (
+        '<div class="request-row-details-inner">' +
+          '<div class="request-detail-grid">' +
+            '<div class="request-detail-main">' +
+              (row.description ? '<section class="detail-section"><div class="detail-section-title">Комментарий</div><div style="font-size:12px;color:var(--text-sec)">' + esc(row.description) + '</div></section>' : '') +
+              custom +
+              '<section class="detail-section"><div class="detail-section-title">Позиции</div><div style="overflow-x:auto"><table class="detail-items"><thead><tr><th>№</th><th>Наименование</th><th>Количество</th><th>Сумма</th><th>Получено</th><th>Склад</th></tr></thead><tbody>' + (items || '<tr><td colspan="6">Нет позиций</td></tr>') + '</tbody></table></div></section>' +
+              quotes +
+            '</div>' +
+          '</div>' +
+          (timeline ? '<section class="detail-section"><div class="detail-section-title">Маршрут</div><div class="timeline">' + timeline + '</div></section>' : '') +
+        '</div>'
+      );
+    }
+    function requestListItemRow(row) {
+      const department = deptNameFor(row) || row.requesterName || 'Без отдела';
+      const amount = row.estimatedAmount == null ? 'Сумма скрыта' : money(row.estimatedAmount) + ' UZS';
+      const actions = Array.isArray(row.actions) && row.actions.length ? ' · ' + row.actions.length + ' действий' : '';
+      const isExpanded = expandedRequestId === row.id;
+      const isSelected = selectedRequestId === row.id;
+      return '<article class="request-row-wrapper" data-request-id="' + esc(row.id) + '">' +
+        '<article class="request-row' + (isSelected ? ' selected' : '') + '" data-request-id="' + esc(row.id) + '" tabindex="0">' +
+          '<div><div class="request-number">' + esc(row.requestNumber || '—') + '</div><div class="request-meta">' + esc(department) + actions + '</div></div>' +
+          '<div><span class="request-status">' + esc(requestStatus(row)) + '</span></div>' +
+          '<div><div class="request-priority ' + esc(row.priority || 'normal') + '">' + esc(priorityLabels[row.priority] || row.priority || 'Обычный') + '</div><div class="request-meta">нужно к ' + esc(dateText(row.neededDate)) + '</div></div>' +
+          '<div><div style="font-size:11.5px;font-weight:600">' + esc(amount) + '</div><div class="request-meta">' + esc(dateText(row.createdAt)) + '</div></div>' +
+          '<div class="request-row-actions"><button class="mini-action" type="button" data-request-toggle="' + esc(row.id) + '"' + (isExpanded ? ' aria-expanded="true"' : '') + '>' + (isExpanded ? 'Скрыть детали' : 'Детали') + '</button></div>' +
+        '</article>' +
+        '<section class="request-row-details hidden" data-request-details>' +
+          (isExpanded ? '<div class="empty-admin">Загрузка…</div>' : '') +
+        '</section>' +
+      '</article>';
+    }
+    function getRequestRowWrapper(requestId) {
+      if (!requestId) return null;
+      return document.querySelector('.request-row-wrapper[data-request-id="' + CSS.escape(requestId) + '"]');
+    }
+    function setRequestButtonLabel(wrapper, expanded) {
+      if (!wrapper) return;
+      const button = wrapper.querySelector('[data-request-toggle]');
+      if (!button) return;
+      button.textContent = expanded ? 'Скрыть детали' : 'Детали';
+      button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    }
+    async function openInlineRequestDetails(requestId) {
+      const wrapper = getRequestRowWrapper(requestId);
+      if (!wrapper) return;
+      const detailsHost = wrapper.querySelector('[data-request-details]');
+      const cached = requestId ? requestDetailCache.get(requestId) : null;
+      if (expandedRequestId && expandedRequestId !== requestId) {
+        const currentWrapper = getRequestRowWrapper(expandedRequestId);
+        if (currentWrapper) {
+          const currentHost = currentWrapper.querySelector('[data-request-details]');
+          if (currentHost) currentHost.classList.add('hidden');
+          setRequestButtonLabel(currentWrapper, false);
+        }
+        expandedRequestId = null;
+      }
+      if (!detailsHost) return;
+      if (!detailsHost.classList.contains('hidden')) {
+        detailsHost.classList.add('hidden');
+        setRequestButtonLabel(wrapper, false);
+        expandedRequestId = null;
+        return;
+      }
+      expandedRequestId = requestId;
+      selectRequest(requestId);
+      detailsHost.classList.remove('hidden');
+      setRequestButtonLabel(wrapper, true);
+      if (cached) {
+        detailsHost.innerHTML = cached;
+        return;
+      }
+      detailsHost.innerHTML = '<div class="detail-section"><div class="detail-section-title">Загрузка</div><div class="empty-admin">Загрузка деталей…</div></div>';
+      const seq = ++expandedRequestSeq;
+      try {
+        const row = await coreApi('/requests/' + encodeURIComponent(requestId));
+        if (seq !== expandedRequestSeq || expandedRequestId !== requestId) return;
+        requestInspectorDataCache.set(requestId, row);
+        if (selectedRequestId === requestId) renderRequestInspector(row);
+        const markup = requestDetailsMarkup(row);
+        requestDetailCache.set(requestId, markup);
+        detailsHost.innerHTML = markup;
+      } catch (err) {
+        if (seq !== expandedRequestSeq || expandedRequestId !== requestId) return;
+        detailsHost.innerHTML = '<div class="detail-section"><div class="detail-section-title">Ошибка</div><div class="empty-admin">Не удалось загрузить детали</div><div class="request-meta">' + esc(err instanceof Error ? err.message : 'Попробуйте позже') + '</div></div>';
+        setRequestButtonLabel(wrapper, false);
+        expandedRequestId = null;
+        detailsHost.classList.add('hidden');
+      }
+    }
+    function clearExpandedRequest() {
+      if (!expandedRequestId) return;
+      const wrapper = getRequestRowWrapper(expandedRequestId);
+      if (wrapper) {
+        const detailsHost = wrapper.querySelector('[data-request-details]');
+        if (detailsHost) detailsHost.classList.add('hidden');
+        setRequestButtonLabel(wrapper, false);
+      }
+      expandedRequestId = null;
+    }
     function renderRequests() {
       const query = document.getElementById('requestSearch').value.trim().toLowerCase();
       const status = document.getElementById('requestStatus').value;
-      const owner = Array.isArray(session.roleCodes) && session.roleCodes.includes('owner');
       const source = requestMode === 'inbox' ? inboxRows : requestRows;
       const data = source.filter((row) => {
         if (status && row.status !== status) return false;
         return !query || [row.requestNumber,row.title,row.requesterName,row.departmentName,row.departmentNameResolved,row.obyekt]
           .some((value) => String(value || '').toLowerCase().includes(query));
       });
-      document.getElementById('requestList').innerHTML = data.map((row) => {
-        const department = deptNameFor(row) || row.requesterName || 'Без отдела';
-        const amount = row.estimatedAmount == null ? 'Сумма скрыта' : money(row.estimatedAmount) + ' UZS';
-        const actions = Array.isArray(row.actions) && row.actions.length ? ' · ' + row.actions.length + ' действий' : '';
-        return '<article class="request-row" data-request-id="' + esc(row.id) + '" tabindex="0">' +
-          '<div><div class="request-number">' + esc(row.requestNumber || '—') + '</div><div class="request-title">' + esc(row.title || 'Без названия') + '</div><div class="request-meta">' + esc(department) + actions + '</div></div>' +
-          '<div><span class="request-status">' + esc(requestStatus(row)) + '</span></div>' +
-          '<div><div class="request-priority ' + esc(row.priority || 'normal') + '">' + esc(priorityLabels[row.priority] || row.priority || 'Обычный') + '</div><div class="request-meta">нужно к ' + esc(dateText(row.neededDate)) + '</div></div>' +
-          '<div><div style="font-size:11.5px;font-weight:600">' + esc(amount) + '</div><div class="request-meta">' + esc(dateText(row.createdAt)) + '</div></div>' +
-          (owner ? '<div class="request-row-actions"><button class="mini-action" type="button" data-edit-request="' + esc(row.id) + '">Редактировать</button><button class="mini-action danger" type="button" data-delete-request="' + esc(row.id) + '">Удалить</button></div>' : '<div class="request-arrow">›</div>') + '</article>';
-      }).join('') || '<div class="empty-admin">' + (requestMode === 'inbox' ? 'Нет заявок, ожидающих вашего действия' : 'Заявки не найдены') + '</div>';
+      requestDetailCache.clear();
+      clearExpandedRequest();
+      expandedRequestSeq = 0;
+      if (selectedRequestId && !data.some((row) => row.id === selectedRequestId)) selectedRequestId = null;
+      document.getElementById('requestList').innerHTML = data.map((row) => requestListItemRow(row)).join('') || '<div class="empty-admin">' + (requestMode === 'inbox' ? 'Нет заявок, ожидающих вашего действия' : 'Заявки не найдены') + '</div>';
+      renderRequestInspector(data.find((row) => row.id === selectedRequestId) || null);
     }
     async function deleteCanonicalRequest(id) {
       const row = requestRows.find((item) => item.id === id) || inboxRows.find((item) => item.id === id);
@@ -3220,6 +3908,19 @@ function pageHtml(): string {
     document.getElementById('requestSearch').addEventListener('input', renderRequests);
     document.getElementById('requestStatus').addEventListener('change', renderRequests);
     document.getElementById('requestList').addEventListener('click', (event) => {
+      const fullButton = event.target.closest('[data-open-request]');
+      if (fullButton) {
+        event.stopPropagation();
+        openRequest(fullButton.dataset.openRequest);
+        return;
+      }
+      const detailButton = event.target.closest('[data-request-toggle]');
+      if (detailButton) {
+        event.stopPropagation();
+        selectRequest(detailButton.dataset.requestToggle);
+        openInlineRequestDetails(detailButton.dataset.requestToggle);
+        return;
+      }
       const editButton = event.target.closest('[data-edit-request]');
       if (editButton) {
         event.stopPropagation();
@@ -3232,13 +3933,36 @@ function pageHtml(): string {
         deleteCanonicalRequest(deleteButton.dataset.deleteRequest);
         return;
       }
-      const row = event.target.closest('[data-request-id]');
-      if (row) openRequest(row.dataset.requestId);
+      const row = event.target.closest('.request-row[data-request-id]');
+      if (row) selectRequest(row.dataset.requestId);
     });
     document.getElementById('requestList').addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
-      const row = event.target.closest('[data-request-id]');
-      if (row) { event.preventDefault(); openRequest(row.dataset.requestId); }
+      const row = event.target.closest('.request-row-wrapper');
+      if (!row) return;
+      const button = event.target.closest('button');
+      if (button) return;
+      event.preventDefault();
+      selectRequest(row.dataset.requestId);
+    });
+    document.getElementById('requestInspector').addEventListener('click', (event) => {
+      const fullButton = event.target.closest('[data-open-request]');
+      if (fullButton) {
+        openRequest(fullButton.dataset.openRequest);
+        return;
+      }
+      const detailButton = event.target.closest('[data-request-toggle]');
+      if (detailButton) openInlineRequestDetails(detailButton.dataset.requestToggle);
+      const editButton = event.target.closest('[data-edit-request]');
+      if (editButton) {
+        openRequest(editButton.dataset.editRequest, true);
+        return;
+      }
+      const deleteButton = event.target.closest('[data-delete-request]');
+      if (deleteButton) {
+        deleteCanonicalRequest(deleteButton.dataset.deleteRequest);
+        return;
+      }
     });
     function detailCell(label, value) {
       return '<div class="detail-cell"><span>' + esc(label) + '</span><strong>' + esc(value || '—') + '</strong></div>';
@@ -3264,7 +3988,7 @@ function pageHtml(): string {
       const row = currentRequest;
       if (!row) return;
       document.getElementById('detailNumber').textContent = row.requestNumber || '—';
-      document.getElementById('detailTitle').textContent = row.title || 'Без названия';
+      document.getElementById('detailTitle').textContent = row.requestNumber || row.id || 'Заявка';
       const mayStock = (row.actions || []).some((action) => ['wh_in_stock','wh_out_of_stock','wh_partial'].includes(action.action));
       const items = (row.items || []).map((item, index) => {
         const selectedIn = item.status === 'in_stock';
@@ -3283,11 +4007,12 @@ function pageHtml(): string {
           : esc(warehouseName);
         return '<tr><td>' + (index + 1) + '</td><td><strong>' + esc(item.name || item.itemName || '—') + '</strong><div class="request-meta">' + esc(item.code || item.itemCode || '') + '</div></td><td>' + esc(String(orderedQty) + ' ' + unitLabel) + '</td><td>' + esc(price) + '</td><td>' + received + '</td><td>' + warehouseCell + '</td></tr>';
       }).join('');
-      const custom = (row.customInfo || []).length ? '<section class="detail-section"><div class="detail-section-title">Дополнительно</div><div class="detail-summary">' + row.customInfo.map((item) => detailCell(item.label,item.value)).join('') + '</div></section>' : '';
+      const customInfo = uniqueCustomInfo(row.customInfo);
+      const custom = customInfo.length ? '<section class="detail-section"><div class="detail-section-title">Дополнительно</div><div class="detail-summary">' + customInfo.map((item) => detailCell(item.label,item.value)).join('') + '</div></section>' : '';
       const quotes = (row.quotations || []).length ? '<section class="detail-section"><div class="detail-section-title">Коммерческие предложения</div><div class="quote-list">' + row.quotations.map((quote) => '<div class="quote-card ' + (quote.selected ? 'selected' : '') + '"><div><strong>' + esc(quote.supplierName || 'Поставщик не указан') + '</strong><div class="request-meta">' + esc(quote.paymentType || '') + '</div></div><div><strong>' + esc(money(quote.amount) + ' UZS') + '</strong>' + (quote.selected ? '<div class="request-meta">Выбрано</div>' : '') + '</div></div>').join('') + '</div></section>' : '';
       const timeline = (row.workflowTimeline || []).map((step) => '<div class="timeline-step ' + esc(step.state || 'future') + '"><span class="timeline-dot"></span><div><div class="timeline-name">' + esc(step.stepName || 'Этап') + '</div><div class="timeline-meta">' + esc([step.actorName,step.actorRole,dateText(step.at,true)].filter((value) => value && value !== '—').join(' · ') || (step.state === 'current' ? 'Текущий этап' : 'Ожидает')) + '</div>' + (step.comment ? '<div class="timeline-meta">«' + esc(step.comment) + '»</div>' : '') + '</div></div>').join('');
       const actions = (row.actions || []).map((action) => '<button class="action-btn ' + (/reject|return|cancel/.test(action.action) ? 'danger' : '') + '" type="button" data-request-action="' + esc(action.action) + '">' + esc(action.label) + '</button>').join('');
-      const editAction = row.canEdit ? '<button class="action-btn" type="button" data-edit-current-request><i class="ti ti-edit"></i> Редактировать заявку</button>' : '';
+      const editAction = '';
       document.getElementById('detailBody').innerHTML =
         '<div class="detail-summary">' + detailCell('Статус',requestStatus(row)) + detailCell('Автор',row.requesterName) + detailCell('Отдел',deptNameFor(row)) + detailCell('Нужно к',dateText(row.neededDate)) + detailCell('Приоритет',priorityLabels[row.priority] || row.priority) + detailCell('Ответственный',row.responsibleName) + detailCell('Сумма',row.estimatedAmount == null ? 'Скрыта' : money(row.estimatedAmount) + ' UZS') + detailCell('Создана',dateText(row.createdAt,true)) + '</div>' +
         (row.description ? '<section class="detail-section"><div class="detail-section-title">Комментарий</div><div style="font-size:12px;color:var(--text-sec)">' + esc(row.description) + '</div></section>' : '') + custom +
@@ -3295,15 +4020,26 @@ function pageHtml(): string {
         (timeline ? '<section class="detail-section"><div class="detail-section-title">Маршрут</div><div class="timeline">' + timeline + '</div></section>' : '') +
         '<div class="detail-actions">' + editAction + actions + (!editAction && !actions ? '<span class="request-meta">Доступных действий сейчас нет</span>' : '') + '</div>';
     }
+    function requestEditUnitOptions(selected) {
+      const value = String(selected || '').trim();
+      const units = Array.isArray(meta?.units) ? meta.units : [];
+      const known = units.some((unit) => unit.value === value);
+      const archived = value && !known ? '<option value="' + esc(value) + '" selected>' + esc(value) + '</option>' : '';
+      return '<option value="">—</option>' + archived + units.map((unit) => '<option value="' + esc(unit.value) + '"' + (unit.value === value ? ' selected' : '') + '>' + esc(localized(unit, 'name', 'nameUz', 'nameTr') || unit.label || unit.value) + '</option>').join('');
+    }
     function requestEditItemHtml(item = {}) {
       return '<div class="quote-entry-line" data-request-edit-item data-item-id="' + esc(item.id || '') + '"><div class="quote-entry-controls" style="grid-template-columns:minmax(220px,2fr) minmax(90px,.7fr) minmax(100px,.8fr) auto">' +
         '<input class="fin" data-edit-item-name list="productTitleList" autocomplete="off" required placeholder="Название товара" value="' + esc(item.name || item.itemName || '') + '" />' +
         '<input class="fin" data-edit-item-quantity type="number" min="0.000001" step="any" required placeholder="Количество" value="' + esc(item.quantity || 1) + '" />' +
-        '<input class="fin" data-edit-item-unit placeholder="Ед. изм." value="' + esc(item.unit || item.unitName || '') + '" />' +
+        '<select class="fin" data-edit-item-unit aria-label="Единица измерения">' + requestEditUnitOptions(item.unit || item.unitName) + '</select>' +
         '<button class="mini danger" type="button" data-remove-edit-item aria-label="Удалить позицию">×</button></div></div>';
     }
-    function openRequestEdit() {
+    async function openRequestEdit() {
       if (!currentRequest || !currentRequest.canEdit) return;
+      if (!meta) {
+        try { meta = await api('meta'); materials = meta.materials || materials; renderProductCodeList(); }
+        catch { meta = { units: [] }; }
+      }
       document.getElementById('requestEditTitle').value = currentRequest.title || '';
       document.getElementById('requestEditDescription').value = currentRequest.description || '';
       document.getElementById('requestEditPriority').value = currentRequest.priority || 'normal';
@@ -3356,7 +4092,7 @@ function pageHtml(): string {
       if (!material) return;
       input.value = materialTitleFor(material);
       const unit = input.closest('[data-request-edit-item]').querySelector('[data-edit-item-unit]');
-      if (material.unit) unit.value = material.unit;
+      if (!unit.value && material.unit) unit.value = material.unit;
     });
     document.getElementById('requestEditForm').addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -5151,10 +5887,11 @@ function pageHtml(): string {
           const title = materialTitleFor(material);
           form.items[i].code = material.code;
           form.items[i].name = title;
-          if (material.unit) form.items[i].unit = material.unit;
+          if (!form.items[i].unit && material.unit) form.items[i].unit = material.unit;
           cell.value = material.code;
           row.querySelector('[data-f="name"]').value = title;
-          if (material.unit) row.querySelector('[data-f="unit"]').value = material.unit;
+          const unitField = row.querySelector('[data-f="unit"]');
+          if (unitField && !unitField.value && material.unit) unitField.value = material.unit;
         }
       }
       if (cell.dataset.f === 'name') {
@@ -5164,10 +5901,11 @@ function pageHtml(): string {
           const title = materialTitleFor(material);
           form.items[i].code = material.code;
           form.items[i].name = title;
-          if (material.unit) form.items[i].unit = material.unit;
+          if (!form.items[i].unit && material.unit) form.items[i].unit = material.unit;
           cell.value = title;
           row.querySelector('[data-f="code"]').value = material.code;
-          if (material.unit) row.querySelector('[data-f="unit"]').value = material.unit;
+          const unitField = row.querySelector('[data-f="unit"]');
+          if (unitField && !unitField.value && material.unit) unitField.value = material.unit;
         }
       }
       if (cell.dataset.f === 'qty' || cell.dataset.f === 'price') recalcTotal();
@@ -5411,15 +6149,28 @@ export function buildSnabDashboardRouter(db: Db, sessionSecret: string): Router 
     res.type('image/svg+xml').sendFile(`${TABLER_ASSET_ROOT}icons/outline/${name}.svg`);
   });
 
-  r.get('/', (_req: Request, res: Response) => {
+  r.get('/', (req: Request, res: Response) => {
+    const safeQuery = sanitizeQuery(req.query as Record<string, unknown>);
+    if (Object.keys(req.query).some((key) => SENSITIVE_QUERY_KEYS.has(key.toLowerCase()))) {
+      const suffix = safeQuery ? `?${safeQuery}` : '';
+      res.redirect(302, '/snab-dashboard/' + suffix);
+      return;
+    }
     res.type('html').send(pageHtml());
   });
 
   // History-API entry points: every dashboard page serves the same application
   // shell, then the client restores the matching view after authentication.
   r.get('/:view', (req: Request, res: Response) => {
-    if (!dashboardViews.has(String(req.params.view))) {
+    const view = String(req.params.view);
+    if (!dashboardViews.has(view)) {
       res.status(404).end();
+      return;
+    }
+    const safeQuery = sanitizeQuery(req.query as Record<string, unknown>);
+    if (Object.keys(req.query).some((key) => SENSITIVE_QUERY_KEYS.has(key.toLowerCase()))) {
+      const suffix = safeQuery ? `?${safeQuery}` : '';
+      res.redirect(302, `/snab-dashboard/${view}` + suffix);
       return;
     }
     res.type('html').send(pageHtml());

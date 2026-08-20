@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import { confirmDialog } from '../telegram';
+import { useI18n } from '../i18n';
 import { Avatar, BottomSheet, Empty, Err, Field, GhostBtn, Label, MiniBtn, Pill, PrimaryBtn, Select, Skeleton } from './ui';
 
 interface Dept {
@@ -59,6 +60,7 @@ export function Structure() {
   const [deptUsersId, setDeptUsersId] = useState<string | null>(null);
   const [deptUsersName, setDeptUsersName] = useState('');
   const [deptUsers, setDeptUsers] = useState<DeptUser[] | null>(null);
+  const { tl } = useI18n();
 
   const load = useCallback(() => {
     api.admin
@@ -239,7 +241,7 @@ export function Structure() {
               <>
                 <div className="mt-4">
                   <Label>Название (UZ)</Label>
-                  <Field value={sheet.nameUz} onChange={(e) => setSheet({ ...sheet, nameUz: e.target.value })} placeholder="напр. Ta'minot" />
+              <Field value={sheet.nameUz} onChange={(e) => setSheet({ ...sheet, nameUz: e.target.value })} placeholder={tl("напр. Ta'minot")} />
                 </div>
                 <div className="mt-4">
                   <Label>Название (TR)</Label>

@@ -1,6 +1,7 @@
 import { useState, useEffect, type CSSProperties } from 'react';
 import { api } from '../api';
 import { Icon } from '../icons';
+import { useI18n } from '../i18n';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Balance {
@@ -332,6 +333,7 @@ interface MatOpt { id: string; name: string; defaultUnit: string | null; }
 interface WhOpt { id: string; name: string; }
 
 function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
+  const { tl } = useI18n();
   const [materialId, setMaterialId] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
   const [quantity, setQuantity] = useState('');
@@ -435,7 +437,7 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
             ))}
           </select>
         ) : (
-          <input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder="ID материала (каталог пуст)" style={inputStyle} />
+          <input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder={tl('ID материала (каталог пуст)')} style={inputStyle} />
         )}
       </div>
 
@@ -452,7 +454,7 @@ function OperationForm({ mode }: { mode: 'receive' | 'issue' }) {
             ))}
           </select>
         ) : (
-          <input value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} placeholder="ID склада (необязательно)" style={inputStyle} />
+          <input value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} placeholder={tl('ID склада (необязательно)')} style={inputStyle} />
         )}
       </div>
 

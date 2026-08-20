@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Err, Skeleton } from './ui';
+import { useI18n } from '../i18n';
 
 interface Overview {
   factories: number;
@@ -22,6 +23,7 @@ const CARDS: { key: keyof Overview; label: string; tint: string }[] = [
 ];
 
 export function Dashboard() {
+  const { tl } = useI18n();
   const [ov, setOv] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +43,7 @@ export function Dashboard() {
         <div key={c.key} className="rounded-2xl border border-line bg-card p-4">
           <div className={`mb-3 flex h-9 w-9 items-center justify-center rounded-xl ${c.tint}`}>●</div>
           <div className="font-mono text-3xl font-semibold text-fg">{ov[c.key]}</div>
-          <div className="mt-1 text-xs text-fg2">{c.label}</div>
+          <div className="mt-1 text-xs text-fg2">{tl(c.label)}</div>
         </div>
       ))}
     </div>
